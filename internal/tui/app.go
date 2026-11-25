@@ -17,6 +17,7 @@ import (
 	"github.com/bberka/acpx/internal/descriptors"
 	"github.com/bberka/acpx/internal/gateway"
 	"github.com/bberka/acpx/internal/logbuf"
+	"github.com/bberka/acpx/internal/service"
 )
 
 type Screen int
@@ -50,6 +51,7 @@ const (
 	modalInstalling
 	modalLoginPrompt
 	modalConnect
+	modalService
 	modalConfirmDelete
 	modalSubStrategyWarn
 	modalEditText
@@ -114,6 +116,9 @@ type App struct {
 	// Connect CLI / T3 Code modal
 	connectTargets []connect.Target
 	connectCursor  int
+
+	// Cached OS background service status (refreshed asynchronously)
+	svcStatus service.StatusInfo
 
 	// Live in-app ACP installer
 	installer *installState
@@ -224,6 +229,7 @@ func (a *App) Init() tea.Cmd {
 		tickCmd(),
 		waitLogCmd(a.logSubCh),
 		waitPermCmd(a.permCh),
+		a.refreshServiceCmd(),
 	)
 }
 
@@ -275,10 +281,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.spinTick++
+		var cmds []tea.Cmd
+		cmds = append(cmds, tickCmd())
 		if a.srv.Attached() && a.spinTick%10 == 0 {
-			return a, tea.Batch(tickCmd(), a.syncDaemonCmd())
+			cmds = append(cmds, a.syncDaemonCmd())
 		}
-		return a, tickCmd()
+		if a.spinTick%35 == 0 {
+			cmds = append(cmds, a.refreshServiceCmd())
+		}
+		return a, tea.Batch(cmds...)
+
+	case serviceStatusMsg:
+		a.svcStatus = service.StatusInfo(msg)
+		return a, nil
 
 	case logEntryMsg:
 		return a, waitLogCmd(a.logSubCh)
@@ -402,6 +417,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "C":
 			a.openConnectModal()
 			return a, nil
+		case "S":
+			if a.screen == ScreenDashboard {
+				return a, a.openServiceModal()
+			}
 		case "1":
 			a.switchScreen(ScreenDashboard)
 			return a, nil
@@ -484,6 +503,9 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case modalConnect:
 		return a.updateConnectModal(msg)
+
+	case modalService:
+		return a.updateServiceModal(msg)
 
 	case modalConfirmDelete:
 		switch msg.String() {
@@ -633,7 +655,8 @@ func (a *App) renderFooter() string {
 			hints = []string{
 				a.styles.KeyHint("a", "add"),
 				a.styles.KeyHint("i", "ACP registry"),
-				a.styles.KeyHint("C", "connect CLIs"),
+				a.styles.KeyHint("C", "connect"),
+				a.styles.KeyHint("S", "service"),
 				a.styles.KeyHint("c", "copy URL"),
 				a.styles.KeyHint("k", "copy key"),
 				a.styles.KeyHint("?", "help"),
@@ -776,6 +799,9 @@ func (a *App) viewModal() string {
 
 	case modalConnect:
 		return a.viewConnectModal()
+
+	case modalService:
+		return a.viewServiceModal()
 
 	case modalConfirmDelete:
 		cardW := clamp(a.width-16, 48, 68)

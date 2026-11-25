@@ -61,6 +61,13 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
+	// Open Background Service & Auto-Start modal (S)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")})
+	if app.modal != modalService || !strings.Contains(app.View(), "Background Service & Auto-Start") {
+		t.Fatalf("expected Service modal on 'S', got modal=%v", app.modal)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
 	// Go to Routing (4), press 's' once -> sticky -> round-robin triggers subscription warning!
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})

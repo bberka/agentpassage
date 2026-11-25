@@ -55,14 +55,16 @@ func (a *App) viewDashboard(bodyHeight int) string {
 			a.styles.Divider.Render(strings.Repeat("─", innerW)),
 			"",
 			fmt.Sprintf("  Status    %s", status),
+			fmt.Sprintf("  Service   %s   %s", a.renderServiceSummaryInline(), a.styles.Muted.Render("(S: manage)")),
 			fmt.Sprintf("  Endpoint  %s   %s", a.styles.Highlight.Render(cfg.BaseURL()), a.styles.Muted.Render("(c: copy)")),
 			fmt.Sprintf("  API Key   %s   %s", keyDisp, a.styles.Muted.Render("(k: copy, v: reveal)")),
 			fmt.Sprintf("  ACP Mode  %s", a.styles.Muted.Render("acpx acp  (connect directly in T3 Code / Zed)")),
 			"",
 			a.styles.Divider.Render(strings.Repeat("─", innerW)),
 			"  " + a.styles.KeyHint("i", "Browse & install 45+ ACP tools (agy, codex, claude, cursor, opencode...)"),
-			"  " + a.styles.KeyHint("a", "Add an API-key provider (DeepSeek, OpenRouter, Ollama, OpenAI...)"),
+			"  " + a.styles.KeyHint("a", "Add an API-key, ACP, or Direct CLI account"),
 			"  " + a.styles.KeyHint("C", "Connect T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline"),
+			"  " + a.styles.KeyHint("S", "Install & manage background service + auto-start on login"),
 		}, "\n"))
 		return a.styles.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, hero)
 	}
@@ -72,8 +74,9 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		inner := w - 4
 		lines := []string{
 			a.styles.Subtitle.Render("Gateway Endpoint") + "   " + status + "   " + a.styles.Muted.Render(fmt.Sprintf("%d models", len(models))),
-			fmt.Sprintf("URL  %s   %s", a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-18, 20))), a.styles.Muted.Render("c:copy")),
-			fmt.Sprintf("Key  %s   %s", truncate(keyDisp, max(inner-24, 16)), a.styles.Muted.Render("k:copy v:show")),
+			fmt.Sprintf("URL     %s   %s", a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-18, 20))), a.styles.Muted.Render("c:copy")),
+			fmt.Sprintf("Key     %s   %s", truncate(keyDisp, max(inner-24, 16)), a.styles.Muted.Render("k:copy v:show")),
+			fmt.Sprintf("Service %s   %s", a.renderServiceSummaryInline(), a.styles.Muted.Render("S:manage")),
 		}
 		return a.styles.Card.Width(w).Render(strings.Join(lines, "\n"))
 	}
