@@ -15,14 +15,28 @@ Configured per model pattern (`agy/*`, `deepseek/deepseek-chat`, or `*`) on the 
 | Strategy | Behavior | Subscription Accounts |
 |---|---|---|
 | `failover` **(default)** | Uses the primary account fully and switches to the next account only when the active one hits quota/429, cooldown, concurrency cap, or outage. | Recommended default |
-| `sticky` | Keeps a session (`X-Acpx-Session` or `user`) pinned to one account; new sessions start on the primary account (never alternating/rotating). | Enabled by default |
+| `sticky` | Keeps a session (`X-Apx-Session` or `user`) pinned to one account; new sessions start on the primary account (never alternating/rotating). | Enabled by default |
 | `manual` | Routes to the exact account named in `<backend>/<account>/<model>` or `<prefix><model>`. | Enabled by default |
 | `round-robin` | Rotates new threads/requests across eligible accounts. Intended for **API-key** pools. | **Blocked unless explicitly opted in** (ban-risk confirmation required) |
 | `least-busy` | Picks the eligible account with the fewest in-flight requests. Intended for **API-key** pools. | **Blocked unless explicitly opted in** (ban-risk confirmation required) |
 
 ### Why `round-robin` and `least-busy` Require Explicit Confirmation
 
-Spreading or alternating traffic across multiple subscription (ACP/CLI) accounts can violate provider Terms of Service and cause account bans. Both strategies work freely for **API-key** pools, while `acpx` prompts with a ban-risk warning in the TUI and blocks subscription accounts at runtime unless `subscription_warning_acked = true` is explicitly confirmed on that rule. For subscriptions, stick with the default primary-first `failover`.
+Spreading or alternating traffic across multiple subscription (ACP/CLI) accounts can violate provider Terms of Service and cause account bans. Both strategies work freely for **API-key** pools, while `apx` prompts with a ban-risk warning in the TUI and blocks subscription accounts at runtime unless `subscription_warning_acked = true` is explicitly confirmed on that rule. For subscriptions, stick with the default primary-first `failover`.
+
+## Project-Based Routing
+
+As a local proxy, `apx` routes by project using an explicit identifier supplied by the client:
+
+1. **Project-scoped API key (recommended for isolation):**
+   ```sh
+   apx keys create work-bot --role client --project work
+   ```
+   Every request using that key is automatically pinned to `project = "work"` for both routing and usage reporting (the key cannot spoof another project via header).
+2. **Per-request header (for admin or unscoped keys):**
+   Pass `X-Apx-Project: work` (or legacy `X-Acpx-Project`).
+
+Configure project-scoped routing rules with `apx routing add <pattern> --project <name>` or `p` in the TUI (`4 Routing`). Matching project rules always take priority over global rules.
 
 ## Health & Protection Rules
 
@@ -38,6 +52,6 @@ Applied automatically across all strategies:
 
 - **Localhost only by default:** Binds to `127.0.0.1:8787`. Binding to a non-loopback address is refused unless `--allow-remote` is passed, which logs an explicit warning.
 - **Local API key:** Every `/v1/*` and `/admin/*` endpoint requires the local key via `Authorization: Bearer <key>` or `x-api-key: <key>`. Rotate it anytime from **Settings** (`g`).
-- **Secret storage:** API keys are stored in the OS keychain (Secret Service on Linux, Keychain on macOS, Credential Manager on Windows). If no keychain is available, `acpx` falls back to `<data-dir>/secrets.json` with `0600` permissions and shows a warning banner in the TUI and `acpx doctor`.
-- **No secrets in logs:** Known API keys, bearer tokens, and local keys are redacted before entering the in-memory log buffer or `logs/acpx.log`.
+- **Secret storage:** API keys are stored in the OS keychain (Secret Service on Linux, Keychain on macOS, Credential Manager on Windows). If no keychain is available, `apx` falls back to `<data-dir>/secrets.json` with `0600` permissions and shows a warning banner in the TUI and `apx doctor`.
+- **No secrets in logs:** Known API keys, bearer tokens, and local keys are redacted before entering the in-memory log buffer or `logs/apx.log`.
 - **Clean deletion:** Removing an ACP account in the TUI asks for confirmation and permanently deletes its isolated `profiles/<backend>/<account>/` directory.
