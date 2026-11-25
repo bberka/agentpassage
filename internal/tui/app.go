@@ -60,7 +60,6 @@ const (
 	modalAPIKeys
 	modalRemoteGuide
 	modalConfirmDelete
-	modalSubStrategyWarn
 	modalEditText
 	modalPermission
 )
@@ -171,10 +170,6 @@ type App struct {
 
 	// Delete confirmation target
 	deleteTarget *config.AccountConfig
-
-	// Subscription strategy warning confirmation
-	warnRuleIdx  int
-	warnStrategy string
 
 	// Live permission approval prompt
 	activePerm *backend.PermissionRequest
@@ -602,22 +597,6 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case modalSubStrategyWarn:
-		switch msg.String() {
-		case "y", "Y":
-			cfg := a.srv.Config()
-			if a.warnRuleIdx >= 0 && a.warnRuleIdx < len(cfg.Routing) {
-				cfg.Routing[a.warnRuleIdx].Strategy = a.warnStrategy
-				cfg.Routing[a.warnRuleIdx].SubscriptionWarningAcked = true
-				_ = a.srv.ReloadConfig(cfg)
-				a.setStatus("Updated routing strategy to "+a.warnStrategy+" (warning acknowledged)", false)
-			}
-			a.modal = modalNone
-		case "n", "N", "q", "esc":
-			a.modal = modalNone
-		}
-		return a, nil
-
 	case modalEditText:
 		switch msg.String() {
 		case "esc":
@@ -870,7 +849,7 @@ func (a *App) viewModal() string {
 			"",
 			a.styles.Subtitle.Render("Models & Routing"),
 			"  Models:  space Toggle   E Enable all   X Disable all   H Show disabled   v Names   / Filter   f Fetch",
-			"  Routing: a Add rule   s Cycle strategy (sticky/round-robin/failover...)   4 429-retry",
+			"  Routing: a Add rule   s Cycle strategy (failover/sticky/manual)   4 429-retry",
 			"",
 			a.styles.KeyHint("?", "close") + "   " + a.styles.KeyHint("esc", "close"),
 		}, "\n"))
@@ -921,20 +900,6 @@ func (a *App) viewModal() string {
 			fmt.Sprintf("Delete account %q?%s", name, extra),
 			"",
 			a.styles.KeyHint("y", "delete permanently") + "   " + a.styles.KeyHint("n", "cancel"),
-		}, "\n"))
-
-	case modalSubStrategyWarn:
-		cardW := clamp(a.width-14, 52, 74)
-		return a.styles.ModalWarn.Width(cardW).Render(strings.Join([]string{
-			a.styles.StateWarn.Render("Subscription Pool Warning"),
-			"",
-			fmt.Sprintf("Strategy %q spreads traffic across multiple subscription accounts.", a.warnStrategy),
-			"Pooling subscription accounts can violate provider terms of service",
-			"and lead to account restrictions or bans.",
-			"",
-			"Only proceed if you understand the risk and opt in explicitly.",
-			"",
-			a.styles.KeyHint("y", "enable "+a.warnStrategy) + "   " + a.styles.KeyHint("n", "cancel"),
 		}, "\n"))
 
 	case modalEditText:

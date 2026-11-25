@@ -22,7 +22,7 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 		{ID: "deepseek-main", Name: "main", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, BaseURL: "https://api.deepseek.com/v1", Models: []string{"deepseek-chat"}},
 	}
 	cfg.Routing = []config.RoutingRule{
-		{Pattern: "agy/*", Strategy: config.StrategySticky},
+		{Pattern: "agy/*", Strategy: config.StrategyFailover, AllowCrossAccountRetryOn429: true},
 	}
 
 	sec := secrets.NewFileOnly(dir)
@@ -68,16 +68,17 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
-	// Go to Routing (4), press 's' once -> sticky -> round-robin triggers subscription warning!
+	// Go to Routing (4), press 's' to cycle failover -> sticky -> manual -> failover (no round-robin/warning modal).
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
-	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-	if app.modal != modalSubStrategyWarn {
-		t.Fatalf("expected subscription strategy warning modal, got modal=%v", app.modal)
+	for _, want := range []string{config.StrategySticky, config.StrategyManual, config.StrategyFailover} {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+		if app.modal != modalNone {
+			t.Fatalf("expected no modal while cycling strategies, got modal=%v", app.modal)
+		}
+		if got := app.srv.Config().Routing[0].Strategy; got != want {
+			t.Fatalf("expected strategy %q, got %q", want, got)
+		}
 	}
-	if !strings.Contains(app.View(), "Subscription Pool Warning") {
-		t.Fatalf("expected subscription warning text in view")
-	}
-	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
 	// Open Accounts (2) -> e opens structured Account Editor modal (not comma-separated model text!)
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})

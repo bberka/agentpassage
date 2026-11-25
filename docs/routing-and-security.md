@@ -14,21 +14,19 @@ Configured per model pattern (`agy/*`, `deepseek/deepseek-chat`, or `*`) on the 
 
 | Strategy | Behavior | Subscription Accounts |
 |---|---|---|
-| `sticky` **(default)** | Keeps a session (`X-Acpx-Session` or `user`) pinned to one account; new sessions go to the least-recently-used eligible account. | Enabled by default |
-| `manual` | Routes to the account named in `<backend>/<account>/<model>`. | Enabled by default |
-| `failover` | Uses the primary account and falls over to the next account **only** on hard failures (network errors or HTTP 5xx) — never on 429, 401, or 403. | Enabled by default |
-| `round-robin` | Rotates requests across eligible accounts. | **Opt-in only** (TUI warning required) |
-| `least-busy` | Picks the eligible account with the fewest in-flight requests. | **Opt-in only** (TUI warning required) |
+| `failover` **(default)** | Uses the primary account fully and switches to the next account only when the active one hits quota/429, cooldown, concurrency cap, or outage. | Enabled by default |
+| `sticky` | Keeps a session (`X-Acpx-Session` or `user`) pinned to one account; new sessions start on the primary account (never alternating/rotating). | Enabled by default |
+| `manual` | Routes to the exact account named in `<backend>/<account>/<model>` or `<prefix><model>`. | Enabled by default |
 
-### Why `round-robin` and `least-busy` Require Opt-In
+### Why `round-robin` and `least-busy` Are Disabled
 
-Spreading load across multiple subscription accounts can violate provider terms of service and result in account restrictions. `acpx` blocks both strategies for rules containing ACP subscription accounts until you explicitly acknowledge the warning in the TUI (persisted as `subscription_warning_acked = true` on that rule).
+Spreading or alternating traffic across multiple subscription accounts can trigger automated multi-account detection and result in bans. `acpx` disables `round-robin` and `least-busy` completely (legacy configs containing them are normalized to `failover`) so you exhaust one account naturally before switching to the next.
 
 ## Health & Protection Rules
 
 Applied automatically across all strategies:
 
-- **HTTP 429 / quota / rate limit:** Places that account into cooldown (respecting `Retry-After`, or exponential backoff from 60s up to 10m). Requests are **not** retried on another subscription account unless `allow_cross_account_retry_on_429` is explicitly toggled on (`4` in Routing).
+- **HTTP 429 / quota / rate limit:** Places that account into cooldown (respecting `Retry-After` headers and parsed reset durations like `"Resets in 48m24s"` up to 6h, or exponential backoff from 60s up to 10m). By default, `failover` seamlessly switches to the next eligible account (`allow_cross_account_retry_on_429 = true`, toggleable with `4` in Routing).
 - **Repeated 401 / 403:** First auth error marks the account `login_needed`. Consecutive auth errors auto-disable the account and display a red health banner.
 - **Account restricted / suspended:** Immediately auto-disables the account and displays a critical banner advising you to stop using it.
 - **Concurrency caps:** Default `1` concurrent request per subscription (ACP) account and `8` per API-key account.

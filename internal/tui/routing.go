@@ -10,29 +10,9 @@ import (
 )
 
 var strategyOrder = []string{
-	config.StrategySticky,
-	config.StrategyRoundRobin,
-	config.StrategyLeastBusy,
 	config.StrategyFailover,
+	config.StrategySticky,
 	config.StrategyManual,
-}
-
-func (a *App) ruleHasSubscriptionAccounts(rule config.RoutingRule) bool {
-	cfg := a.srv.Config()
-	if len(rule.Accounts) == 0 {
-		for _, acct := range cfg.Accounts {
-			if acct.Kind == config.KindACP && (rule.Pattern == "*" || strings.HasPrefix(rule.Pattern, acct.Backend+"/")) {
-				return true
-			}
-		}
-		return false
-	}
-	for _, id := range rule.Accounts {
-		if acct := cfg.FindAccount(id); acct != nil && acct.Kind == config.KindACP {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -58,11 +38,12 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			cfg := a.srv.Config()
 			cfg.Routing = append(cfg.Routing, config.RoutingRule{
-				Pattern:  val,
-				Strategy: config.StrategySticky,
+				Pattern:                     val,
+				Strategy:                    config.StrategyFailover,
+				AllowCrossAccountRetryOn429: true,
 			})
 			_ = a.srv.ReloadConfig(cfg)
-			a.setStatus("Added routing rule for "+val, false)
+			a.setStatus("Added primary-first failover rule for "+val, false)
 			return nil
 		})
 	}
@@ -82,13 +63,6 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		next := strategyOrder[(idx+1)%len(strategyOrder)]
-		if (next == config.StrategyRoundRobin || next == config.StrategyLeastBusy) &&
-			a.ruleHasSubscriptionAccounts(rule) && !rule.SubscriptionWarningAcked {
-			a.warnRuleIdx = a.routingCursor
-			a.warnStrategy = next
-			a.modal = modalSubStrategyWarn
-			return a, nil
-		}
 		cfg.Routing[a.routingCursor].Strategy = next
 		_ = a.srv.ReloadConfig(cfg)
 		a.setStatus(fmt.Sprintf("Rule %s strategy -> %s", rule.Pattern, next), false)
@@ -132,12 +106,12 @@ func (a *App) viewRouting(bodyHeight int) string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Routing Rules (%d)", len(cfg.Routing))))
-	lines = append(lines, a.styles.Muted.Render("Default without a rule: sticky (LRU per thread). Use round-robin to rotate threads across accounts, or Accounts→m/P for prefixed models."))
+	lines = append(lines, a.styles.Muted.Render("Default without a rule: primary-first failover (uses 1st account fully, switches only when exhausted/unavailable)."))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(cfg.Routing) == 0 {
 		lines = append(lines, "")
-		lines = append(lines, a.styles.Muted.Render("  No custom rules yet. Press 'a' to add a rule (e.g. 'agy/*' or '*') and press 's' to pick round-robin/failover/sticky."))
+		lines = append(lines, a.styles.Muted.Render("  No custom rules yet. Press 'a' to add a rule (e.g. 'agy/*' or '*') and press 's' to cycle failover/sticky/manual."))
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
