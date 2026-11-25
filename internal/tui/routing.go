@@ -131,9 +131,8 @@ func (a *App) viewRouting(bodyHeight int) string {
 	innerW := fullW - 4
 
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Routing Rules (%d)", len(cfg.Routing)))+"   "+
-		a.styles.Muted.Render("a:add  s:cycle strategy  e:accounts  4:429-retry  x:del"))
-	lines = append(lines, a.styles.Muted.Render("Default without a rule: sticky (LRU per thread). Use round-robin to rotate threads across accounts, or Accounts→m/P for prefixed models (a-model, b-model)."))
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Routing Rules (%d)", len(cfg.Routing))))
+	lines = append(lines, a.styles.Muted.Render("Default without a rule: sticky (LRU per thread). Use round-robin to rotate threads across accounts, or Accounts→m/P for prefixed models."))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(cfg.Routing) == 0 {

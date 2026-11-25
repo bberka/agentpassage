@@ -113,8 +113,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 	hubURL := a.srv.UsageHubURL(false)
 	topLines := []string{
 		a.styles.Title.Render("◆ Usage Report Hub") + "   " +
-			a.styles.Highlight.Render(hubURL) + "   " +
-			a.styles.Muted.Render("(o: open web hub  u: copy URL  t: 24h/14d)"),
+			a.styles.Highlight.Render(hubURL),
 		a.styles.Divider.Render(strings.Repeat("─", innerW)),
 		fmt.Sprintf("  Requests: %s (24h:%d · 7d:%d)   Success: %s (%d err)   Tokens: %s (in:%d out:%d)   Avg: %dms",
 			a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalRequests)),

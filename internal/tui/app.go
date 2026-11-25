@@ -724,12 +724,12 @@ func (a *App) renderFooter() string {
 		case ScreenModels:
 			hints = []string{
 				a.styles.KeyHint("space", "toggle"),
-				a.styles.KeyHint("D", "direct on/off"),
-				a.styles.KeyHint("Q", "bare-only"),
+				a.styles.KeyHint("E", "enable all"),
+				a.styles.KeyHint("X", "disable all"),
+				a.styles.KeyHint("H", "show off"),
+				a.styles.KeyHint("v", "names"),
 				a.styles.KeyHint("/", "filter"),
-				a.styles.KeyHint("X", "disable filtered"),
 				a.styles.KeyHint("f", "fetch"),
-				a.styles.KeyHint("H", "show hidden"),
 			}
 		case ScreenRouting:
 			hints = []string{
@@ -834,7 +834,7 @@ func (a *App) viewModal() string {
 			"  l Login/Key   t Test   T Health all   p Perm   d Toggle   r Rename   e Edit   x Delete",
 			"",
 			a.styles.Subtitle.Render("Models & Routing"),
-			"  Models:  a Alias   r Rename   h Hide/Unhide   H Show hidden   / Filter",
+			"  Models:  space Toggle   E Enable all   X Disable all   H Show disabled   v Names   / Filter   f Fetch",
 			"  Routing: a Add rule   s Cycle strategy (sticky/round-robin/failover...)   4 429-retry",
 			"",
 			a.styles.KeyHint("?", "close") + "   " + a.styles.KeyHint("esc", "close"),

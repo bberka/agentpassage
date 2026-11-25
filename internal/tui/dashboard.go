@@ -95,9 +95,9 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		inner := w - 4
 		lines := []string{
 			a.styles.Subtitle.Render("Gateway Endpoint") + "   " + status + "   " + a.styles.Muted.Render(fmt.Sprintf("%d models", len(models))),
-			fmt.Sprintf("URL     %s   %s", a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-18, 20))), a.styles.Muted.Render("c:copy")),
-			fmt.Sprintf("Key     %s   %s", truncate(keyDisp, max(inner-24, 16)), a.styles.Muted.Render("k:copy v:show")),
-			fmt.Sprintf("Service %s   Health %s   %s", a.renderServiceSummaryInline(), renderHealthSummaryInline(), a.styles.Muted.Render("S:svc T:check")),
+			fmt.Sprintf("URL     %s", a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-10, 20)))),
+			fmt.Sprintf("Key     %s", truncate(keyDisp, max(inner-10, 16))),
+			fmt.Sprintf("Service %s   Health %s", a.renderServiceSummaryInline(), renderHealthSummaryInline()),
 		}
 		return a.styles.Card.Width(w).Render(strings.Join(lines, "\n"))
 	}
@@ -107,7 +107,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		inner := w - 4
 		maxRows := max(h-4, 2)
 		var lines []string
-		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("Accounts (%d)", len(snaps)))+"  "+a.styles.Muted.Render("2:manage  a:add  T:health"))
+		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("Accounts (%d)", len(snaps))))
 		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-17s %-6s %-10s %-8s %s", "ACCOUNT", "KIND", "STATE", "PROBE", "USAGE")))
 		for i, s := range snaps {
 			if i >= maxRows {
@@ -137,7 +137,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		maxRows := max(h-3, 3)
 		entries := a.srv.LiveLogEntries()
 		var lines []string
-		lines = append(lines, a.styles.Subtitle.Render("Live Activity")+"  "+a.styles.Muted.Render("5:full logs  C:connect CLIs"))
+		lines = append(lines, a.styles.Subtitle.Render("Live Activity"))
 		if len(entries) == 0 {
 			lines = append(lines, a.styles.Muted.Render("Waiting for requests on "+cfg.BaseURL()+" ..."))
 			lines = append(lines, a.styles.Muted.Render("Tip: press 'C' to auto-register acpx into T3 Code, OpenCode, Codex, Claude, Pi, or Grok."))

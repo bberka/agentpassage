@@ -62,8 +62,8 @@ func (a *App) viewLogs(bodyHeight int) string {
 		lvl = "ALL"
 	}
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Logs (%d, level=%s)", len(entries), lvl))+"   "+
-		a.styles.Muted.Render("j/k:scroll  l:level  /:filter  (secrets redacted)"))
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Logs (%d)", len(entries)))+"   "+
+		a.styles.Muted.Render(fmt.Sprintf("level: %s · secrets redacted", lvl)))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(entries) == 0 {

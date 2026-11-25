@@ -215,8 +215,7 @@ func (a *App) viewAccounts(bodyHeight int) string {
 	innerW := fullW - 4
 
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts)))+"   "+
-		a.styles.Muted.Render("e:edit  r:rename  M/enter:models  m:pool/prefix  H:host/iso  l:login  t:test  T:health  d:toggle  x:del"))
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts))))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(accts) == 0 {

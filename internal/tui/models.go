@@ -11,7 +11,10 @@ import (
 )
 
 func (a *App) filteredModels() []router.ModelEntry {
-	all := a.srv.Router().ListModels(a.showHidden)
+	return a.filterModelList(a.srv.Router().ListModels(a.showHidden))
+}
+
+func (a *App) filterModelList(all []router.ModelEntry) []router.ModelEntry {
 	if a.filterText == "" {
 		return all
 	}
@@ -26,6 +29,40 @@ func (a *App) filteredModels() []router.ModelEntry {
 		}
 	}
 	return out
+}
+
+func (a *App) cycleModelNamingMode() {
+	cfg := a.srv.Config()
+	switch {
+	case !cfg.Catalog.ExposeDirectModels && cfg.Catalog.HideBackendQualified:
+		// Clean -> + Provider
+		cfg.Catalog.HideBackendQualified = false
+		cfg.Catalog.ExposeDirectModels = false
+		_ = a.srv.ReloadConfig(cfg)
+		a.setStatus("Model names: + Provider (e.g. claude-sonnet-5-5 and agy/claude-sonnet-5-5)", false)
+	case !cfg.Catalog.ExposeDirectModels && !cfg.Catalog.HideBackendQualified:
+		// + Provider -> + Per-account
+		cfg.Catalog.HideBackendQualified = false
+		cfg.Catalog.ExposeDirectModels = true
+		_ = a.srv.ReloadConfig(cfg)
+		a.setStatus("Model names: + Per-account (includes agy/account/model routes)", false)
+	default:
+		// + Per-account -> Clean
+		cfg.Catalog.HideBackendQualified = true
+		cfg.Catalog.ExposeDirectModels = false
+		_ = a.srv.ReloadConfig(cfg)
+		a.setStatus("Model names: Clean (short shared router names only)", false)
+	}
+}
+
+func modelNamingLabel(cfg *config.Config) string {
+	if cfg.Catalog.ExposeDirectModels {
+		return "Names: + Per-account"
+	}
+	if cfg.Catalog.HideBackendQualified {
+		return "Names: Clean"
+	}
+	return "Names: + Provider"
 }
 
 func (a *App) upsertModelOverride(id string, mutate func(*config.ModelOverride)) {
@@ -60,28 +97,16 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "H":
 		a.showHidden = !a.showHidden
-		return a, nil
-	case "D": // toggle account-specific <backend>/<account>/<model> entries
-		cfg := a.srv.Config()
-		cfg.Catalog.ExposeDirectModels = !cfg.Catalog.ExposeDirectModels
-		_ = a.srv.ReloadConfig(cfg)
-		if cfg.Catalog.ExposeDirectModels {
-			a.setStatus("Showing account-specific direct models (<backend>/<account>/<model>)", false)
+		if a.showHidden {
+			a.setStatus("Showing disabled models", false)
 		} else {
-			a.setStatus("Hid account-specific direct models — keeping clean router models", false)
+			a.setStatus("Hiding disabled models", false)
 		}
 		return a, nil
-	case "Q": // toggle backend-qualified <backend>/<model> entries when bare model exists
-		cfg := a.srv.Config()
-		cfg.Catalog.HideBackendQualified = !cfg.Catalog.HideBackendQualified
-		_ = a.srv.ReloadConfig(cfg)
-		if cfg.Catalog.HideBackendQualified {
-			a.setStatus("Showing bare router models only (hid <backend>/<model> duplicates)", false)
-		} else {
-			a.setStatus("Showing both bare and <backend>/<model> entries", false)
-		}
+	case "v", "D", "Q": // cycle simple naming mode: Clean -> + Provider -> + Per-account
+		a.cycleModelNamingMode()
 		return a, nil
-	case "X": // bulk disable all currently visible/filtered models (great with / filter e.g. /low, /3.1, /legacy)
+	case "X": // bulk disable all matching models
 		if len(models) > 0 {
 			cfg := a.srv.Config()
 			ovMap := make(map[string]int, len(cfg.Models))
@@ -102,21 +127,30 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				count++
 			}
 			_ = a.srv.ReloadConfig(cfg)
-			a.setStatus(fmt.Sprintf("Disabled %d matching model(s)", count), false)
+			a.setStatus(fmt.Sprintf("Disabled %d model(s)", count), false)
 		}
 		return a, nil
-	case "E": // bulk enable all currently visible/filtered models
-		if len(models) > 0 {
+	case "E": // enable all matching models (even if currently hidden!)
+		matching := a.filterModelList(a.srv.Router().ListModels(true))
+		if len(matching) > 0 {
+			matchIDs := make(map[string]bool, len(matching))
+			for _, m := range matching {
+				matchIDs[m.ID] = true
+			}
 			cfg := a.srv.Config()
-			for _, m := range models {
-				for i := range cfg.Models {
-					if cfg.Models[i].ID == m.ID {
-						cfg.Models[i].Hidden = false
-					}
+			enabled := 0
+			for i := range cfg.Models {
+				if matchIDs[cfg.Models[i].ID] && cfg.Models[i].Hidden {
+					cfg.Models[i].Hidden = false
+					enabled++
 				}
 			}
 			_ = a.srv.ReloadConfig(cfg)
-			a.setStatus(fmt.Sprintf("Enabled %d matching model(s)", len(models)), false)
+			if enabled > 0 {
+				a.setStatus(fmt.Sprintf("Enabled %d model(s)", enabled), false)
+			} else {
+				a.setStatus(fmt.Sprintf("All %d matching model(s) already enabled", len(matching)), false)
+			}
 		}
 		return a, nil
 	case "f":
@@ -163,32 +197,33 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) viewModels(bodyHeight int) string {
 	models := a.filteredModels()
+	allTotal := len(a.filterModelList(a.srv.Router().ListModels(true)))
+	enabledTotal := len(a.filterModelList(a.srv.Router().ListModels(false)))
 	fullW := max(a.width-2, 40)
 	innerW := fullW - 4
 
 	cfg := a.srv.Config()
-	directBadge := "direct:off"
-	if cfg.Catalog.ExposeDirectModels {
-		directBadge = "direct:on"
-	}
-	qualBadge := "bare+ns"
-	if cfg.Catalog.HideBackendQualified {
-		qualBadge = "bare-only"
+	header := a.styles.Title.Render(fmt.Sprintf("Models (%d enabled / %d total)", enabledTotal, allTotal)) +
+		"   " + a.styles.Highlight.Render("["+modelNamingLabel(cfg)+"]")
+	if a.showHidden {
+		header += "   " + a.styles.Muted.Render("(showing disabled)")
 	}
 
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Models (%d)", len(models)))+"  "+
-		a.styles.Highlight.Render("["+directBadge+" · "+qualBadge+"]")+"  "+
-		a.styles.Muted.Render("space:toggle  D:direct  Q:bare-only  /:filter  X:disable-shown  E:enable-shown  f:fetch"))
+	lines = append(lines, header)
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(models) == 0 {
 		lines = append(lines, "")
-		lines = append(lines, a.styles.Muted.Render("  No models exposed yet. Add an account on tab 2 or press 'f' to fetch all models."))
+		if allTotal > 0 {
+			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("  All %d models are currently disabled. Press 'E' to enable all, or 'H' to show disabled models.", allTotal)))
+		} else {
+			lines = append(lines, a.styles.Muted.Render("  No models yet. Add an account on tab 2 or press 'f' to fetch models."))
+		}
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-10s %-32s %-10s %-7s %s", "STATUS", "MODEL ID", "MODE", "KIND", "NOTES")))
+	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-10s %-32s %-11s %-7s %s", "STATUS", "MODEL", "ROUTING", "KIND", "NOTES")))
 
 	maxRows := max(bodyHeight-6, 4)
 	start := 0
@@ -202,11 +237,11 @@ func (a *App) viewModels(bodyHeight int) string {
 		if m.Hidden {
 			status = a.styles.Muted.Render("○ disabled")
 		}
-		mode := fmt.Sprintf("pool(%d)", len(m.AccountIDs))
+		routing := fmt.Sprintf("shared (%d)", len(m.AccountIDs))
 		if m.Prefixed {
-			mode = "prefix"
+			routing = "prefixed"
 		} else if m.AccountID != "" {
-			mode = "direct"
+			routing = "1 account"
 		}
 		var flags []string
 		if m.Alias != "" {
@@ -218,12 +253,12 @@ func (a *App) viewModels(bodyHeight int) string {
 		if m.AccountName != "" {
 			flags = append(flags, "acct:"+m.AccountName)
 		}
-		row := fmt.Sprintf("%-10s %-32s %-10s %-7s %s",
+		row := fmt.Sprintf("%-10s %-32s %-11s %-7s %s",
 			status,
 			truncate(m.ID, 32),
-			mode,
+			routing,
 			m.Kind,
-			truncate(strings.Join(flags, " "), max(innerW-66, 10)),
+			truncate(strings.Join(flags, " "), max(innerW-67, 10)),
 		)
 		if i == a.modelCursor {
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))

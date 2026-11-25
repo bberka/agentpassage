@@ -209,7 +209,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 	}
 
 	var lines []string
-	lines = append(lines, a.styles.Title.Render("Settings")+"   "+a.styles.Muted.Render("enter:edit/toggle  v:reveal key  g:rotate key  C:connect CLIs"))
+	lines = append(lines, a.styles.Title.Render("Settings"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
 	for i, r := range rows {
