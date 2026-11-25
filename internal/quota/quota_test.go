@@ -232,3 +232,82 @@ func TestParseHTTPHeadersAndRecord(t *testing.T) {
 		t.Fatalf("expected 50%% tokens left, got %+v", rep.Accounts[0].Secondary)
 	}
 }
+
+func TestParseAgyUsageOutput(t *testing.T) {
+	now := time.Date(2026, 6, 5, 18, 0, 0, 0, time.UTC)
+
+	// 1. Structured quota_summary.groups JSON
+	structured := []byte(`{
+		"status": "SUCCESS",
+		"plan_tier": "Pro",
+		"quota_summary": {
+			"groups": [
+				{
+					"model_group": "Gemini Models",
+					"buckets": [
+						{"window": "5h", "usage_fraction": 0.21, "remaining_fraction": 0.79, "reset_time": "2026-06-05T20:40:00Z"},
+						{"window": "7d", "usage_fraction": 0.16, "remaining_fraction": 0.84, "reset_time": "2026-06-12T00:00:00Z"}
+					]
+				},
+				{
+					"model_group": "Claude and GPT models",
+					"buckets": [
+						{"window": "7d", "usage_fraction": 0.45, "remaining_fraction": 0.55, "reset_time": "2026-06-08T14:30:00Z"}
+					]
+				}
+			]
+		}
+	}`)
+	q, err := quota.ParseAgyUsageOutput(structured, now)
+	if err != nil {
+		t.Fatalf("ParseAgyUsageOutput structured failed: %v", err)
+	}
+	if q.Source != "agy-live" || q.PlanType != "Pro" {
+		t.Fatalf("unexpected source/plan: %+v", q)
+	}
+	if q.Primary == nil || q.Primary.Label != "5h" || q.Primary.LeftPercent != 79 {
+		t.Fatalf("unexpected agy primary: %+v", q.Primary)
+	}
+	if q.Secondary == nil || q.Secondary.Label != "Weekly" || q.Secondary.LeftPercent != 55 {
+		t.Fatalf("expected most constrained weekly bucket (55%%), got %+v", q.Secondary)
+	}
+
+	// 2. Statusline-style quota map
+	mapJSON := []byte(`{
+		"plan_tier": "Ultra",
+		"quota": {
+			"gemini-5h": {"remaining_fraction": 0.90, "reset_in_seconds": 3600},
+			"gemini-weekly": {"remaining_fraction": 0.94, "reset_time": "2026-06-12T00:00:00Z"}
+		}
+	}`)
+	qm, err := quota.ParseAgyUsageOutput(mapJSON, now)
+	if err != nil {
+		t.Fatalf("ParseAgyUsageOutput map failed: %v", err)
+	}
+	if qm.Primary == nil || qm.Primary.LeftPercent != 90 || qm.Secondary == nil || qm.Secondary.LeftPercent != 94 {
+		t.Fatalf("unexpected map windows: p=%+v s=%+v", qm.Primary, qm.Secondary)
+	}
+
+	// 3. Text report inside JSON response field
+	textEnv := []byte(`{
+		"status": "SUCCESS",
+		"response": "Plan: Pro\nGemini Models (5h): 78% remaining (resets in 3h 20m)\nWeekly cap: 64% left (resets in 4d 2h)"
+	}`)
+	qt, err := quota.ParseAgyUsageOutput(textEnv, now)
+	if err != nil {
+		t.Fatalf("ParseAgyUsageOutput text envelope failed: %v", err)
+	}
+	if qt.Primary == nil || qt.Primary.LeftPercent != 78 || qt.Secondary == nil || qt.Secondary.LeftPercent != 64 {
+		t.Fatalf("unexpected text windows: p=%+v s=%+v", qt.Primary, qt.Secondary)
+	}
+
+	// 4. Google account verification required error
+	verifyErr := []byte(`{"status":"ERROR","error":"Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue."}`)
+	qe, err := quota.ParseAgyUsageOutput(verifyErr, now)
+	if err != nil {
+		t.Fatalf("ParseAgyUsageOutput verify error failed: %v", err)
+	}
+	if qe.Source != "unavailable" || qe.Credits != "verify account" {
+		t.Fatalf("expected unavailable + verify account badge, got %+v", qe)
+	}
+}

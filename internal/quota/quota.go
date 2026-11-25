@@ -184,6 +184,21 @@ func (f *Fetcher) RefreshOne(ctx context.Context, acct config.AccountConfig) Acc
 	}
 
 	switch acct.Backend {
+	case "agy":
+		if acct.Kind == config.KindACP || acct.Kind == config.KindCLI {
+			live, err := fetchAgyQuota(ctx, acct, f.dataDir)
+			if err != nil {
+				q.Source = "local-tracked"
+				q.Error = err.Error()
+			} else {
+				q = live
+				q.AccountID = acct.ID
+				q.AccountName = acct.Backend + "/" + acct.Name
+				q.Backend = acct.Backend
+				q.Kind = acct.Kind
+				q.CheckedAt = time.Now()
+			}
+		}
 	case "codex":
 		if acct.Kind == config.KindACP || acct.Kind == config.KindCLI {
 			live, err := fetchCodexQuota(ctx, acct, f.dataDir)

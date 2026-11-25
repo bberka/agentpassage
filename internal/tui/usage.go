@@ -250,6 +250,8 @@ func (a *App) viewUsage(bodyHeight int) string {
 			plan := q.PlanType
 			if plan == "" {
 				switch q.Source {
+				case "agy-live":
+					plan = "agy"
 				case "claude-logs":
 					plan = "claude"
 				case "deepseek-live", "openrouter-live", "headers-live":
@@ -264,7 +266,11 @@ func (a *App) viewUsage(bodyHeight int) string {
 			}
 			prim := a.renderQuotaWindowInline(q.Primary, now)
 			if q.Primary == nil && q.Credits != "" {
-				prim = a.styles.StateReady.Render(truncate(q.Credits, 34))
+				st := a.styles.StateReady
+				if q.Source == "unavailable" {
+					st = a.styles.StateWarn
+				}
+				prim = st.Render(truncate(q.Credits, 34))
 			}
 			sec := a.renderQuotaWindowInline(q.Secondary, now)
 			localCol := fmt.Sprintf("%d / %d reqs", q.Local5h, q.Local7d)
