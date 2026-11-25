@@ -134,6 +134,41 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	return nil
 }
 
+// NotifyRunningDaemon asks an already-running acpx daemon/service to hot-reload config & secrets.
+func NotifyRunningDaemon(cfg *config.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	addr := net.JoinHostPort(cfg.Server.Bind, fmt.Sprintf("%d", cfg.Server.Port))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/admin/reload", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// DetachAndStopLocal stops only the local embedded HTTP listener (used when handing off to an OS background service).
+func (s *Server) DetachAndStopLocal(ctx context.Context) error {
+	s.mu.Lock()
+	srv := s.srv
+	s.srv = nil
+	s.running = false
+	s.attached = false
+	s.mu.Unlock()
+	if srv != nil {
+		return srv.Shutdown(ctx)
+	}
+	return nil
+}
+
 func (s *Server) notifyRemoteReload(addr, key string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -476,6 +511,9 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
+	if s.secrets != nil {
+		s.secrets.Reload()
+	}
 	s.router.UpdateConfig(cfg)
 	s.pool.SyncAccounts(cfg.Accounts)
 	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)

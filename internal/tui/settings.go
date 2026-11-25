@@ -1,9 +1,11 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -12,7 +14,7 @@ import (
 	"github.com/bberka/acpx/internal/service"
 )
 
-const settingsCount = 7
+const settingsCount = 8
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -83,31 +85,61 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.setStatus("ACP tool activity streaming: "+cfg.ACP.ToolActivity, false)
 		case 5:
 			a.copyToClipboard("data directory", a.srv.DataDir())
-		case 6: // Install/start or restart OS background service
+		case 6: // Install/start or restart OS background service (gracefully hands off local port!)
 			st := service.Status()
 			if !st.Installed {
-				if unit, err := service.Install(a.srv.DataDir()); err != nil {
+				wasLocal := !a.srv.Attached() && a.srv.Running()
+				if wasLocal {
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					_ = a.srv.DetachAndStopLocal(ctx)
+					cancel()
+				}
+				if unit, err := service.Install(a.srv.DataDir(), true); err != nil {
+					if wasLocal {
+						_ = a.srv.Start()
+					}
 					a.setStatus("Service install failed: "+err.Error(), true)
 				} else {
-					a.setStatus("Installed & started background service: "+unit, false)
+					time.Sleep(350 * time.Millisecond)
+					_, _ = a.srv.AttachIfRunning()
+					a.setStatus("Installed, enabled auto-start & attached to service: "+unit, false)
 				}
 			} else if !st.Running {
+				if !a.srv.Attached() && a.srv.Running() {
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					_ = a.srv.DetachAndStopLocal(ctx)
+					cancel()
+				}
 				if err := service.Start(); err != nil {
 					a.setStatus("Service start failed: "+err.Error(), true)
 				} else {
-					a.setStatus("Started background service", false)
+					time.Sleep(350 * time.Millisecond)
+					_, _ = a.srv.AttachIfRunning()
+					a.setStatus("Started & attached to background service", false)
 				}
 			} else {
 				if err := service.Restart(); err != nil {
 					a.setStatus("Service restart failed: "+err.Error(), true)
 				} else {
+					time.Sleep(350 * time.Millisecond)
+					_, _ = a.srv.AttachIfRunning()
 					a.setStatus("Restarted background service", false)
 				}
+			}
+		case 7: // Toggle Auto-Start on Login
+			st := service.Status()
+			next := !st.Enabled
+			if err := service.SetAutoStart(a.srv.DataDir(), next); err != nil {
+				a.setStatus("Auto-start toggle failed: "+err.Error(), true)
+			} else if next {
+				a.setStatus("Auto-start on login enabled", false)
+			} else {
+				a.setStatus("Auto-start on login disabled", false)
 			}
 		}
 	case "S":
 		// Uninstall background service when on Settings
-		if a.settingCursor == 6 {
+		if a.settingCursor == 6 || a.settingCursor == 7 {
 			if err := service.Uninstall(); err != nil {
 				a.setStatus("Service uninstall failed: "+err.Error(), true)
 			} else {
@@ -130,6 +162,10 @@ func (a *App) viewSettings(bodyHeight int) string {
 
 	svc := service.Status()
 	svcVal := fmt.Sprintf("%s: %s   (enter: install/start/restart, S: uninstall)", svc.Manager, svc.Detail)
+	autoStartVal := "disabled   (enter to enable on login/boot)"
+	if svc.Enabled {
+		autoStartVal = "enabled   (enter to disable)"
+	}
 
 	rows := []struct {
 		label string
@@ -142,6 +178,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"ACP Tool Activity", cfg.ACP.ToolActivity + "   (enter to toggle: drop / text)"},
 		{"Data Directory", a.srv.DataDir() + "   (secrets: " + a.srv.Secrets().Backend() + ")"},
 		{"Background Service", svcVal},
+		{"Auto-Start on Login", autoStartVal},
 	}
 
 	var lines []string

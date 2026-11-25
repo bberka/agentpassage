@@ -154,6 +154,15 @@ func (s *Store) KnownSecrets() []string {
 	return out
 }
 
+// Reload clears the in-memory secret cache and reloads file-backed secrets so a running
+// daemon picks up API keys added or updated by another CLI/TUI process.
+func (s *Store) Reload() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache = make(map[string]string)
+	_ = s.loadFileLocked()
+}
+
 func (s *Store) loadFileLocked() error {
 	data, err := os.ReadFile(s.filePath)
 	if err != nil {

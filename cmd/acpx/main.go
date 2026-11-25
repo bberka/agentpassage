@@ -233,12 +233,57 @@ func cmdService(args []string) error {
 
 	switch sub {
 	case "install":
-		unit, err := service.Install(dataDir)
+		autoStart := true
+		for _, a := range args[1:] {
+			if a == "--no-autostart" || a == "--no-auto-start" {
+				autoStart = false
+			}
+		}
+		unit, err := service.Install(dataDir, autoStart)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("Installed and started acpx background service (%s).\n", unit)
+		if autoStart {
+			fmt.Println("Auto-start on login: enabled (toggle anytime with `acpx service autostart off`).")
+		} else {
+			fmt.Println("Auto-start on login: disabled (enable anytime with `acpx service autostart on`).")
+		}
 		fmt.Println("Run `acpx` anytime to open the TUI attached to the running service.")
+		return nil
+	case "autostart":
+		if len(args) < 2 {
+			st := service.Status()
+			fmt.Printf("Auto-start: %v\nUsage: acpx service autostart <on|off>\n", st.Enabled)
+			return nil
+		}
+		switch strings.ToLower(args[1]) {
+		case "on", "enable", "true", "1":
+			if err := service.SetAutoStart(dataDir, true); err != nil {
+				return err
+			}
+			fmt.Println("Enabled auto-start on login for acpx service.")
+			return nil
+		case "off", "disable", "false", "0":
+			if err := service.SetAutoStart(dataDir, false); err != nil {
+				return err
+			}
+			fmt.Println("Disabled auto-start on login for acpx service.")
+			return nil
+		default:
+			return fmt.Errorf("usage: acpx service autostart <on|off>")
+		}
+	case "enable":
+		if err := service.SetAutoStart(dataDir, true); err != nil {
+			return err
+		}
+		fmt.Println("Enabled auto-start on login for acpx service.")
+		return nil
+	case "disable":
+		if err := service.SetAutoStart(dataDir, false); err != nil {
+			return err
+		}
+		fmt.Println("Disabled auto-start on login for acpx service.")
 		return nil
 	case "uninstall", "remove":
 		if err := service.Uninstall(); err != nil {
@@ -266,11 +311,12 @@ func cmdService(args []string) error {
 		return nil
 	case "status":
 		st := service.Status()
-		fmt.Printf("Manager:   %s\n", st.Manager)
-		fmt.Printf("Installed: %v\n", st.Installed)
-		fmt.Printf("Running:   %v (%s)\n", st.Running, st.Detail)
+		fmt.Printf("Manager:    %s\n", st.Manager)
+		fmt.Printf("Installed:  %v\n", st.Installed)
+		fmt.Printf("Auto-start: %v\n", st.Enabled)
+		fmt.Printf("Running:    %v (%s)\n", st.Running, st.Detail)
 		if st.UnitPath != "" {
-			fmt.Printf("Unit:      %s\n", st.UnitPath)
+			fmt.Printf("Unit:       %s\n", st.UnitPath)
 		}
 		return nil
 	case "logs":
@@ -281,7 +327,7 @@ func cmdService(args []string) error {
 		fmt.Println(out)
 		return nil
 	default:
-		return fmt.Errorf("usage: acpx service <install|uninstall|start|stop|restart|status|logs>")
+		return fmt.Errorf("usage: acpx service <install [--no-autostart]|uninstall|autostart <on|off>|start|stop|restart|status|logs>")
 	}
 }
 
@@ -503,7 +549,11 @@ func cmdAdd(args []string) error {
 	if err := config.Save(dataDir, cfg); err != nil {
 		return err
 	}
-	fmt.Printf("Added account %s (%s/%s, kind=%s, expose=%s).\n", acct.ID, acct.Backend, acct.Name, acct.Kind, acct.ExposeMode)
+	reloaded := ""
+	if gateway.NotifyRunningDaemon(cfg) {
+		reloaded = " (hot-reloaded running service)"
+	}
+	fmt.Printf("Added account %s (%s/%s, kind=%s, expose=%s)%s.\n", acct.ID, acct.Backend, acct.Name, acct.Kind, acct.ExposeMode, reloaded)
 	return nil
 }
 
@@ -615,7 +665,12 @@ func cmdModels(args []string) error {
 			fmt.Printf("  loaded %d models (%d enabled / %d total)\n", len(discovered), len(a.Models), len(a.AvailableModels))
 		}
 		if updated > 0 {
-			return config.Save(dataDir, cfg)
+			if err := config.Save(dataDir, cfg); err != nil {
+				return err
+			}
+			if gateway.NotifyRunningDaemon(cfg) {
+				fmt.Println("Hot-reloaded running acpx service.")
+			}
 		}
 		return nil
 
@@ -638,7 +693,11 @@ func cmdModels(args []string) error {
 		if err := config.Save(dataDir, cfg); err != nil {
 			return err
 		}
-		fmt.Printf("Updated %s/%s: %d enabled / %d total models.\n", acct.Backend, acct.Name, len(acct.Models), len(acct.AvailableModels))
+		reloaded := ""
+		if gateway.NotifyRunningDaemon(cfg) {
+			reloaded = " (hot-reloaded running service)"
+		}
+		fmt.Printf("Updated %s/%s: %d enabled / %d total models%s.\n", acct.Backend, acct.Name, len(acct.Models), len(acct.AvailableModels), reloaded)
 		return nil
 
 	default:

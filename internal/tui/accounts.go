@@ -197,6 +197,7 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return err
 			}
 			a.srv.Pool().ClearHealth(selected.ID)
+			_ = a.srv.ReloadConfig(a.srv.Config())
 			a.setStatus("Updated API key for "+selected.Name, false)
 			return nil
 		})

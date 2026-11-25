@@ -19,15 +19,21 @@ func TestRenderSystemdAndLaunchdUnits(t *testing.T) {
 		}
 	}
 
-	plist := RenderLaunchdPlist("/usr/local/bin/acpx", "/Users/u/Library/Application Support/acpx", "/usr/local/bin:/usr/bin")
+	plist := RenderLaunchdPlist("/usr/local/bin/acpx", "/Users/u/Library/Application Support/acpx", "/usr/local/bin:/usr/bin", true)
 	for _, want := range []string{
 		"<string>com.bberka.acpx</string>",
 		"<string>/usr/local/bin/acpx</string>",
 		"<string>serve</string>",
+		"<key>RunAtLoad</key>\n  <true/>",
 		"<key>KeepAlive</key>",
 	} {
 		if !strings.Contains(plist, want) {
 			t.Fatalf("launchd plist missing %q:\n%s", want, plist)
 		}
+	}
+
+	plistOff := RenderLaunchdPlist("/usr/local/bin/acpx", "/Users/u/Library/Application Support/acpx", "/usr/local/bin:/usr/bin", false)
+	if !strings.Contains(plistOff, "<key>RunAtLoad</key>\n  <false/>") {
+		t.Fatalf("expected RunAtLoad false when autoStart=false:\n%s", plistOff)
 	}
 }

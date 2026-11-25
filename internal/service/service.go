@@ -18,6 +18,7 @@ const (
 type StatusInfo struct {
 	Manager   string // "systemd", "launchd", "schtasks"
 	Installed bool
+	Enabled   bool // auto-start on login/boot enabled
 	Running   bool
 	UnitPath  string
 	Detail    string
@@ -88,8 +89,12 @@ WantedBy=default.target
 }
 
 // RenderLaunchdPlist generates the macOS LaunchAgent plist content.
-func RenderLaunchdPlist(binPath, dataDir, pathEnv string) string {
+func RenderLaunchdPlist(binPath, dataDir, pathEnv string, autoStart bool) string {
 	logPath := filepath.Join(dataDir, "logs", "service.log")
+	runAtLoad := "<true/>"
+	if !autoStart {
+		runAtLoad = "<false/>"
+	}
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -109,7 +114,7 @@ func RenderLaunchdPlist(binPath, dataDir, pathEnv string) string {
     <string>%s</string>
   </dict>
   <key>RunAtLoad</key>
-  <true/>
+  %s
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
@@ -118,10 +123,10 @@ func RenderLaunchdPlist(binPath, dataDir, pathEnv string) string {
   <string>%s</string>
 </dict>
 </plist>
-`, launchdLabel, binPath, pathEnv, dataDir, logPath, logPath)
+`, launchdLabel, binPath, pathEnv, dataDir, runAtLoad, logPath, logPath)
 }
 
-func Install(dataDir string) (string, error) {
+func Install(dataDir string, autoStart bool) (string, error) {
 	bin, err := binaryPath()
 	if err != nil {
 		return "", fmt.Errorf("resolve acpx binary: %w", err)
@@ -144,8 +149,15 @@ func Install(dataDir string) (string, error) {
 		if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 			return unitPath, fmt.Errorf("systemctl daemon-reload failed: %s (%w)", strings.TrimSpace(string(out)), err)
 		}
-		if out, err := exec.Command("systemctl", "--user", "enable", "--now", systemdUnitName).CombinedOutput(); err != nil {
-			return unitPath, fmt.Errorf("systemctl enable --now failed: %s (%w)", strings.TrimSpace(string(out)), err)
+		if autoStart {
+			if out, err := exec.Command("systemctl", "--user", "enable", "--now", systemdUnitName).CombinedOutput(); err != nil {
+				return unitPath, fmt.Errorf("systemctl enable --now failed: %s (%w)", strings.TrimSpace(string(out)), err)
+			}
+		} else {
+			_ = exec.Command("systemctl", "--user", "disable", systemdUnitName).Run()
+			if out, err := exec.Command("systemctl", "--user", "start", systemdUnitName).CombinedOutput(); err != nil {
+				return unitPath, fmt.Errorf("systemctl start failed: %s (%w)", strings.TrimSpace(string(out)), err)
+			}
 		}
 		return unitPath, nil
 
@@ -158,7 +170,7 @@ func Install(dataDir string) (string, error) {
 			return "", err
 		}
 		_ = os.MkdirAll(filepath.Join(dataDir, "logs"), 0o700)
-		plist := RenderLaunchdPlist(bin, dataDir, pathEnv)
+		plist := RenderLaunchdPlist(bin, dataDir, pathEnv, autoStart)
 		if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
 			return "", err
 		}
@@ -173,11 +185,70 @@ func Install(dataDir string) (string, error) {
 		if out, err := exec.Command("schtasks", "/Create", "/F", "/SC", "ONLOGON", "/TN", winTaskName, "/TR", tr).CombinedOutput(); err != nil {
 			return winTaskName, fmt.Errorf("schtasks create failed: %s (%w)", strings.TrimSpace(string(out)), err)
 		}
+		if !autoStart {
+			_ = exec.Command("schtasks", "/Change", "/TN", winTaskName, "/DISABLE").Run()
+		}
 		_ = exec.Command("schtasks", "/Run", "/TN", winTaskName).Run()
 		return winTaskName, nil
 
 	default:
 		return "", fmt.Errorf("background service not supported on %s", runtime.GOOS)
+	}
+}
+
+// SetAutoStart enables or disables starting the acpx service automatically on login/boot.
+func SetAutoStart(dataDir string, enable bool) error {
+	st := Status()
+	if !st.Installed {
+		if enable {
+			_, err := Install(dataDir, true)
+			return err
+		}
+		return nil
+	}
+
+	switch runtime.GOOS {
+	case "linux":
+		action := "disable"
+		if enable {
+			action = "enable"
+		}
+		if out, err := exec.Command("systemctl", "--user", action, systemdUnitName).CombinedOutput(); err != nil {
+			return fmt.Errorf("systemctl %s failed: %s (%w)", action, strings.TrimSpace(string(out)), err)
+		}
+		return nil
+
+	case "darwin":
+		bin, err := binaryPath()
+		if err != nil {
+			return err
+		}
+		plistPath, err := UnitPath()
+		if err != nil {
+			return err
+		}
+		plist := RenderLaunchdPlist(bin, dataDir, os.Getenv("PATH"), enable)
+		if err := os.WriteFile(plistPath, []byte(plist), 0o644); err != nil {
+			return err
+		}
+		_ = exec.Command("launchctl", "unload", plistPath).Run()
+		if out, err := exec.Command("launchctl", "load", "-w", plistPath).CombinedOutput(); err != nil {
+			return fmt.Errorf("launchctl reload failed: %s (%w)", strings.TrimSpace(string(out)), err)
+		}
+		return nil
+
+	case "windows":
+		flag := "/DISABLE"
+		if enable {
+			flag = "/ENABLE"
+		}
+		if out, err := exec.Command("schtasks", "/Change", "/TN", winTaskName, flag).CombinedOutput(); err != nil {
+			return fmt.Errorf("schtasks %s failed: %s (%w)", flag, strings.TrimSpace(string(out)), err)
+		}
+		return nil
+
+	default:
+		return fmt.Errorf("unsupported OS %s", runtime.GOOS)
 	}
 }
 
@@ -289,6 +360,9 @@ func Status() StatusInfo {
 		if _, err := os.Stat(unitPath); err == nil {
 			info.Installed = true
 		}
+		if enOut, err := exec.Command("systemctl", "--user", "is-enabled", systemdUnitName).CombinedOutput(); err == nil {
+			info.Enabled = strings.TrimSpace(string(enOut)) == "enabled"
+		}
 		out, err := exec.Command("systemctl", "--user", "is-active", systemdUnitName).CombinedOutput()
 		state := strings.TrimSpace(string(out))
 		if err == nil && state == "active" {
@@ -303,8 +377,9 @@ func Status() StatusInfo {
 		}
 	case "darwin":
 		info.Manager = "launchd"
-		if _, err := os.Stat(unitPath); err == nil {
+		if raw, err := os.ReadFile(unitPath); err == nil {
 			info.Installed = true
+			info.Enabled = strings.Contains(string(raw), "<key>RunAtLoad</key>\n  <true/>")
 		}
 		out, err := exec.Command("launchctl", "list", launchdLabel).CombinedOutput()
 		if err == nil {
@@ -320,7 +395,9 @@ func Status() StatusInfo {
 		out, err := exec.Command("schtasks", "/Query", "/TN", winTaskName).CombinedOutput()
 		if err == nil {
 			info.Installed = true
-			info.Running = strings.Contains(string(out), "Running")
+			s := string(out)
+			info.Enabled = !strings.Contains(s, "Disabled")
+			info.Running = strings.Contains(s, "Running")
 			if info.Running {
 				info.Detail = "running"
 			} else {
