@@ -374,8 +374,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			a.setStatus("Login exited: "+msg.err.Error(), true)
 		} else {
+			a.srv.ACP().StopAccount(msg.accountID)
 			a.srv.Pool().ClearHealth(msg.accountID)
-			a.setStatus("Login finished — press 't' on Accounts to test.", false)
+			cfg := a.srv.Config()
+			if acct := cfg.FindAccount(msg.accountID); acct != nil {
+				if !acct.Enabled && strings.Contains(strings.ToLower(acct.DisabledReason), "auth") {
+					acct.Enabled = true
+					acct.DisabledReason = ""
+				}
+				_ = a.srv.ReloadConfig(cfg)
+				a.setStatus("Login finished for "+acct.Backend+"/"+acct.Name+" — press 't' to test.", false)
+			} else {
+				a.setStatus("Login finished — press 't' on Accounts to test.", false)
+			}
 		}
 		return a, nil
 

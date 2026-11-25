@@ -266,8 +266,14 @@ func (a *App) updateLoginPromptModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	acct := *a.loginTarget
 	switch msg.String() {
 	case "enter", "l", "y":
-		desc, ok := a.srv.Registry().GetACP(acct.Backend)
-		if ok {
+		if acct.Kind == config.KindCLI {
+			if desc, ok := a.srv.Registry().GetCLI(acct.Backend); ok {
+				if _, found := desc.FoundOnPath(); !found && desc.Binary != "" {
+					a.setStatus(desc.Name+" binary ("+desc.Binary+") not found on PATH.", true)
+					return a, nil
+				}
+			}
+		} else if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok {
 			if _, found := a.srv.Registry().FindLocalBinary(desc); !found && desc.CanInstall() {
 				a.setStatus(desc.Name+" binary not installed yet — press 'i' to install it first.", true)
 				return a, nil
@@ -278,8 +284,10 @@ func (a *App) updateLoginPromptModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.setStatus("Launching "+acct.Backend+" login (returns to acpx when finished)...", false)
 		return a, a.loginAccountCmd(acct)
 	case "i":
-		if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && desc.CanInstall() {
-			return a, a.startInstall([]descriptors.ACPDescriptor{desc}, modalLoginPrompt)
+		if acct.Kind != config.KindCLI {
+			if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && desc.CanInstall() {
+				return a, a.startInstall([]descriptors.ACPDescriptor{desc}, modalLoginPrompt)
+			}
 		}
 	case "s", "n", "esc", "q":
 		a.loginTarget = nil
@@ -298,26 +306,61 @@ func (a *App) viewLoginPromptModal() string {
 	innerW := cardW - 6
 
 	pdir, _ := config.ProfileDir(a.srv.DataDir(), acct.Backend, acct.Name)
-	desc, _ := a.srv.Registry().GetACP(acct.Backend)
-	loginCmd := strings.Join(desc.ExpandLogin(pdir, acct.CustomLogin), " ")
+	profileDisp := pdir
+	if acct.UseHostProfile {
+		profileDisp = "host CLI login (shared with your terminal)"
+	}
 
-	_, found := a.srv.Registry().FindLocalBinary(desc)
-	binMissing := !found && desc.Detect != ""
+	var loginCmd string
+	var binMissing bool
+	var binName string
+	var canInstall bool
+	var toolName string
+
+	if acct.Kind == config.KindCLI {
+		desc, _ := a.srv.Registry().GetCLI(acct.Backend)
+		toolName = desc.Name
+		binName = desc.Binary
+		src := desc.LoginCmd
+		if len(acct.CustomLogin) > 0 {
+			src = acct.CustomLogin
+		}
+		expanded := make([]string, len(src))
+		for i, s := range src {
+			s = strings.ReplaceAll(s, "{profile}", pdir)
+			s = strings.ReplaceAll(s, "{account}", acct.Name)
+			expanded[i] = s
+		}
+		loginCmd = strings.Join(expanded, " ")
+		_, found := desc.FoundOnPath()
+		binMissing = !found && desc.Binary != ""
+	} else {
+		desc, _ := a.srv.Registry().GetACP(acct.Backend)
+		toolName = desc.Name
+		binName = desc.Detect
+		canInstall = desc.CanInstall()
+		loginCmd = strings.Join(desc.ExpandLogin(pdir, acct.CustomLogin), " ")
+		_, found := a.srv.Registry().FindLocalBinary(desc)
+		binMissing = !found && desc.Detect != ""
+	}
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render("Sign In to "+acct.Backend+"/"+acct.Name))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
-	lines = append(lines, "Profile: "+a.styles.Highlight.Render(truncate(pdir, innerW-10)))
+	lines = append(lines, "Profile: "+a.styles.Highlight.Render(truncate(profileDisp, innerW-10)))
 	if loginCmd != "" {
 		lines = append(lines, "Command: "+a.styles.Muted.Render(truncate(loginCmd, innerW-10)))
 	}
 	lines = append(lines, "")
 	if binMissing {
-		lines = append(lines, a.styles.StateWarn.Render(fmt.Sprintf("Binary %q is not installed yet.", desc.Detect)))
-		if desc.CanInstall() {
-			lines = append(lines, "Press 'i' to install "+desc.Name+" inside acpx first.")
+		lines = append(lines, a.styles.StateWarn.Render(fmt.Sprintf("Binary %q is not installed yet.", binName)))
+		if canInstall {
+			lines = append(lines, "Press 'i' to install "+toolName+" inside acpx first.")
 		}
+	} else if loginCmd == "" {
+		lines = append(lines, a.styles.StateWarn.Render("No login command configured for "+acct.Backend+"."))
+		lines = append(lines, a.styles.Muted.Render("Set custom_login in config.toml or switch to Host CLI login (press 'H')."))
 	} else {
 		lines = append(lines, "The official CLI login will open in this terminal and automatically")
 		lines = append(lines, "return you right back to acpx once authentication finishes.")
@@ -326,13 +369,13 @@ func (a *App) viewLoginPromptModal() string {
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	var hints []string
-	if binMissing && desc.CanInstall() {
-		hints = append(hints, a.styles.KeyHint("i", "install "+desc.Detect))
-	} else {
+	if binMissing && canInstall {
+		hints = append(hints, a.styles.KeyHint("i", "install "+binName))
+	} else if loginCmd != "" {
 		hints = append(hints, a.styles.KeyHint("enter", "launch login"))
 	}
 	hints = append(hints, a.styles.KeyHint("s", "skip for now"))
-	lines = append(lines, strings.Join(hints, "   "))
+	lines = append(lines, a.styles.JoinHints(hints...))
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
 }
 

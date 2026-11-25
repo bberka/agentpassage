@@ -182,14 +182,20 @@ func parseRegistryDescriptors(raw []byte, dataDir string) ([]ACPDescriptor, erro
 			d.ProfileEnv = map[string]string{"HOME": "{profile}"}
 			d.Login = []string{"agent", "login"}
 		case "grok":
-			d.ProfileEnv = map[string]string{"HOME": "{profile}"}
+			d.ProfileEnv = map[string]string{
+				"HOME":            "{profile}",
+				"XDG_CONFIG_HOME": "{profile}/.config",
+			}
+			d.Login = []string{"grok", "login"}
 		case "pi":
 			d.ProfileEnv = map[string]string{"PI_CODING_AGENT_DIR": "{profile}"}
+			d.Login = []string{"pi"}
 		case "cline":
 			d.ProfileEnv = map[string]string{"HOME": "{profile}"}
 			d.Login = []string{"cline", "auth"}
 		case "muse-code":
 			d.ProfileEnv = map[string]string{"HOME": "{profile}"}
+			d.Login = []string{"muse-code"}
 		}
 
 		out = append(out, d)

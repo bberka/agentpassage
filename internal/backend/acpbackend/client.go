@@ -91,22 +91,32 @@ func (m *Manager) StopAccount(accountID string) {
 	}
 }
 
-// LoginCommand returns the exec.Cmd to run an account's interactive login in its isolated profile dir.
+// LoginCommand returns the exec.Cmd to run an account's interactive login in its isolated profile dir (or host profile if configured).
 func (m *Manager) LoginCommand(acct config.AccountConfig) (*exec.Cmd, string, error) {
 	desc, ok := m.registry.GetACP(acct.Backend)
 	if !ok {
 		return nil, "", fmt.Errorf("unknown ACP backend %q", acct.Backend)
 	}
-	profileDir, err := config.EnsureProfileDir(m.dataDir, acct.Backend, acct.Name)
-	if err != nil {
-		return nil, "", err
+	profileDir := ""
+	var extraEnv []string
+	if acct.UseHostProfile {
+		for k, v := range acct.CustomEnv {
+			extraEnv = append(extraEnv, k+"="+v)
+		}
+	} else {
+		var err error
+		profileDir, err = config.EnsureProfileDir(m.dataDir, acct.Backend, acct.Name)
+		if err != nil {
+			return nil, "", err
+		}
+		extraEnv = desc.ExpandEnv(profileDir, acct.CustomEnv)
 	}
 	loginArgs := desc.ExpandLogin(profileDir, acct.CustomLogin)
 	if len(loginArgs) == 0 {
 		return nil, profileDir, fmt.Errorf("backend %q has no login command configured", acct.Backend)
 	}
 	cmd := exec.Command(loginArgs[0], loginArgs[1:]...)
-	cmd.Env = sanitizeChildEnv(os.Environ(), desc.ExpandEnv(profileDir, acct.CustomEnv), acct)
+	cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
 	return cmd, profileDir, nil
 }
 

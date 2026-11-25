@@ -77,4 +77,20 @@ default_models: ["m1", "m2"]
 	if _, ok := reg.GetPreset("deepseek"); !ok {
 		t.Fatalf("missing deepseek preset")
 	}
+
+	// Verify grok has login command and isolated HOME for both ACP and Direct CLI
+	grokACP, ok := reg.GetACP("grok")
+	if !ok {
+		t.Fatalf("missing grok ACP descriptor")
+	}
+	if !reflect.DeepEqual(grokACP.ExpandLogin("/tmp/grok-prof", nil), []string{"grok", "login"}) {
+		t.Fatalf("unexpected grok ACP login: %v", grokACP.ExpandLogin("/tmp/grok-prof", nil))
+	}
+	if !reflect.DeepEqual(grokACP.ExpandEnv("/tmp/grok-prof", nil), []string{"HOME=/tmp/grok-prof", "XDG_CONFIG_HOME=/tmp/grok-prof/.config"}) {
+		t.Fatalf("unexpected grok ACP env: %v", grokACP.ExpandEnv("/tmp/grok-prof", nil))
+	}
+	grokCLI, ok := reg.GetCLI("grok")
+	if !ok || !reflect.DeepEqual(grokCLI.LoginCmd, []string{"grok", "login"}) {
+		t.Fatalf("unexpected grok CLI descriptor: ok=%v login=%v", ok, grokCLI.LoginCmd)
+	}
 }

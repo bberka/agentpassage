@@ -114,7 +114,12 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 			}
 			return nil, classifyCLIError(errors.New(msg))
 		}
-		parsed := parseModelsCLIOutput(string(out))
+		outStr := string(out)
+		lowerOut := strings.ToLower(outStr)
+		if strings.Contains(lowerOut, "not authenticated") || strings.Contains(lowerOut, "not logged in") || strings.Contains(lowerOut, "authentication required") {
+			return nil, classifyCLIError(errors.New(strings.TrimSpace(outStr)))
+		}
+		parsed := parseModelsCLIOutput(outStr)
 		if len(parsed) > 0 {
 			return parsed, nil
 		}
@@ -462,7 +467,10 @@ func parseModelsCLIOutput(out string) []string {
 	var models []string
 	for _, rawLine := range strings.Split(out, "\n") {
 		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "Fetching") || strings.HasPrefix(line, "Available") || strings.HasPrefix(line, "Error") || strings.HasPrefix(line, "─") {
+		if line == "" || strings.HasPrefix(line, "Fetching") || strings.HasPrefix(line, "Available") ||
+			strings.HasPrefix(line, "Error") || strings.HasPrefix(line, "Default ") ||
+			strings.HasPrefix(line, "You ") || strings.HasPrefix(line, "Note") ||
+			strings.HasPrefix(line, "Warning") || strings.HasPrefix(line, "─") {
 			continue
 		}
 		line = strings.TrimLeft(line, "•*- ")
@@ -471,6 +479,9 @@ func parseModelsCLIOutput(out string) []string {
 			continue
 		}
 		tok := fields[0]
+		if strings.HasSuffix(tok, ":") {
+			continue
+		}
 		if modelTokenRe.MatchString(tok) && !seen[tok] {
 			seen[tok] = true
 			models = append(models, tok)
