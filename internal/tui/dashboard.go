@@ -60,7 +60,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 			"  " + a.styles.KeyHint("a", "Add an API-key provider (DeepSeek, OpenRouter, Ollama, OpenAI...)"),
 			"  " + a.styles.KeyHint("C", "Connect T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline"),
 		}, "\n"))
-		return lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, hero)
+		return a.styles.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, hero)
 	}
 
 	// Build Endpoint card

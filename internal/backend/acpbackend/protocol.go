@@ -42,8 +42,11 @@ type sessionNewParams struct {
 }
 
 type configOptionValue struct {
-	Value string `json:"value"`
-	Name  string `json:"name"`
+	Value   string              `json:"value"`
+	ID      string              `json:"id"`
+	Name    string              `json:"name"`
+	Group   string              `json:"group"`
+	Options []configOptionValue `json:"options,omitempty"`
 }
 
 type configOption struct {
@@ -60,6 +63,7 @@ type sessionNewResult struct {
 		CurrentModelID  string `json:"currentModelId"`
 		AvailableModels []struct {
 			ModelID string `json:"modelId"`
+			ID      string `json:"id"`
 			Name    string `json:"name"`
 		} `json:"availableModels"`
 	} `json:"models,omitempty"`

@@ -702,7 +702,7 @@ func (a *App) View() string {
 	var body string
 	if a.modal != modalNone {
 		modalCard := a.viewModal()
-		body = lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, modalCard)
+		body = a.styles.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, modalCard)
 	} else {
 		switch a.screen {
 		case ScreenDashboard:
@@ -718,7 +718,7 @@ func (a *App) View() string {
 		case ScreenSettings:
 			body = a.viewSettings(bodyHeight)
 		}
-		body = lipgloss.Place(a.width, bodyHeight, lipgloss.Left, lipgloss.Top, body)
+		body = a.styles.Place(a.width, bodyHeight, lipgloss.Left, lipgloss.Top, body)
 	}
 
 	parts := []string{topBar}

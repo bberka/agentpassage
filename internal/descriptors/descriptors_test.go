@@ -38,7 +38,7 @@ default_models: ["m1", "m2"]
 		t.Fatalf("missing built-in agy descriptor")
 	}
 	gotAgy := agy.ExpandCommand("/tmp/prof", nil)
-	wantAgy := []string{"agy", "acp", "--app-data-dir", "antigravity-cli", "--gemini-dir", ".gemini"}
+	wantAgy := []string{"agy", "acp", "--app-data-dir", "acpx-prof", "--gemini-dir", ".gemini"}
 	if !reflect.DeepEqual(gotAgy, wantAgy) {
 		t.Fatalf("agy expand mismatch: got=%v want=%v", gotAgy, wantAgy)
 	}

@@ -65,19 +65,19 @@ func BuiltInACP() []ACPDescriptor {
 			Detect:      "agy",
 			Command:     []string{"agy", "acp"},
 			// NOTE: agy acp requires RELATIVE names for --app-data-dir and --gemini-dir;
-			// setting HOME={profile} isolates each account's credentials completely inside {profile}.
-			ProfileArgs: []string{"--app-data-dir", "antigravity-cli", "--gemini-dir", ".gemini"},
+			// using acpx-{account} gives each account a unique keyring/app-data namespace,
+			// while HOME={profile} isolates all files inside {profile}/.gemini/.
+			ProfileArgs: []string{"--app-data-dir", "acpx-{account}", "--gemini-dir", ".gemini"},
 			ProfileEnv: map[string]string{
 				"HOME":            "{profile}",
 				"XDG_CONFIG_HOME": "{profile}/.config",
 			},
-			Login:       []string{"agy", "acp", "--login", "--app-data-dir", "antigravity-cli", "--gemini-dir", ".gemini"},
+			Login:       []string{"agy", "acp", "--login", "--app-data-dir", "acpx-{account}", "--gemini-dir", ".gemini"},
 			InstallNote: "Install Google Antigravity CLI (agy) from your Antigravity installer.",
 			DefaultModels: []string{
 				"default",
-				"gemini-3.1-pro",
 			},
-			TermsNote: "Runs the official agy CLI over ACP with isolated HOME per account.",
+			TermsNote: "Runs the official agy CLI over ACP with isolated HOME and unique app-data-dir per account.",
 			BuiltIn:   true,
 		},
 		{
@@ -301,8 +301,9 @@ func (r *Registry) DetectInstalled() []DetectedCLI {
 	return out
 }
 
-// ExpandCommand substitutes {profile} in command + profile_args, preferring locally installed binaries.
+// ExpandCommand substitutes {profile} and {account} in command + profile_args, preferring locally installed binaries.
 func (d ACPDescriptor) ExpandCommand(profileDir string, customCmd []string) []string {
+	accountName := filepath.Base(profileDir)
 	var parts []string
 	if len(customCmd) > 0 {
 		parts = append(parts, customCmd...)
@@ -321,32 +322,42 @@ func (d ACPDescriptor) ExpandCommand(profileDir string, customCmd []string) []st
 	}
 	out := make([]string, len(parts))
 	for i, s := range parts {
-		out[i] = strings.ReplaceAll(s, "{profile}", profileDir)
+		s = strings.ReplaceAll(s, "{profile}", profileDir)
+		s = strings.ReplaceAll(s, "{account}", accountName)
+		out[i] = s
 	}
 	return out
 }
 
-// ExpandLogin substitutes {profile} in login command.
+// ExpandLogin substitutes {profile} and {account} in login command.
 func (d ACPDescriptor) ExpandLogin(profileDir string, customLogin []string) []string {
+	accountName := filepath.Base(profileDir)
 	src := d.Login
 	if len(customLogin) > 0 {
 		src = customLogin
 	}
 	out := make([]string, len(src))
 	for i, s := range src {
-		out[i] = strings.ReplaceAll(s, "{profile}", profileDir)
+		s = strings.ReplaceAll(s, "{profile}", profileDir)
+		s = strings.ReplaceAll(s, "{account}", accountName)
+		out[i] = s
 	}
 	return out
 }
 
 // ExpandEnv returns KEY=VALUE entries to merge into child process env.
 func (d ACPDescriptor) ExpandEnv(profileDir string, customEnv map[string]string) []string {
+	accountName := filepath.Base(profileDir)
 	merged := make(map[string]string)
 	for k, v := range d.ProfileEnv {
-		merged[k] = strings.ReplaceAll(v, "{profile}", profileDir)
+		v = strings.ReplaceAll(v, "{profile}", profileDir)
+		v = strings.ReplaceAll(v, "{account}", accountName)
+		merged[k] = v
 	}
 	for k, v := range customEnv {
-		merged[k] = strings.ReplaceAll(v, "{profile}", profileDir)
+		v = strings.ReplaceAll(v, "{profile}", profileDir)
+		v = strings.ReplaceAll(v, "{account}", accountName)
+		merged[k] = v
 	}
 	out := make([]string, 0, len(merged))
 	for k, v := range merged {

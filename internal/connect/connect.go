@@ -161,11 +161,22 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 	acpxBin := acpxBinaryPath()
 
 	modelIDs := make([]string, 0, len(models))
+	excludedSelf := 0
 	for _, m := range models {
+		// Loop prevention: never register a client's own backend models back into that same client
+		// (e.g. `acpx connect pi` excludes `pi` backend models so pi cannot recurse into acpx -> pi).
+		if t.ID != "t3code" && m.Backend != "" && m.Backend == t.ID {
+			excludedSelf++
+			continue
+		}
 		modelIDs = append(modelIDs, m.ID)
 	}
 	if len(modelIDs) == 0 {
 		modelIDs = []string{"default"}
+	}
+	loopNote := ""
+	if excludedSelf > 0 {
+		loopNote = fmt.Sprintf(" (loop guard: excluded %d self '%s' model(s))", excludedSelf, t.ID)
 	}
 
 	res := &Result{Target: t, Path: path}
@@ -218,6 +229,9 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			"options": map[string]any{
 				"baseURL": baseURL,
 				"apiKey":  key,
+				"headers": map[string]string{
+					"X-Acpx-Client": "opencode",
+				},
 			},
 			"models": modelMap,
 		}
@@ -241,7 +255,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s", len(modelIDs), path)
+			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", len(modelIDs), path, loopNote)
 		}
 
 	case "codex":
@@ -307,7 +321,10 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			"baseUrl": baseURL,
 			"apiKey":  key,
 			"api":     "openai-completions",
-			"models":  piModels,
+			"headers": map[string]string{
+				"X-Acpx-Client": "pi",
+			},
+			"models": piModels,
 		}
 		snipRaw, _ := json.MarshalIndent(map[string]any{"providers": map[string]any{"acpx": piProv}}, "", "  ")
 		res.Snippet = string(snipRaw)
@@ -326,7 +343,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s", len(modelIDs), path)
+			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", len(modelIDs), path, loopNote)
 		}
 
 	case "grok":

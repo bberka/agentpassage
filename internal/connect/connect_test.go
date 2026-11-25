@@ -80,14 +80,23 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		t.Fatalf("expected ANTHROPIC_BASE_URL in claude settings, got %s", clRaw)
 	}
 
-	// 5. Pi models.json merge
+	// 5. Pi models.json merge excludes self 'pi' models (loop prevention) and sets X-Acpx-Client header
+	piModels := append([]router.ModelEntry(nil), models...)
+	piModels = append(piModels, router.ModelEntry{ID: "pi/default", Backend: "pi"})
 	piPath := filepath.Join(dir, "models.json")
 	tPi, _ := FindTarget("pi")
-	if _, err := ApplyAtPath(tPi, piPath, cfg, models, true); err != nil {
+	resPi, err := ApplyAtPath(tPi, piPath, cfg, piModels, true)
+	if err != nil {
 		t.Fatal(err)
 	}
 	piRaw, _ := os.ReadFile(piPath)
 	if !strings.Contains(string(piRaw), "a-gemini-4-neon") {
 		t.Fatalf("expected prefixed model in pi models.json, got %s", piRaw)
+	}
+	if strings.Contains(string(piRaw), `"pi/default"`) {
+		t.Fatalf("loop guard failed: pi models.json must exclude self 'pi' backend models, got %s", piRaw)
+	}
+	if !strings.Contains(string(piRaw), `"X-Acpx-Client": "pi"`) || !strings.Contains(resPi.Message, "loop guard") {
+		t.Fatalf("expected X-Acpx-Client header and loop guard note, msg=%q raw=%s", resPi.Message, piRaw)
 	}
 }

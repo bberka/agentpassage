@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -373,6 +374,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusNotFound, "model_not_found", err.Error())
 		return
 	}
+	if loopErr := checkLoopGuard(r, plan); loopErr != nil {
+		s.logRequest(r, req.Model, plan.Backend, http.StatusLoopDetected, start, loopErr)
+		writeOpenAIError(w, http.StatusLoopDetected, "loop_detected", loopErr.Error())
+		return
+	}
 	chatReq.UpstreamModel = plan.UpstreamModel
 
 	if req.Stream {
@@ -704,4 +710,17 @@ func writeOpenAIError(w http.ResponseWriter, status int, errType, msg string) {
 			"type":    errType,
 		},
 	})
+}
+
+func checkLoopGuard(r *http.Request, plan *router.Plan) error {
+	if hopRaw := strings.TrimSpace(r.Header.Get("X-Acpx-Hop")); hopRaw != "" {
+		if hop, err := strconv.Atoi(hopRaw); err == nil && hop >= 2 {
+			return fmt.Errorf("recursive acpx loop detected (X-Acpx-Hop=%d)", hop)
+		}
+	}
+	client := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Acpx-Client")))
+	if client != "" && plan.Backend != "" && client == strings.ToLower(plan.Backend) {
+		return fmt.Errorf("loop prevented: client %q cannot route back into backend %q", client, plan.Backend)
+	}
+	return nil
 }

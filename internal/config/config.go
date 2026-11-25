@@ -131,6 +131,32 @@ func (a *AccountConfig) MergeDiscoveredModels(fetched []string) {
 			enabled = append(enabled, m)
 		}
 	}
+	// If real models were fetched from the provider, drop placeholder "default" unless it was returned by the provider.
+	if len(fetched) > 0 {
+		fetchedHasDefault := false
+		for _, m := range fetched {
+			if strings.TrimSpace(m) == "default" {
+				fetchedHasDefault = true
+				break
+			}
+		}
+		if !fetchedHasDefault && len(catalog) > 1 {
+			cleanCat := catalog[:0]
+			for _, m := range catalog {
+				if m != "default" {
+					cleanCat = append(cleanCat, m)
+				}
+			}
+			catalog = cleanCat
+			cleanEn := enabled[:0]
+			for _, m := range enabled {
+				if m != "default" {
+					cleanEn = append(cleanEn, m)
+				}
+			}
+			enabled = cleanEn
+		}
+	}
 	a.AvailableModels = catalog
 	a.Models = enabled
 }

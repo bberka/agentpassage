@@ -60,7 +60,7 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 2:
 			a.copyToClipboard("local API key", cfg.Server.LocalKey)
 		case 3:
-			themes := []string{"auto", "dark", "light", "ansi16"}
+			themes := []string{"auto", "dark", "light", "transparent", "ansi16"}
 			next := themes[0]
 			for i, t := range themes {
 				if t == cfg.UI.Theme {
@@ -104,7 +104,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Port", strconv.Itoa(cfg.Server.Port)},
 		{"Bind Address", cfg.Server.Bind},
 		{"Local Key", keyDisp + "   (v:reveal  c:copy  g:rotate)"},
-		{"Theme", cfg.UI.Theme + "   (enter to cycle: auto / dark / light / ansi16)"},
+		{"Theme", cfg.UI.Theme + "   (enter to cycle: auto / dark / light / transparent / ansi16)"},
 		{"ACP Tool Activity", cfg.ACP.ToolActivity + "   (enter to toggle: drop / text)"},
 		{"Data Directory", a.srv.DataDir() + "   (secrets: " + a.srv.Secrets().Backend() + ")"},
 	}

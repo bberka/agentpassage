@@ -75,6 +75,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		writeAnthropicError(w, http.StatusNotFound, "not_found_error", err.Error())
 		return
 	}
+	if loopErr := checkLoopGuard(r, plan); loopErr != nil {
+		s.logRequest(r, req.Model, plan.Backend, http.StatusLoopDetected, start, loopErr)
+		writeAnthropicError(w, http.StatusLoopDetected, "loop_detected", loopErr.Error())
+		return
+	}
 	chatReq.UpstreamModel = plan.UpstreamModel
 
 	if req.Stream {

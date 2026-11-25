@@ -287,6 +287,20 @@ func (a *App) updateAccountModelsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.enabled[id] = false
 		}
 		a.setStatus(fmt.Sprintf("Disabled %d model(s)", len(items)), false)
+	case "x", "delete":
+		// Remove selected model from this account's catalog
+		if p.cursor >= 0 && p.cursor < len(items) {
+			target := items[p.cursor]
+			delete(p.enabled, target)
+			kept := p.models[:0]
+			for _, m := range p.models {
+				if m != target {
+					kept = append(kept, m)
+				}
+			}
+			p.models = kept
+			a.setStatus("Removed model "+target, false)
+		}
 	case "f":
 		cfg := a.srv.Config()
 		if acct := cfg.FindAccount(p.accountID); acct != nil {
@@ -395,6 +409,7 @@ func (a *App) viewAccountModelsModal() string {
 		a.styles.KeyHint("f", "fetch all"),
 		a.styles.KeyHint("/", "search"),
 		a.styles.KeyHint("+", "add"),
+		a.styles.KeyHint("x", "remove"),
 		a.styles.KeyHint("enter", "save"),
 	}, "  "))
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))

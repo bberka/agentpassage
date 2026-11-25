@@ -215,4 +215,24 @@ func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {
 		t.Fatalf("expected 429 without failover, got err=%v status=%d", err, res.StatusCode)
 	}
 	res.Body.Close()
+
+	// Loop guard: X-Acpx-Client matching target backend returns 508 Loop Detected
+	req, _ = http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewBufferString(payload))
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	req.Header.Set("X-Acpx-Client", "deepseek")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != http.StatusLoopDetected {
+		t.Fatalf("expected 508 Loop Detected when X-Acpx-Client matches backend, got err=%v status=%d", err, res.StatusCode)
+	}
+	res.Body.Close()
+
+	// Loop guard: X-Acpx-Hop >= 2 returns 508 Loop Detected
+	req, _ = http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewBufferString(payload))
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	req.Header.Set("X-Acpx-Hop", "2")
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != http.StatusLoopDetected {
+		t.Fatalf("expected 508 Loop Detected on X-Acpx-Hop=2, got err=%v status=%d", err, res.StatusCode)
+	}
+	res.Body.Close()
 }

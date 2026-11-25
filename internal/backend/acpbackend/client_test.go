@@ -188,3 +188,66 @@ func TestACPStreamingSessionReuseAndPermissions(t *testing.T) {
 		t.Fatalf("expected session reuse + deny permission, got %q", resp.Content)
 	}
 }
+
+func TestGroupedConfigOptionsAndLoopEnvSanitization(t *testing.T) {
+	raw := []byte(`{
+		"sessionId": "s-grouped",
+		"configOptions": [{
+			"id": "model",
+			"category": "model",
+			"currentValue": "gemini-4-neon",
+			"options": [
+				{"group": "gemini", "name": "Gemini", "options": [
+					{"value": "gemini-4-neon", "name": "Gemini 4 Neon"},
+					{"value": "gemini-3.1-pro", "name": "Gemini 3.1 Pro"}
+				]},
+				{"value": "claude-sonnet-4", "name": "Claude Sonnet 4"}
+			]
+		}]
+	}`)
+	var res sessionNewResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	var collect func([]configOptionValue)
+	collect = func(opts []configOptionValue) {
+		for _, v := range opts {
+			if len(v.Options) > 0 {
+				collect(v.Options)
+			}
+			if v.Value != "" {
+				seen[v.Value] = true
+			}
+		}
+	}
+	collect(res.ConfigOptions[0].Options)
+	for _, want := range []string{"gemini-4-neon", "gemini-3.1-pro", "claude-sonnet-4"} {
+		if !seen[want] {
+			t.Fatalf("expected grouped model %q parsed, got %v", want, seen)
+		}
+	}
+
+	// Verify sanitizeChildEnv strips local acpx loopback URLs & keys so pi-acp/opencode cannot loop
+	env := sanitizeChildEnv(
+		[]string{
+			"PATH=/usr/bin",
+			"OPENAI_BASE_URL=http://127.0.0.1:8787/v1",
+			"OPENAI_API_KEY=acpx_local_secret",
+			"ANTHROPIC_BASE_URL=http://localhost:8787",
+			"ANTHROPIC_AUTH_TOKEN=acpx_local_secret",
+			"SAFE_VAR=keep",
+		},
+		[]string{"PI_CODING_AGENT_DIR=/tmp/profile"},
+		config.AccountConfig{ID: "pi-default", Backend: "pi"},
+	)
+	joined := strings.Join(env, "\n")
+	for _, forbidden := range []string{"127.0.0.1:8787", "localhost:8787", "acpx_local_secret"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("sanitizeChildEnv leaked loopback gateway env %q: %s", forbidden, joined)
+		}
+	}
+	if !strings.Contains(joined, "ACPX_IN_CHILD=1") || !strings.Contains(joined, "PI_CODING_AGENT_DIR=/tmp/profile") || !strings.Contains(joined, "SAFE_VAR=keep") {
+		t.Fatalf("sanitizeChildEnv missing expected entries: %s", joined)
+	}
+}

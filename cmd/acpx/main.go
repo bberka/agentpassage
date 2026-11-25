@@ -632,10 +632,14 @@ func cmdInstall(args []string) error {
 }
 
 func cmdConnect(args []string) error {
-	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
-	dryRun := fs.Bool("dry-run", false, "print config snippet without writing files")
-	if err := fs.Parse(args); err != nil {
-		return err
+	dryRun := false
+	var rest []string
+	for _, a := range args {
+		if a == "--dry-run" || a == "-dry-run" {
+			dryRun = true
+			continue
+		}
+		rest = append(rest, a)
 	}
 	_, cfg, _, _, logs, err := loadRuntime(0, "", false)
 	if err != nil {
@@ -643,7 +647,6 @@ func cmdConnect(args []string) error {
 	}
 	defer logs.Close()
 
-	rest := fs.Args()
 	if len(rest) == 0 {
 		fmt.Println("Connect coding CLIs & T3 Code to acpx:")
 		for _, t := range connect.ListTargets() {
@@ -665,7 +668,7 @@ func cmdConnect(args []string) error {
 		if !ok {
 			return fmt.Errorf("unknown client %q (run `acpx connect` to list supported clients)", id)
 		}
-		res, err := connect.Apply(id, cfg, models, t.AutoApply && !*dryRun)
+		res, err := connect.Apply(id, cfg, models, t.AutoApply && !dryRun)
 		if err != nil {
 			return err
 		}

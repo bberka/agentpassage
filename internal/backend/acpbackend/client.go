@@ -106,7 +106,7 @@ func (m *Manager) LoginCommand(acct config.AccountConfig) (*exec.Cmd, string, er
 		return nil, profileDir, fmt.Errorf("backend %q has no login command configured", acct.Backend)
 	}
 	cmd := exec.Command(loginArgs[0], loginArgs[1:]...)
-	cmd.Env = append(os.Environ(), desc.ExpandEnv(profileDir, acct.CustomEnv)...)
+	cmd.Env = sanitizeChildEnv(os.Environ(), desc.ExpandEnv(profileDir, acct.CustomEnv), acct)
 	return cmd, profileDir, nil
 }
 
@@ -321,7 +321,7 @@ type worker struct {
 
 func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, extraEnv []string, mgr *Manager) (*worker, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = append(os.Environ(), extraEnv...)
+	cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -688,24 +688,48 @@ func (w *worker) newSession(ctx context.Context, cwd string) (*acpSession, error
 		id:  res.SessionID,
 		cwd: cwd,
 	}
+	seenModels := make(map[string]bool)
+	addModel := func(id string) {
+		id = strings.TrimSpace(id)
+		if id != "" && !seenModels[id] {
+			seenModels[id] = true
+			s.availableModels = append(s.availableModels, id)
+		}
+	}
+	var collectOptionValues func(opts []configOptionValue)
+	collectOptionValues = func(opts []configOptionValue) {
+		for _, v := range opts {
+			if len(v.Options) > 0 {
+				collectOptionValues(v.Options)
+			}
+			if v.Value != "" {
+				addModel(v.Value)
+			} else if v.ID != "" {
+				addModel(v.ID)
+			}
+		}
+	}
+
 	for _, opt := range res.ConfigOptions {
 		if opt.Category == "model" || opt.ID == "model" {
 			s.modelConfigID = opt.ID
 			s.currentModel = opt.CurrentValue
-			for _, v := range opt.Options {
-				if v.Value != "" {
-					s.availableModels = append(s.availableModels, v.Value)
-				}
-			}
+			collectOptionValues(opt.Options)
 			break
 		}
 	}
-	if len(s.availableModels) == 0 && res.Models != nil {
-		s.useSetModel = true
-		s.currentModel = res.Models.CurrentModelID
+	if res.Models != nil {
+		if s.modelConfigID == "" {
+			s.useSetModel = true
+		}
+		if s.currentModel == "" {
+			s.currentModel = res.Models.CurrentModelID
+		}
 		for _, m := range res.Models.AvailableModels {
 			if m.ModelID != "" {
-				s.availableModels = append(s.availableModels, m.ModelID)
+				addModel(m.ModelID)
+			} else if m.ID != "" {
+				addModel(m.ID)
 			}
 		}
 	}
@@ -893,4 +917,48 @@ func classifyACPError(err error) error {
 	default:
 		return &backend.BackendError{Kind: backend.ErrKindTransient, StatusCode: 502, Message: msg, Cause: err}
 	}
+}
+
+// sanitizeChildEnv strips acpx gateway loopback URLs/keys from inherited environment variables
+// (preventing recursive loops when a CLI like pi, opencode, codex, or claude is both connected
+// to acpx and launched by acpx as an upstream ACP backend), deduplicates overridden keys,
+// and tags the subprocess with ACPX_IN_CHILD metadata.
+func sanitizeChildEnv(baseEnv, extraEnv []string, acct config.AccountConfig) []string {
+	overrides := make(map[string]string, len(extraEnv)+3)
+	for _, kv := range extraEnv {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			overrides[k] = v
+		}
+	}
+	overrides["ACPX_IN_CHILD"] = "1"
+	overrides["ACPX_CHILD_BACKEND"] = acct.Backend
+	overrides["ACPX_CHILD_ACCOUNT"] = acct.ID
+
+	out := make([]string, 0, len(baseEnv)+len(overrides))
+	for _, kv := range baseEnv {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if _, replaced := overrides[k]; replaced {
+			continue
+		}
+		// Strip inherited acpx gateway env vars so child ACP agents never call back into acpx.
+		switch k {
+		case "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL":
+			lower := strings.ToLower(v)
+			if strings.Contains(lower, "127.0.0.1") || strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]") {
+				continue
+			}
+		case "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ACPX_API_KEY":
+			if strings.HasPrefix(strings.TrimSpace(v), "acpx_") {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	for k, v := range overrides {
+		out = append(out, k+"="+v)
+	}
+	return out
 }
