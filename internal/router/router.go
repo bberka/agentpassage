@@ -124,18 +124,20 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 					}
 				}
 
-				manualID := acct.Backend + "/" + acct.Name + "/" + m
-				if !seenDirect[manualID] {
-					seenDirect[manualID] = true
-					direct = append(direct, ModelEntry{
-						ID:          manualID,
-						Backend:     acct.Backend,
-						AccountID:   acct.ID,
-						AccountName: acct.Name,
-						Upstream:    m,
-						Kind:        acct.Kind,
-						AccountIDs:  []string{acct.ID},
-					})
+				if r.cfg.Catalog.ExposeDirectModels {
+					manualID := acct.Backend + "/" + acct.Name + "/" + m
+					if !seenDirect[manualID] {
+						seenDirect[manualID] = true
+						direct = append(direct, ModelEntry{
+							ID:          manualID,
+							Backend:     acct.Backend,
+							AccountID:   acct.ID,
+							AccountName: acct.Name,
+							Upstream:    m,
+							Kind:        acct.Kind,
+							AccountIDs:  []string{acct.ID},
+						})
+					}
 				}
 			}
 
@@ -159,13 +161,18 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 	}
 
 	var all []ModelEntry
-	for _, e := range pooled {
-		all = append(all, *e)
-	}
+	bareExposed := make(map[string]bool)
 	for m, e := range bare {
 		if len(bareBackends[m]) == 1 && !seenDirect[m] {
+			bareExposed[m] = true
 			all = append(all, *e)
 		}
+	}
+	for _, e := range pooled {
+		if r.cfg.Catalog.HideBackendQualified && bareExposed[e.Upstream] {
+			continue
+		}
+		all = append(all, *e)
 	}
 	all = append(all, direct...)
 

@@ -28,6 +28,7 @@ const (
 	ScreenModels
 	ScreenRouting
 	ScreenLogs
+	ScreenUsage
 	ScreenSettings
 )
 
@@ -37,7 +38,8 @@ var screenNames = []string{
 	"3 Models",
 	"4 Routing",
 	"5 Logs",
-	"6 Settings",
+	"6 Usage",
+	"7 Settings",
 }
 
 type modalKind int
@@ -104,6 +106,7 @@ type App struct {
 	routingCursor int
 	logCursor     int
 	logLevel      string
+	usageShow14d  bool
 	settingCursor int
 
 	// Welcome / ACP Registry Detect & Install modal
@@ -437,6 +440,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.switchScreen(ScreenLogs)
 			return a, nil
 		case "6":
+			a.switchScreen(ScreenUsage)
+			return a, nil
+		case "7":
 			a.switchScreen(ScreenSettings)
 			return a, nil
 		case "tab":
@@ -458,6 +464,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a.updateRouting(msg)
 		case ScreenLogs:
 			return a.updateLogs(msg)
+		case ScreenUsage:
+			return a.updateUsage(msg)
 		case ScreenSettings:
 			return a.updateSettings(msg)
 		}
@@ -675,12 +683,13 @@ func (a *App) renderFooter() string {
 			}
 		case ScreenModels:
 			hints = []string{
-				a.styles.KeyHint("space", "enable/disable"),
-				a.styles.KeyHint("f", "fetch all"),
-				a.styles.KeyHint("a", "alias"),
-				a.styles.KeyHint("r", "rename"),
-				a.styles.KeyHint("H", "show disabled"),
+				a.styles.KeyHint("space", "toggle"),
+				a.styles.KeyHint("D", "direct on/off"),
+				a.styles.KeyHint("Q", "bare-only"),
 				a.styles.KeyHint("/", "filter"),
+				a.styles.KeyHint("X", "disable filtered"),
+				a.styles.KeyHint("f", "fetch"),
+				a.styles.KeyHint("H", "show hidden"),
 			}
 		case ScreenRouting:
 			hints = []string{
@@ -695,6 +704,13 @@ func (a *App) renderFooter() string {
 				a.styles.KeyHint("j/k", "scroll"),
 				a.styles.KeyHint("l", "level"),
 				a.styles.KeyHint("/", "filter"),
+				a.styles.KeyHint("q", "back"),
+			}
+		case ScreenUsage:
+			hints = []string{
+				a.styles.KeyHint("o", "open web hub"),
+				a.styles.KeyHint("u", "copy hub URL"),
+				a.styles.KeyHint("t", "24h / 14d"),
 				a.styles.KeyHint("q", "back"),
 			}
 		case ScreenSettings:
@@ -745,6 +761,8 @@ func (a *App) View() string {
 			body = a.viewRouting(bodyHeight)
 		case ScreenLogs:
 			body = a.viewLogs(bodyHeight)
+		case ScreenUsage:
+			body = a.viewUsage(bodyHeight)
 		case ScreenSettings:
 			body = a.viewSettings(bodyHeight)
 		}

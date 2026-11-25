@@ -26,6 +26,7 @@ import (
 	"github.com/bberka/acpx/internal/secrets"
 	"github.com/bberka/acpx/internal/service"
 	"github.com/bberka/acpx/internal/tui"
+	"github.com/bberka/acpx/internal/usage"
 )
 
 func main() {
@@ -50,6 +51,8 @@ func run(args []string) error {
 			return cmdList(args[1:])
 		case "models":
 			return cmdModels(args[1:])
+		case "usage":
+			return cmdUsage(args[1:])
 		case "doctor":
 			return cmdDoctor(args[1:])
 		case "install":
@@ -104,6 +107,7 @@ Usage:
   acpx add [flags]             Add an ACP or API-key account
   acpx list [--json]           List configured accounts and models
   acpx models [list|fetch|enable|disable]  Load, list, enable, or disable models per account
+  acpx usage [--json]          Print usage report & local Usage Hub web URL
   acpx doctor                  Check CLIs, profiles, storage, and config
   acpx install <tool|all>      Install any ACP tool from the 45+ agent registry
   acpx connect [client]        Register acpx into T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline
@@ -703,6 +707,50 @@ func cmdModels(args []string) error {
 	default:
 		return fmt.Errorf("usage: acpx models [list | fetch [account] | enable <account> <model|all> | disable <account> <model|all>]")
 	}
+}
+
+func cmdUsage(args []string) error {
+	fs := flag.NewFlagSet("usage", flag.ContinueOnError)
+	asJSON := fs.Bool("json", false, "output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	dataDir, cfg, _, _, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	trk := usage.New(dataDir)
+	defer trk.Close()
+	sum := trk.Summary()
+
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(sum)
+	}
+
+	hubURL := strings.TrimSuffix(cfg.BaseURL(), "/v1") + "/usage"
+	fmt.Printf("acpx Usage Report Hub — %s\n", hubURL)
+	fmt.Printf("Requests: %d total (24h: %d, 7d: %d) | Success: %.1f%% (%d errors)\n",
+		sum.TotalRequests, sum.Requests24h, sum.Requests7d, sum.SuccessRate, sum.ErrorRequests)
+	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Avg latency: %dms\n\n",
+		sum.TotalTokens, sum.PromptTokens, sum.CompletionTokens, sum.Tokens24h, sum.AvgLatencyMs)
+
+	fmt.Println("By Account:")
+	if len(sum.ByAccount) == 0 {
+		fmt.Println("  (no traffic recorded yet)")
+	}
+	for _, a := range sum.ByAccount {
+		fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d avg=%dms\n", a.Account, a.Requests, a.Errors, a.TotalTokens, a.AvgLatencyMs)
+	}
+	fmt.Println("\nBy Model:")
+	if len(sum.ByModel) == 0 {
+		fmt.Println("  (no traffic recorded yet)")
+	}
+	for _, m := range sum.ByModel {
+		fmt.Printf("  %-28s req=%-5d err=%-4d tokens=%-8d avg=%dms\n", m.Model, m.Requests, m.Errors, m.TotalTokens, m.AvgLatencyMs)
+	}
+	return nil
 }
 
 func cmdDoctor(_ []string) error {

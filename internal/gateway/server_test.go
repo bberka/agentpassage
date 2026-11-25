@@ -157,6 +157,29 @@ func TestGatewayOpenAIAndAnthropicEndpoints(t *testing.T) {
 	if !strings.Contains(string(body), "event: content_block_delta") || !strings.Contains(string(body), "event: message_stop") {
 		t.Fatalf("unexpected /v1/messages SSE body: %s", body)
 	}
+
+	// 7. Usage Report Hub HTML (/usage) and JSON (/admin/usage)
+	res, err = http.Get(ts.URL + "/usage")
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("GET /usage failed: %v %d", err, res.StatusCode)
+	}
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(body), "Usage Report Hub") {
+		t.Fatalf("expected Usage Report Hub HTML")
+	}
+
+	req, _ = http.NewRequest("GET", ts.URL+"/admin/usage", nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("GET /admin/usage failed: %v %d", err, res.StatusCode)
+	}
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(body), `"total_requests":4`) {
+		t.Fatalf("expected 4 recorded requests in /admin/usage, got %s", body)
+	}
 }
 
 func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {

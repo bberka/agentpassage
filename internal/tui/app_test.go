@@ -37,7 +37,7 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	// Test both compact 80x24 and wide 120x36 full-screen layouts
 	for _, sz := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 120, Height: 36}} {
 		app.Update(sz)
-		for idx, key := range []string{"1", "2", "3", "4", "5", "6"} {
+		for idx, key := range []string{"1", "2", "3", "4", "5", "6", "7"} {
 			app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
 			out := app.View()
 			if len(strings.TrimSpace(out)) == 0 {

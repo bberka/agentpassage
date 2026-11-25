@@ -50,9 +50,15 @@ type Config struct {
 	Server   ServerConfig    `toml:"server"`
 	UI       UIConfig        `toml:"ui"`
 	ACP      ACPConfig       `toml:"acp"`
+	Catalog  CatalogConfig   `toml:"catalog"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Models   []ModelOverride `toml:"models"`
 	Routing  []RoutingRule   `toml:"routing"`
+}
+
+type CatalogConfig struct {
+	ExposeDirectModels     bool `toml:"expose_direct_models"`     // show <backend>/<account>/<model> in /v1/models (default false)
+	HideBackendQualified   bool `toml:"hide_backend_qualified"`   // hide <backend>/<model> when bare <model> exists (default false)
 }
 
 type ServerConfig struct {

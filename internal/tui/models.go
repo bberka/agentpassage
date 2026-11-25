@@ -61,6 +61,64 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "H":
 		a.showHidden = !a.showHidden
 		return a, nil
+	case "D": // toggle account-specific <backend>/<account>/<model> entries
+		cfg := a.srv.Config()
+		cfg.Catalog.ExposeDirectModels = !cfg.Catalog.ExposeDirectModels
+		_ = a.srv.ReloadConfig(cfg)
+		if cfg.Catalog.ExposeDirectModels {
+			a.setStatus("Showing account-specific direct models (<backend>/<account>/<model>)", false)
+		} else {
+			a.setStatus("Hid account-specific direct models — keeping clean router models", false)
+		}
+		return a, nil
+	case "Q": // toggle backend-qualified <backend>/<model> entries when bare model exists
+		cfg := a.srv.Config()
+		cfg.Catalog.HideBackendQualified = !cfg.Catalog.HideBackendQualified
+		_ = a.srv.ReloadConfig(cfg)
+		if cfg.Catalog.HideBackendQualified {
+			a.setStatus("Showing bare router models only (hid <backend>/<model> duplicates)", false)
+		} else {
+			a.setStatus("Showing both bare and <backend>/<model> entries", false)
+		}
+		return a, nil
+	case "X": // bulk disable all currently visible/filtered models (great with / filter e.g. /low, /3.1, /legacy)
+		if len(models) > 0 {
+			cfg := a.srv.Config()
+			ovMap := make(map[string]int, len(cfg.Models))
+			for i, ov := range cfg.Models {
+				ovMap[ov.ID] = i
+			}
+			count := 0
+			for _, m := range models {
+				if m.Hidden {
+					continue
+				}
+				if idx, ok := ovMap[m.ID]; ok {
+					cfg.Models[idx].Hidden = true
+				} else {
+					cfg.Models = append(cfg.Models, config.ModelOverride{ID: m.ID, Hidden: true})
+					ovMap[m.ID] = len(cfg.Models) - 1
+				}
+				count++
+			}
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus(fmt.Sprintf("Disabled %d matching model(s)", count), false)
+		}
+		return a, nil
+	case "E": // bulk enable all currently visible/filtered models
+		if len(models) > 0 {
+			cfg := a.srv.Config()
+			for _, m := range models {
+				for i := range cfg.Models {
+					if cfg.Models[i].ID == m.ID {
+						cfg.Models[i].Hidden = false
+					}
+				}
+			}
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus(fmt.Sprintf("Enabled %d matching model(s)", len(models)), false)
+		}
+		return a, nil
 	case "f":
 		a.setStatus("Fetching all models across enabled accounts...", false)
 		return a, a.fetchAllAccountsModelsCmd()
@@ -108,9 +166,20 @@ func (a *App) viewModels(bodyHeight int) string {
 	fullW := max(a.width-2, 40)
 	innerW := fullW - 4
 
+	cfg := a.srv.Config()
+	directBadge := "direct:off"
+	if cfg.Catalog.ExposeDirectModels {
+		directBadge = "direct:on"
+	}
+	qualBadge := "bare+ns"
+	if cfg.Catalog.HideBackendQualified {
+		qualBadge = "bare-only"
+	}
+
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Models (%d)", len(models)))+"   "+
-		a.styles.Muted.Render("space:enable/disable  f:fetch all  r:rename  a:alias  H:show-disabled  /:filter"))
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Models (%d)", len(models)))+"  "+
+		a.styles.Highlight.Render("["+directBadge+" · "+qualBadge+"]")+"  "+
+		a.styles.Muted.Render("space:toggle  D:direct  Q:bare-only  /:filter  X:disable-shown  E:enable-shown  f:fetch"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(models) == 0 {

@@ -9,6 +9,7 @@ import (
 
 func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
 	cfg := config.Default()
+	cfg.Catalog.ExposeDirectModels = true
 	cfg.Accounts = []config.AccountConfig{
 		{ID: "agy-work", Name: "work", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"gemini-3.1-pro"}},
 		{ID: "agy-personal", Name: "personal", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"gemini-3.1-pro"}},
@@ -63,6 +64,28 @@ func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
 	}
 	if len(poolPlan.CandidateIDs) != 2 {
 		t.Fatalf("expected 2 candidates for pooled agy/gemini-3.1-pro, got %v", poolPlan.CandidateIDs)
+	}
+
+	// Default catalog (ExposeDirectModels=false) hides <backend>/<account>/<model> from ListModels,
+	// while still allowing manual resolution if requested explicitly.
+	cfgClean := config.Default()
+	cfgClean.Accounts = cfg.Accounts
+	rClean := New(cfgClean)
+	for _, m := range rClean.ListModels(false) {
+		if m.ID == "agy/work/gemini-3.1-pro" || m.ID == "agy/personal/gemini-3.1-pro" {
+			t.Fatalf("expected account-specific direct model hidden by default, got %s", m.ID)
+		}
+	}
+	if _, err := rClean.Resolve("agy/work/gemini-3.1-pro"); err != nil {
+		t.Fatalf("explicit manual Resolve should still work when direct models are hidden: %v", err)
+	}
+
+	// HideBackendQualified keeps only bare router models (e.g. "gemini-3.1-pro")
+	cfgClean.Catalog.HideBackendQualified = true
+	for _, m := range rClean.ListModels(false) {
+		if m.ID == "agy/gemini-3.1-pro" {
+			t.Fatalf("expected backend-qualified duplicate hidden when HideBackendQualified=true")
+		}
 	}
 }
 

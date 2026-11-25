@@ -76,7 +76,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 			a.styles.Subtitle.Render("Gateway Endpoint") + "   " + status + "   " + a.styles.Muted.Render(fmt.Sprintf("%d models", len(models))),
 			fmt.Sprintf("URL     %s   %s", a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-18, 20))), a.styles.Muted.Render("c:copy")),
 			fmt.Sprintf("Key     %s   %s", truncate(keyDisp, max(inner-24, 16)), a.styles.Muted.Render("k:copy v:show")),
-			fmt.Sprintf("Service %s   %s", a.renderServiceSummaryInline(), a.styles.Muted.Render("S:manage")),
+			fmt.Sprintf("Service %s   %s   %s", a.renderServiceSummaryInline(), a.styles.Muted.Render("S:manage"), a.styles.Muted.Render("6:usage hub")),
 		}
 		return a.styles.Card.Width(w).Render(strings.Join(lines, "\n"))
 	}

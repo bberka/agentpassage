@@ -24,6 +24,7 @@ import (
 	"github.com/bberka/acpx/internal/pool"
 	"github.com/bberka/acpx/internal/router"
 	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/acpx/internal/usage"
 )
 
 const Version = "0.1.0"
@@ -41,6 +42,7 @@ type Server struct {
 	acpBE    *acpbackend.Manager
 	cliBE    *clibackend.Manager
 	logs     *logbuf.Buffer
+	usage    *usage.Tracker
 
 	srv          *http.Server
 	listener     net.Listener
@@ -50,6 +52,7 @@ type Server struct {
 	remoteSnaps  []pool.AccountSnapshot
 	remoteBans   []pool.HealthBanner
 	remoteLogs   []logbuf.Entry
+	remoteUsage  *usage.Summary
 }
 
 func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptors.Registry, logs *logbuf.Buffer) *Server {
@@ -57,6 +60,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 	pm := pool.NewManager(cfg.Accounts)
 	acpMgr := acpbackend.NewManager(dataDir, reg, logs, cfg.ACP.ToolActivity)
 	cliMgr := clibackend.NewManager(dataDir, reg, logs)
+	usageTrk := usage.New(dataDir)
 	s := &Server{
 		dataDir:  dataDir,
 		cfg:      cfg,
@@ -68,6 +72,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		acpBE:    acpMgr,
 		cliBE:    cliMgr,
 		logs:     logs,
+		usage:    usageTrk,
 	}
 	if logs != nil {
 		logs.RegisterSecret(cfg.Server.LocalKey)
@@ -104,6 +109,7 @@ func (s *Server) ACP() *acpbackend.Manager    { return s.acpBE }
 func (s *Server) CLI() *clibackend.Manager    { return s.cliBE }
 func (s *Server) HTTPBackend() *httpbackend.Client { return s.httpBE }
 func (s *Server) Logs() *logbuf.Buffer        { return s.logs }
+func (s *Server) Usage() *usage.Tracker       { return s.usage }
 func (s *Server) DataDir() string             { return s.dataDir }
 
 func (s *Server) ReloadConfig(cfg *config.Config) error {
@@ -285,6 +291,49 @@ func (s *Server) SyncFromDaemon() {
 			_ = resp.Body.Close()
 		}
 	}
+
+	// Fetch /admin/usage
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/usage", nil); err == nil {
+		req.Header.Set("Authorization", "Bearer "+key)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				var sum usage.Summary
+				if err := json.NewDecoder(resp.Body).Decode(&sum); err == nil {
+					s.mu.Lock()
+					s.remoteUsage = &sum
+					s.mu.Unlock()
+				}
+			}
+			_ = resp.Body.Close()
+		}
+	}
+}
+
+// LiveUsage returns usage summary from the background daemon when attached, or local tracker.
+func (s *Server) LiveUsage() usage.Summary {
+	s.mu.RLock()
+	attached := s.attached
+	ru := s.remoteUsage
+	s.mu.RUnlock()
+	if attached && ru != nil {
+		return *ru
+	}
+	if s.usage == nil {
+		return usage.Summary{}
+	}
+	return s.usage.Summary()
+}
+
+// UsageHubURL returns the localhost URL for the web Usage Report Hub.
+func (s *Server) UsageHubURL(withKey bool) string {
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+	base := strings.TrimSuffix(cfg.BaseURL(), "/v1") + "/usage"
+	if withKey && cfg.Server.LocalKey != "" {
+		return base + "?key=" + cfg.Server.LocalKey
+	}
+	return base
 }
 
 // LiveSnapshots returns live account snapshots (from the remote daemon when attached, or local pool).
@@ -344,8 +393,10 @@ func (s *Server) Running() bool {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	mux.HandleFunc("GET /usage", s.handleUsageHub)
 	mux.HandleFunc("GET /admin/state", s.withAuth(s.handleAdminState))
 	mux.HandleFunc("GET /admin/logs", s.withAuth(s.handleAdminLogs))
+	mux.HandleFunc("GET /admin/usage", s.withAuth(s.handleAdminUsage))
 	mux.HandleFunc("POST /admin/reload", s.withAuth(s.handleAdminReload))
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleListModels))
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChatCompletions))
@@ -405,6 +456,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.running = false
 	s.mu.Unlock()
 	s.acpBE.Close()
+	if s.usage != nil {
+		_ = s.usage.Close()
+	}
 	if srv != nil {
 		return srv.Shutdown(ctx)
 	}
@@ -652,10 +706,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	resp, acct, status, execErr := s.executeNonStream(r.Context(), plan, chatReq)
 	if execErr != nil {
 		acctName := ""
+		backendID := plan.Backend
 		if acct != nil {
 			acctName = acct.Backend + "/" + acct.Name
+			backendID = acct.Backend
 		}
 		s.logRequest(r, req.Model, acctName, status, start, execErr)
+		s.recordUsage(r.URL.Path, req.Model, acctName, backendID, status, start, backend.Usage{}, false)
 		writeOpenAIError(w, status, "backend_error", execErr.Error())
 		return
 	}
@@ -668,6 +725,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if resp.SessionID != "" {
 		w.Header().Set("X-Acpx-Session-Id", resp.SessionID)
 	}
+
+	u := resp.Usage
+	est := false
+	if u.TotalTokens == 0 {
+		u.PromptTokens = estimateMessagesTokens(chatReq.Messages)
+		u.CompletionTokens = usage.EstimateTokens(resp.Content)
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+		est = true
+	}
+	s.recordUsage(r.URL.Path, req.Model, acctName, acct.Backend, http.StatusOK, start, u, est)
 
 	id := resp.ID
 	if id == "" {
@@ -820,11 +887,14 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 		}
 
 		var finishedSent bool
+		var streamUsage backend.Usage
+		var outTextLen int
 		cb := func(ch backend.StreamChunk) error {
 			sendHeaders(ch.ToolsIgnored, ch.SessionID)
 			delta := map[string]any{}
 			if ch.Delta != "" {
 				delta["content"] = ch.Delta
+				outTextLen += len(ch.Delta)
 			}
 			if ch.Reasoning != "" {
 				delta["reasoning_content"] = ch.Reasoning
@@ -845,6 +915,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 			}
 			if ch.Usage != nil {
 				payload["usage"] = ch.Usage
+				streamUsage = *ch.Usage
 			}
 			writeSSE(w, payload)
 			flusher.Flush()
@@ -881,6 +952,14 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 			}
 			_, _ = io.WriteString(w, "data: [DONE]\n\n")
 			flusher.Flush()
+			est := false
+			if streamUsage.TotalTokens == 0 {
+				streamUsage.PromptTokens = estimateMessagesTokens(req.Messages)
+				streamUsage.CompletionTokens = (outTextLen + 3) / 4
+				streamUsage.TotalTokens = streamUsage.PromptTokens + streamUsage.CompletionTokens
+				est = true
+			}
+			s.recordUsage(r.URL.Path, req.Model, acctName, acct.Backend, http.StatusOK, start, streamUsage, est)
 			s.logRequest(r, req.Model, acctName, http.StatusOK, start, nil)
 			return
 		}
@@ -906,6 +985,33 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 	}
 	s.logRequest(r, req.Model, lastAcct, httpStatusFromError(lastErr), start, lastErr)
 	writeOpenAIError(w, httpStatusFromError(lastErr), "backend_error", lastErr.Error())
+}
+
+func (s *Server) recordUsage(endpoint, model, acct, backendID string, status int, start time.Time, u backend.Usage, estimated bool) {
+	if s.usage == nil {
+		return
+	}
+	s.usage.Record(usage.Record{
+		Time:             time.Now(),
+		Account:          acct,
+		Backend:          backendID,
+		Model:            model,
+		Endpoint:         endpoint,
+		Status:           status,
+		DurationMs:       time.Since(start).Milliseconds(),
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		Estimated:        estimated,
+	})
+}
+
+func estimateMessagesTokens(msgs []backend.Message) int {
+	total := 0
+	for _, m := range msgs {
+		total += usage.EstimateTokens(m.Content)
+	}
+	return total
 }
 
 func (s *Server) logRequest(r *http.Request, model, acct string, status int, start time.Time, err error) {
