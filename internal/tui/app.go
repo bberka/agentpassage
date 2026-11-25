@@ -17,6 +17,7 @@ import (
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/gateway"
 	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/hostauth"
 	"github.com/bberka/agentpassage/internal/logbuf"
 	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/service"
@@ -50,6 +51,7 @@ const (
 	modalNone modalKind = iota
 	modalHelp
 	modalWelcome
+	modalHostAuth
 	modalAddAccount
 	modalEditAccount
 	modalAccountModels
@@ -128,11 +130,18 @@ type App struct {
 	settingCursor    int
 
 	// Welcome / ACP Registry Detect & Install modal
-	detected       []descriptors.DetectedCLI
-	detectCursor   int
-	detectSelected map[string]bool
-	detectSearch   textinput.Model
+	detected        []descriptors.DetectedCLI
+	detectCursor    int
+	detectSelected  map[string]bool
+	detectSearch    textinput.Model
 	detectSearching bool
+
+	// Detected Host Logins (copy/reuse/re-authenticate confirmation modal)
+	hostAuthItems    []hostauth.DetectedLogin
+	hostAuthSelected map[string]bool
+	hostAuthCursor   int
+	hostAuthFromInit bool
+	hostAuthTargets  map[string]string // optional backend -> existing account ID created in Setup
 
 	// Connect CLI / T3 Code modal
 	connectTargets       []connect.Target
@@ -256,6 +265,8 @@ func New(srv *gateway.Server) *App {
 
 	if !cfg.UI.OnboardingComplete && len(cfg.Accounts) == 0 {
 		a.openWelcome()
+	} else if !cfg.UI.HostAuthPromptDismissed {
+		a.openStartupHostAuthIfNeeded("")
 	}
 
 	return a
@@ -594,6 +605,9 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case modalWelcome:
 		return a.updateWelcomeModal(msg)
+
+	case modalHostAuth:
+		return a.updateHostAuthModal(msg)
 
 	case modalInstalling:
 		return a.updateInstallModal(msg)
@@ -950,6 +964,9 @@ func (a *App) viewModal() string {
 
 	case modalWelcome:
 		return a.viewWelcomeModal()
+
+	case modalHostAuth:
+		return a.viewHostAuthModal()
 
 	case modalInstalling:
 		return a.viewInstallModal()

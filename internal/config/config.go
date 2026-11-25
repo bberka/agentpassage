@@ -164,8 +164,9 @@ type ServerConfig struct {
 }
 
 type UIConfig struct {
-	Theme              string `toml:"theme"`
-	OnboardingComplete bool   `toml:"onboarding_complete"`
+	Theme                   string `toml:"theme"`
+	OnboardingComplete      bool   `toml:"onboarding_complete"`
+	HostAuthPromptDismissed bool   `toml:"host_auth_prompt_dismissed,omitempty"`
 }
 
 type ACPConfig struct {

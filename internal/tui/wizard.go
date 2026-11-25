@@ -9,6 +9,7 @@ import (
 
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/hostauth"
 )
 
 func (a *App) openWelcome() {
@@ -23,7 +24,294 @@ func (a *App) openWelcome() {
 			a.detectSelected[d.Descriptor.ID] = true
 		}
 	}
+	a.hostAuthItems = hostauth.DetectAll("")
 	a.modal = modalWelcome
+}
+
+// openStartupHostAuthIfNeeded checks for existing host CLI logins on launch that either
+// aren't added to apx yet or have an isolated account without local credentials yet.
+func (a *App) openStartupHostAuthIfNeeded(homeDir string) bool {
+	found := hostauth.DetectAll(homeDir)
+	if len(found) == 0 {
+		return false
+	}
+	cfg := a.srv.Config()
+	var actionable []hostauth.DetectedLogin
+	targets := make(map[string]string)
+	for _, d := range found {
+		var acctMatch *config.AccountConfig
+		hasAuthedAccount := false
+		for i := range cfg.Accounts {
+			ac := &cfg.Accounts[i]
+			if ac.Backend != d.Backend || (ac.Kind != config.KindACP && ac.Kind != config.KindCLI) {
+				continue
+			}
+			if ac.UseHostProfile {
+				hasAuthedAccount = true
+				break
+			}
+			if pdir, err := config.ProfileDir(a.srv.DataDir(), ac.Backend, ac.Name); err == nil && hostauth.ProfileHasAuth(ac.Backend, pdir) {
+				hasAuthedAccount = true
+				break
+			}
+			if acctMatch == nil {
+				acctMatch = ac
+			}
+		}
+		if hasAuthedAccount {
+			continue
+		}
+		actionable = append(actionable, d)
+		if acctMatch != nil {
+			targets[d.Backend] = acctMatch.ID
+		}
+	}
+	if len(actionable) == 0 {
+		return false
+	}
+	a.openHostAuthModal(actionable, targets, true)
+	return true
+}
+
+func (a *App) openHostAuthModal(items []hostauth.DetectedLogin, targets map[string]string, fromInit bool) {
+	a.hostAuthItems = items
+	a.hostAuthSelected = make(map[string]bool, len(items))
+	for _, d := range items {
+		a.hostAuthSelected[d.Backend] = true
+	}
+	a.hostAuthCursor = 0
+	a.hostAuthTargets = targets
+	a.hostAuthFromInit = fromInit
+	a.modal = modalHostAuth
+}
+
+func (a *App) updateHostAuthModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	items := a.hostAuthItems
+	if len(items) == 0 {
+		a.modal = modalNone
+		return a, nil
+	}
+	if a.hostAuthCursor >= len(items) {
+		a.hostAuthCursor = len(items) - 1
+	}
+
+	dismiss := func() {
+		cfg := a.srv.Config()
+		cfg.UI.HostAuthPromptDismissed = true
+		cfg.UI.OnboardingComplete = true
+		_ = a.srv.ReloadConfig(cfg)
+		a.modal = modalNone
+	}
+
+	ensureAccountFor := func(cfg *config.Config, d hostauth.DetectedLogin) (*config.AccountConfig, bool) {
+		if id := a.hostAuthTargets[d.Backend]; id != "" {
+			if existing := cfg.FindAccount(id); existing != nil {
+				return existing, false
+			}
+		}
+		for i := range cfg.Accounts {
+			if cfg.Accounts[i].Backend == d.Backend && (cfg.Accounts[i].Kind == config.KindACP || cfg.Accounts[i].Kind == config.KindCLI) {
+				return &cfg.Accounts[i], false
+			}
+		}
+		id := config.SanitizeSlug(d.Backend + "-default")
+		if existing := cfg.FindAccount(id); existing != nil {
+			return existing, false
+		}
+		models := []string{"default"}
+		if desc, ok := a.srv.Registry().GetACP(d.Backend); ok && len(desc.DefaultModels) > 0 {
+			models = append([]string(nil), desc.DefaultModels...)
+		}
+		_, _ = config.EnsureProfileDir(a.srv.DataDir(), d.Backend, "default")
+		cfg.Accounts = append(cfg.Accounts, config.AccountConfig{
+			ID:             id,
+			Name:           "default",
+			Kind:           config.KindACP,
+			Backend:        d.Backend,
+			Enabled:        true,
+			PermissionMode: config.PermDeny,
+			ExposeMode:     config.ExposePool,
+			Models:         models,
+			MaxConcurrency: 1,
+		})
+		return &cfg.Accounts[len(cfg.Accounts)-1], true
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if a.hostAuthCursor > 0 {
+			a.hostAuthCursor--
+		}
+	case "down", "j":
+		if a.hostAuthCursor < len(items)-1 {
+			a.hostAuthCursor++
+		}
+	case " ":
+		b := items[a.hostAuthCursor].Backend
+		a.hostAuthSelected[b] = !a.hostAuthSelected[b]
+	case "c", "enter": // Copy host auth into isolated apx profiles (or link keyring-only host logins)
+		cfg := a.srv.Config()
+		copied := 0
+		linked := 0
+		var testCmds []tea.Cmd
+		var errs []string
+		for _, d := range items {
+			if !a.hostAuthSelected[d.Backend] {
+				continue
+			}
+			acct, _ := ensureAccountFor(cfg, d)
+			if d.CanCopyFiles {
+				pdir, err := config.EnsureProfileDir(a.srv.DataDir(), acct.Backend, acct.Name)
+				if err != nil {
+					errs = append(errs, d.Label+": "+err.Error())
+					continue
+				}
+				if _, err := hostauth.CopyToProfile(d, pdir); err != nil {
+					errs = append(errs, d.Label+": "+err.Error())
+					continue
+				}
+				acct.UseHostProfile = false
+				a.srv.ACP().StopAccount(acct.ID)
+				a.srv.Pool().ClearHealth(acct.ID)
+				copied++
+				testCmds = append(testCmds, a.testAccountCmd(*acct))
+			} else if d.KeyringOnly {
+				acct.UseHostProfile = true
+				a.srv.ACP().StopAccount(acct.ID)
+				a.srv.Pool().ClearHealth(acct.ID)
+				linked++
+				testCmds = append(testCmds, a.testAccountCmd(*acct))
+			}
+		}
+		cfg.UI.HostAuthPromptDismissed = true
+		cfg.UI.OnboardingComplete = true
+		_ = a.srv.ReloadConfig(cfg)
+		a.modal = modalNone
+		a.screen = ScreenAccounts
+		if len(errs) > 0 && copied == 0 && linked == 0 {
+			a.setStatus("Auth copy failed: "+strings.Join(errs, "; "), true)
+		} else {
+			var parts []string
+			if copied > 0 {
+				parts = append(parts, fmt.Sprintf("copied %d isolated profile(s)", copied))
+			}
+			if linked > 0 {
+				parts = append(parts, fmt.Sprintf("linked %d keyring host login(s)", linked))
+			}
+			if len(parts) == 0 {
+				a.setStatus("No accounts selected.", false)
+			} else {
+				a.setStatus("Imported host logins ("+strings.Join(parts, ", ")+") — testing...", false)
+			}
+		}
+		return a, tea.Batch(testCmds...)
+
+	case "h": // Reuse host CLI logins directly (UseHostProfile = true)
+		cfg := a.srv.Config()
+		linked := 0
+		var testCmds []tea.Cmd
+		for _, d := range items {
+			if !a.hostAuthSelected[d.Backend] {
+				continue
+			}
+			acct, _ := ensureAccountFor(cfg, d)
+			acct.UseHostProfile = true
+			a.srv.ACP().StopAccount(acct.ID)
+			a.srv.Pool().ClearHealth(acct.ID)
+			linked++
+			testCmds = append(testCmds, a.testAccountCmd(*acct))
+		}
+		cfg.UI.HostAuthPromptDismissed = true
+		cfg.UI.OnboardingComplete = true
+		_ = a.srv.ReloadConfig(cfg)
+		a.modal = modalNone
+		a.screen = ScreenAccounts
+		a.setStatus(fmt.Sprintf("Configured %d account(s) to reuse host CLI login — testing...", linked), false)
+		return a, tea.Batch(testCmds...)
+
+	case "r": // Re-authenticate fresh: create/keep isolated accounts without copying host auth
+		cfg := a.srv.Config()
+		var firstTarget *config.AccountConfig
+		for _, d := range items {
+			if !a.hostAuthSelected[d.Backend] {
+				continue
+			}
+			acct, _ := ensureAccountFor(cfg, d)
+			acct.UseHostProfile = false
+			if firstTarget == nil {
+				cp := *acct
+				firstTarget = &cp
+			}
+		}
+		cfg.UI.HostAuthPromptDismissed = true
+		cfg.UI.OnboardingComplete = true
+		_ = a.srv.ReloadConfig(cfg)
+		a.screen = ScreenAccounts
+		if firstTarget != nil {
+			a.setStatus("Kept isolated profiles — sign in fresh or press 'l' on any account.", false)
+			a.openLoginPrompt(*firstTarget)
+			return a, nil
+		}
+		a.modal = modalNone
+		return a, nil
+
+	case "s", "esc", "q":
+		dismiss()
+		a.setStatus("Skipped host login import (available anytime via 'i' Setup or 'l' Login).", false)
+	}
+	return a, nil
+}
+
+func (a *App) viewHostAuthModal() string {
+	cardW := clamp(a.width-10, 62, 88)
+	innerW := cardW - 6
+
+	var lines []string
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("◆ Detected Existing CLI Logins (%d)", len(a.hostAuthItems))))
+	lines = append(lines, a.styles.Muted.Render("Copy your existing logins into isolated apx profiles (0600, host files untouched), reuse host logins, or sign in fresh."))
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+
+	nameW := 20
+	modeW := 16
+	srcW := max(innerW-2-3-2-nameW-2-modeW-2, 12)
+	for i, d := range a.hostAuthItems {
+		mark := "[ ]"
+		if a.hostAuthSelected[d.Backend] {
+			mark = "[x]"
+		}
+		modePlain := "copy 0600 file"
+		modeStyle := a.styles.StateReady
+		if d.KeyringOnly {
+			modePlain = "host keyring"
+			modeStyle = a.styles.StateWarn
+		}
+		nStr := truncate(d.Label, nameW)
+		sStr := truncate(d.SourceDesc, srcW)
+		if i == a.hostAuthCursor {
+			plain := fmt.Sprintf("> %s  %-*s  %-*s  %s", mark, nameW, nStr, modeW, modePlain, sStr)
+			lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
+		} else {
+			lines = append(lines, a.styles.JoinRow(2,
+				a.surfaceText("  "+mark),
+				a.styles.PadCell(a.surfaceText(nStr), nameW),
+				a.styles.PadCell(modeStyle.Render(modePlain), modeW),
+				a.styles.Muted.Render(sStr),
+			))
+		}
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+	lines = append(lines, a.styles.JoinHints(
+		a.styles.KeyHint("space", "toggle"),
+		a.styles.KeyHint("c / enter", "copy to isolated profiles"),
+		a.styles.KeyHint("h", "reuse host login"),
+	))
+	lines = append(lines, a.styles.JoinHints(
+		a.styles.KeyHint("r", "re-authenticate fresh"),
+		a.styles.KeyHint("esc", "skip (don't ask again)"),
+	))
+	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
 }
 
 func (a *App) filteredDetected() []descriptors.DetectedCLI {
@@ -108,9 +396,19 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		a.setStatus("Syncing latest official ACP Registry...", false)
 		return a, a.syncRegistryCmd()
+	case "c":
+		found := hostauth.DetectAll("")
+		if len(found) == 0 {
+			a.setStatus("No existing host CLI logins detected on this machine.", false)
+			return a, nil
+		}
+		a.openHostAuthModal(found, nil, false)
+		return a, nil
 	case "enter":
 		cfg := a.srv.Config()
 		added := 0
+		var addedHostLogins []hostauth.DetectedLogin
+		addedTargets := make(map[string]string)
 		for _, d := range a.detected {
 			if !a.detectSelected[d.Descriptor.ID] {
 				continue
@@ -132,9 +430,19 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				MaxConcurrency: 1,
 			})
 			added++
+			if hl, ok := hostauth.Detect(d.Descriptor.ID, ""); ok {
+				addedHostLogins = append(addedHostLogins, hl)
+				addedTargets[d.Descriptor.ID] = id
+			}
 		}
 		cfg.UI.OnboardingComplete = true
 		_ = a.srv.ReloadConfig(cfg)
+		if len(addedHostLogins) > 0 {
+			a.screen = ScreenAccounts
+			a.openHostAuthModal(addedHostLogins, addedTargets, false)
+			a.setStatus(fmt.Sprintf("Added %d account(s) — existing host login(s) detected!", added), false)
+			return a, nil
+		}
 		a.modal = modalNone
 		if added > 0 {
 			a.screen = ScreenAccounts
@@ -169,6 +477,13 @@ func (a *App) viewWelcomeModal() string {
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("◆ ACP Registry & CLI Installer (%d agents)", len(items))))
 	lines = append(lines, a.styles.Muted.Render("Install adapters right inside apx without exiting, or press Space + Enter to add agents."))
+	if len(a.hostAuthItems) > 0 {
+		names := make([]string, 0, len(a.hostAuthItems))
+		for _, hl := range a.hostAuthItems {
+			names = append(names, hl.Label)
+		}
+		lines = append(lines, a.styles.StateReady.Render("● Existing logins detected: "+truncate(strings.Join(names, ", "), max(innerW-40, 14)))+"  "+a.styles.Muted.Render("(press 'c' to copy/use)"))
+	}
 	if a.detectSearching {
 		lines = append(lines, a.styles.Highlight.Render("Search: ")+a.detectSearch.View()+" "+a.styles.Muted.Render("(enter/esc)"))
 	} else if q := strings.TrimSpace(a.detectSearch.Value()); q != "" {
@@ -261,6 +576,7 @@ func (a *App) viewWelcomeModal() string {
 	))
 	lines = append(lines, a.styles.JoinHints(
 		a.styles.KeyHint("R", "sync registry"),
+		a.styles.KeyHint("c", "copy logins"),
 		a.styles.KeyHint("a", "API key"),
 		a.styles.KeyHint("C", "connect CLIs"),
 		a.styles.KeyHint("esc", "close"),
@@ -301,6 +617,44 @@ func (a *App) updateLoginPromptModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.modal = modalNone
 		a.setStatus("Launching "+acct.Backend+" login (returns to apx when finished)...", false)
 		return a, a.loginAccountCmd(acct)
+	case "c":
+		if hl, ok := hostauth.Detect(acct.Backend, ""); ok && hl.CanCopyFiles {
+			pdir, err := config.EnsureProfileDir(a.srv.DataDir(), acct.Backend, acct.Name)
+			if err != nil {
+				a.setStatus("Failed to prepare profile dir: "+err.Error(), true)
+				return a, nil
+			}
+			if _, err := hostauth.CopyToProfile(hl, pdir); err != nil {
+				a.setStatus("Copy failed: "+err.Error(), true)
+				return a, nil
+			}
+			cfg := a.srv.Config()
+			if ac := cfg.FindAccount(acct.ID); ac != nil {
+				ac.UseHostProfile = false
+				_ = a.srv.ReloadConfig(cfg)
+			}
+			a.srv.ACP().StopAccount(acct.ID)
+			a.srv.Pool().ClearHealth(acct.ID)
+			a.loginTarget = nil
+			a.modal = modalNone
+			a.setStatus("Copied host login into "+acct.Backend+"/"+acct.Name+" — testing...", false)
+			return a, a.testAccountCmd(acct)
+		}
+	case "h":
+		if _, ok := hostauth.Detect(acct.Backend, ""); ok {
+			cfg := a.srv.Config()
+			if ac := cfg.FindAccount(acct.ID); ac != nil {
+				ac.UseHostProfile = true
+				_ = a.srv.ReloadConfig(cfg)
+				acct = *ac
+			}
+			a.srv.ACP().StopAccount(acct.ID)
+			a.srv.Pool().ClearHealth(acct.ID)
+			a.loginTarget = nil
+			a.modal = modalNone
+			a.setStatus("Switched "+acct.Backend+"/"+acct.Name+" to reuse host login — testing...", false)
+			return a, a.testAccountCmd(acct)
+		}
 	case "i":
 		if acct.Kind != config.KindCLI {
 			if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && desc.CanInstall() {
@@ -384,15 +738,31 @@ func (a *App) viewLoginPromptModal() string {
 		lines = append(lines, "return you right back to apx once authentication finishes.")
 	}
 	lines = append(lines, "")
+	hl, hasHostLogin := hostauth.Detect(acct.Backend, "")
+	if hasHostLogin {
+		lines = append(lines, a.styles.StateReady.Render("● Existing host login detected: "+truncate(hl.SourceDesc, max(innerW-34, 16))))
+		if hl.CanCopyFiles {
+			lines = append(lines, a.styles.Muted.Render("  Press 'c' to copy auth (0600) into this isolated profile, 'h' to reuse host directly, or Enter to sign in fresh."))
+		} else {
+			lines = append(lines, a.styles.Muted.Render("  Press 'h' to reuse host keyring login directly, or Enter to sign in fresh to an isolated profile."))
+		}
+		lines = append(lines, "")
+	}
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	var hints []string
+	if hasHostLogin && hl.CanCopyFiles {
+		hints = append(hints, a.styles.KeyHint("c", "copy host auth"))
+	}
+	if hasHostLogin {
+		hints = append(hints, a.styles.KeyHint("h", "reuse host"))
+	}
 	if binMissing && canInstall {
 		hints = append(hints, a.styles.KeyHint("i", "install "+binName))
 	} else if loginCmd != "" {
-		hints = append(hints, a.styles.KeyHint("enter", "launch login"))
+		hints = append(hints, a.styles.KeyHint("enter", "re-auth fresh"))
 	}
-	hints = append(hints, a.styles.KeyHint("s", "skip for now"))
+	hints = append(hints, a.styles.KeyHint("s", "skip"))
 	lines = append(lines, a.styles.JoinHints(hints...))
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
 }

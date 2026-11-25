@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/hostauth"
 	"github.com/bberka/agentpassage/internal/logbuf"
 	"github.com/bberka/agentpassage/internal/secrets"
 )
@@ -20,6 +23,7 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.UI.OnboardingComplete = true
+	cfg.UI.HostAuthPromptDismissed = true
 	cfg.Accounts = []config.AccountConfig{
 		{ID: "agy-a", Name: "a", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposeBoth, ModelPrefix: "a-", Models: []string{"gemini-4-neon"}},
 		{ID: "deepseek-main", Name: "main", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, BaseURL: "https://api.deepseek.com/v1", Models: []string{"deepseek-chat"}},
@@ -162,6 +166,7 @@ func TestAPISetupAndModelsPickerAutoFetch(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.UI.OnboardingComplete = true
+	cfg.UI.HostAuthPromptDismissed = true
 	sec := secrets.NewFileOnly(dir)
 	reg, _ := descriptors.LoadRegistry(dir)
 	logs := logbuf.New(50, dir, sec.KnownSecrets)
@@ -307,6 +312,7 @@ func TestUsageScreenShowsAllAndScrolls(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.UI.OnboardingComplete = true
+	cfg.UI.HostAuthPromptDismissed = true
 	for i := 1; i <= 12; i++ {
 		name := string(rune('a' + i - 1))
 		cfg.Accounts = append(cfg.Accounts, config.AccountConfig{
@@ -341,5 +347,59 @@ func TestUsageScreenShowsAllAndScrolls(t *testing.T) {
 	scrolled := app.View()
 	if !strings.Contains(scrolled, "agy/l") {
 		t.Fatalf("expected scrolled usage screen to reveal agy/l")
+	}
+}
+
+func TestHostAuthDetectionAndCopyModal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CODEX_HOME", "")
+
+	// Create mock host logins for Claude and Codex
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", ".credentials.json"), []byte(`{"token":"host-claude"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".codex"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".codex", "auth.json"), []byte(`{"token":"host-codex"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.UI.OnboardingComplete = true
+	cfg.UI.HostAuthPromptDismissed = true
+	sec := secrets.NewFileOnly(dir)
+	reg, _ := descriptors.LoadRegistry(dir)
+	logs := logbuf.New(20, dir, sec.KnownSecrets)
+	defer logs.Close()
+	srv := gateway.New(dir, cfg, sec, reg, logs)
+	app := New(srv)
+	defer app.Close()
+	app.Update(tea.WindowSizeMsg{Width: 110, Height: 34})
+
+	if !app.openStartupHostAuthIfNeeded(home) {
+		t.Fatalf("expected startup host auth prompt to open when host logins exist")
+	}
+	if app.modal != modalHostAuth || !strings.Contains(app.View(), "Detected Existing CLI Logins") {
+		t.Fatalf("expected modalHostAuth view, got modal=%v", app.modal)
+	}
+
+	// Confirm copy with 'c' -> creates isolated accounts and copies credentials into profile dirs
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if app.modal != modalNone {
+		t.Fatalf("expected modal closed after 'c' copy")
+	}
+	if srv.Config().FindAccount("claude-default") == nil || srv.Config().FindAccount("codex-default") == nil {
+		t.Fatalf("expected claude-default and codex-default accounts created, got %+v", srv.Config().Accounts)
+	}
+	pClaude, _ := config.ProfileDir(dir, "claude", "default")
+	pCodex, _ := config.ProfileDir(dir, "codex", "default")
+	if !hostauth.ProfileHasAuth("claude", pClaude) || !hostauth.ProfileHasAuth("codex", pCodex) {
+		t.Fatalf("expected copied credentials in isolated profile dirs")
 	}
 }
