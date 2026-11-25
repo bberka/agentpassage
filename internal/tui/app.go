@@ -16,6 +16,7 @@ import (
 	"github.com/bberka/acpx/internal/connect"
 	"github.com/bberka/acpx/internal/descriptors"
 	"github.com/bberka/acpx/internal/gateway"
+	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/logbuf"
 	"github.com/bberka/acpx/internal/service"
 )
@@ -79,6 +80,11 @@ type loginDoneMsg struct {
 type registrySyncMsg struct {
 	count int
 	err   error
+}
+
+type healthCheckDoneMsg struct {
+	report health.Report
+	err    error
 }
 
 // App is the root Bubble Tea model for acpx.
@@ -373,6 +379,19 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case healthCheckDoneMsg:
+		if msg.err != nil {
+			a.setStatus("Health check failed: "+msg.err.Error(), true)
+			return a, nil
+		}
+		rep := msg.report
+		if rep.UnhealthyCount > 0 {
+			a.setStatus(fmt.Sprintf("Health check: %d/%d healthy, %d unhealthy/degraded", rep.HealthyCount, rep.TotalCount, rep.UnhealthyCount), true)
+		} else {
+			a.setStatus(fmt.Sprintf("Health check: %d/%d accounts healthy", rep.HealthyCount, rep.TotalCount), false)
+		}
+		return a, nil
+
 	case tea.KeyMsg:
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
@@ -425,6 +444,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "S":
 			if a.screen == ScreenDashboard {
 				return a, a.openServiceModal()
+			}
+		case "T":
+			if a.screen == ScreenDashboard || a.screen == ScreenAccounts {
+				a.setStatus("Running health check across all accounts...", false)
+				return a, a.runHealthCheckCmd("")
 			}
 		case "1":
 			a.switchScreen(ScreenDashboard)
@@ -670,8 +694,8 @@ func (a *App) renderFooter() string {
 				a.styles.KeyHint("i", "ACP registry"),
 				a.styles.KeyHint("C", "connect"),
 				a.styles.KeyHint("S", "service"),
+				a.styles.KeyHint("T", "health"),
 				a.styles.KeyHint("c", "copy URL"),
-				a.styles.KeyHint("k", "copy key"),
 				a.styles.KeyHint("?", "help"),
 				a.styles.KeyHint("q", "quit"),
 			}
@@ -681,9 +705,9 @@ func (a *App) renderFooter() string {
 				a.styles.KeyHint("e", "edit"),
 				a.styles.KeyHint("r", "rename"),
 				a.styles.KeyHint("M", "models"),
-				a.styles.KeyHint("i", "install"),
 				a.styles.KeyHint("l", "login"),
 				a.styles.KeyHint("t", "test"),
+				a.styles.KeyHint("T", "health all"),
 				a.styles.KeyHint("C", "connect"),
 			}
 		case ScreenModels:
@@ -792,11 +816,11 @@ func (a *App) viewModal() string {
 			"  1–6 / Tab     Switch screens   C Connect CLIs/T3 Code   ? Help   q Back/Quit",
 			"",
 			a.styles.Subtitle.Render("Dashboard"),
-			"  a Add account   i Browse & install 45+ ACP tools   c Copy URL   k Copy key   v Reveal",
+			"  a Add account   i Browse & install 45+ ACP tools   T Health check   S Service   c/k Copy",
 			"",
 			a.styles.Subtitle.Render("Accounts"),
 			"  a Add   i Install ACP   m Cycle pool/prefix/both   P Edit prefix (e.g. a-, b-)",
-			"  l Login/Key   t Test   p Perm   d Toggle   r Rename   e Edit   x Delete",
+			"  l Login/Key   t Test   T Health all   p Perm   d Toggle   r Rename   e Edit   x Delete",
 			"",
 			a.styles.Subtitle.Render("Models & Routing"),
 			"  Models:  a Alias   r Rename   h Hide/Unhide   H Show hidden   / Filter",
@@ -957,5 +981,14 @@ func (a *App) syncDaemonCmd() tea.Cmd {
 	return func() tea.Msg {
 		a.srv.SyncFromDaemon()
 		return nil
+	}
+}
+
+func (a *App) runHealthCheckCmd(accountID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer cancel()
+		rep, err := a.srv.CheckHealthNow(ctx, accountID)
+		return healthCheckDoneMsg{report: rep, err: err}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/pool"
 	"github.com/bberka/acpx/internal/secrets"
 )
@@ -70,13 +71,33 @@ func (a *App) viewDashboard(bodyHeight int) string {
 	}
 
 	// Build Endpoint card
+	healthRep := a.srv.LiveHealth()
+	healthByID := make(map[string]health.Result, len(healthRep.Accounts))
+	for _, hr := range healthRep.Accounts {
+		healthByID[hr.AccountID] = hr
+	}
+	renderHealthSummaryInline := func() string {
+		if healthRep.TotalCount == 0 {
+			return a.styles.Muted.Render("none")
+		}
+		if healthRep.HealthyCount == 0 && healthRep.UnhealthyCount == 0 {
+			return a.styles.Muted.Render("pending (T:check)")
+		}
+		lbl := fmt.Sprintf("%d/%d ok", healthRep.HealthyCount, healthRep.TotalCount)
+		if healthRep.UnhealthyCount > 0 {
+			lbl += fmt.Sprintf(" %d err", healthRep.UnhealthyCount)
+			return a.styles.StateWarn.Render("▲ " + lbl)
+		}
+		return a.styles.StateReady.Render("● " + lbl)
+	}
+
 	renderEndpointCard := func(w int) string {
 		inner := w - 4
 		lines := []string{
 			a.styles.Subtitle.Render("Gateway Endpoint") + "   " + status + "   " + a.styles.Muted.Render(fmt.Sprintf("%d models", len(models))),
 			fmt.Sprintf("URL     %s   %s", a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-18, 20))), a.styles.Muted.Render("c:copy")),
 			fmt.Sprintf("Key     %s   %s", truncate(keyDisp, max(inner-24, 16)), a.styles.Muted.Render("k:copy v:show")),
-			fmt.Sprintf("Service %s   %s   %s", a.renderServiceSummaryInline(), a.styles.Muted.Render("S:manage"), a.styles.Muted.Render("6:usage hub")),
+			fmt.Sprintf("Service %s   Health %s   %s", a.renderServiceSummaryInline(), renderHealthSummaryInline(), a.styles.Muted.Render("S:svc T:check")),
 		}
 		return a.styles.Card.Width(w).Render(strings.Join(lines, "\n"))
 	}
@@ -86,19 +107,21 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		inner := w - 4
 		maxRows := max(h-4, 2)
 		var lines []string
-		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("Accounts (%d)", len(snaps)))+"  "+a.styles.Muted.Render("2:manage  a:add  i:install"))
-		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-18s %-7s %-11s %s", "ACCOUNT", "KIND", "STATE", "USAGE")))
+		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("Accounts (%d)", len(snaps)))+"  "+a.styles.Muted.Render("2:manage  a:add  T:health"))
+		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-17s %-6s %-10s %-8s %s", "ACCOUNT", "KIND", "STATE", "PROBE", "USAGE")))
 		for i, s := range snaps {
 			if i >= maxRows {
 				lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("... +%d more (press 2)", len(snaps)-maxRows)))
 				break
 			}
+			probe := a.renderProbeShort(healthByID[s.ID])
 			usage := fmt.Sprintf("req:%d err:%d (%d/%d)", s.TotalRequests, s.TotalErrors, s.InFlight, s.MaxConcurrency)
-			row := fmt.Sprintf("%-18s %-7s %-11s %s",
-				truncate(s.Backend+"/"+s.Name, 18),
+			row := fmt.Sprintf("%-17s %-6s %-10s %-8s %s",
+				truncate(s.Backend+"/"+s.Name, 17),
 				s.Kind,
 				a.renderState(s),
-				truncate(usage, max(inner-40, 10)),
+				probe,
+				truncate(usage, max(inner-46, 8)),
 			)
 			lines = append(lines, row)
 		}
@@ -183,5 +206,18 @@ func (a *App) renderState(s pool.AccountSnapshot) string {
 		return a.styles.StateWarn.Render("▲ login")
 	default:
 		return a.styles.StateErr.Render("○ off")
+	}
+}
+
+func (a *App) renderProbeShort(r health.Result) string {
+	switch r.Status {
+	case health.StatusHealthy:
+		return a.styles.StateReady.Render(fmt.Sprintf("%dms", r.LatencyMs))
+	case health.StatusDegraded:
+		return a.styles.StateWarn.Render("degraded")
+	case health.StatusUnhealthy:
+		return a.styles.StateErr.Render("down")
+	default:
+		return a.styles.Muted.Render("—")
 	}
 }

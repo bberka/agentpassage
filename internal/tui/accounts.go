@@ -3,10 +3,12 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/pool"
 )
 
@@ -203,13 +205,18 @@ func (a *App) viewAccounts(bodyHeight int) string {
 	for _, s := range a.srv.LiveSnapshots() {
 		snaps[s.ID] = s
 	}
+	healthRep := a.srv.LiveHealth()
+	healthByID := make(map[string]health.Result, len(healthRep.Accounts))
+	for _, hr := range healthRep.Accounts {
+		healthByID[hr.AccountID] = hr
+	}
 
 	fullW := max(a.width-2, 40)
 	innerW := fullW - 4
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts)))+"   "+
-		a.styles.Muted.Render("e:edit  r:rename  M/enter:models  m:pool/prefix  H:host/iso  l:login  t:test  d:toggle  x:del"))
+		a.styles.Muted.Render("e:edit  r:rename  M/enter:models  m:pool/prefix  H:host/iso  l:login  t:test  T:health  d:toggle  x:del"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(accts) == 0 {
@@ -218,9 +225,9 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-18s %-7s %-11s %-14s %-6s %s", "ACCOUNT", "KIND", "STATE", "EXPOSE", "MODELS", "DETAILS")))
+	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-18s %-7s %-10s %-8s %-13s %-6s %s", "ACCOUNT", "KIND", "STATE", "PROBE", "EXPOSE", "MODELS", "DETAILS")))
 
-	maxRows := max(bodyHeight-10, 4)
+	maxRows := max(bodyHeight-11, 4)
 	start := 0
 	if a.acctCursor >= maxRows {
 		start = a.acctCursor - maxRows + 1
@@ -229,6 +236,7 @@ func (a *App) viewAccounts(bodyHeight int) string {
 	for i := start; i < len(accts) && i < start+maxRows; i++ {
 		acct := accts[i]
 		snap := snaps[acct.ID]
+		hr := healthByID[acct.ID]
 		expose := acct.ExposeMode
 		if expose == "" {
 			expose = config.ExposePool
@@ -246,13 +254,14 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		}
 		totalModels := max(len(acct.AvailableModels), len(acct.Models))
 		modelCol := fmt.Sprintf("%d/%d", len(acct.Models), totalModels)
-		row := fmt.Sprintf("%-18s %-7s %-11s %-14s %-7s %s",
+		row := fmt.Sprintf("%-18s %-7s %-10s %-8s %-13s %-6s %s",
 			truncate(acct.Backend+"/"+acct.Name, 18),
 			acct.Kind,
 			a.renderState(snap),
-			truncate(expose, 14),
+			a.renderProbeShort(hr),
+			truncate(expose, 13),
 			modelCol,
-			truncate(extra, max(innerW-65, 10)),
+			truncate(extra, max(innerW-72, 10)),
 		)
 		if i == a.acctCursor {
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
@@ -265,6 +274,7 @@ func (a *App) viewAccounts(bodyHeight int) string {
 	if a.acctCursor >= 0 && a.acctCursor < len(accts) {
 		sel := accts[a.acctCursor]
 		snap := snaps[sel.ID]
+		hr := healthByID[sel.ID]
 		lines = append(lines, "")
 		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 		if sel.Kind == config.KindACP {
@@ -273,6 +283,15 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		} else {
 			lines = append(lines, a.styles.Muted.Render("Base URL: "+truncate(sel.BaseURL, innerW-11)))
 		}
+		healthSummary := "not probed yet (press 't' to test or 'T' to health-check all)"
+		if !hr.CheckedAt.IsZero() {
+			ago := time.Since(hr.CheckedAt).Round(time.Second)
+			healthSummary = fmt.Sprintf("%s · %dms · %d models · checked %s ago", hr.Status, hr.LatencyMs, hr.ModelsFound, ago)
+			if hr.Error != "" {
+				healthSummary += " · " + hr.Error
+			}
+		}
+		lines = append(lines, a.styles.Muted.Render("Health:  "+truncate(healthSummary, innerW-10)))
 		lines = append(lines, a.styles.Muted.Render("Models:  "+truncate(strings.Join(sel.Models, ", "), innerW-10)))
 		if snap.LastError != "" {
 			lines = append(lines, a.styles.StateErr.Render("Error:   "+truncate(snap.LastError, innerW-10)))

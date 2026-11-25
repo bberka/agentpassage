@@ -51,9 +51,15 @@ type Config struct {
 	UI       UIConfig        `toml:"ui"`
 	ACP      ACPConfig       `toml:"acp"`
 	Catalog  CatalogConfig   `toml:"catalog"`
+	Health   HealthConfig    `toml:"health"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Models   []ModelOverride `toml:"models"`
 	Routing  []RoutingRule   `toml:"routing"`
+}
+
+type HealthConfig struct {
+	Enabled         bool `toml:"enabled"`
+	IntervalSeconds int  `toml:"interval_seconds"` // 0 = manual only, default 300 (5m)
 }
 
 type CatalogConfig struct {
@@ -289,6 +295,10 @@ func Default() *Config {
 		},
 		ACP: ACPConfig{
 			ToolActivity: ToolActivityDrop,
+		},
+		Health: HealthConfig{
+			Enabled:         true,
+			IntervalSeconds: 300,
 		},
 	}
 }

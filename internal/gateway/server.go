@@ -20,6 +20,7 @@ import (
 	"github.com/bberka/acpx/internal/backend/httpbackend"
 	"github.com/bberka/acpx/internal/config"
 	"github.com/bberka/acpx/internal/descriptors"
+	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/logbuf"
 	"github.com/bberka/acpx/internal/pool"
 	"github.com/bberka/acpx/internal/router"
@@ -43,6 +44,7 @@ type Server struct {
 	cliBE    *clibackend.Manager
 	logs     *logbuf.Buffer
 	usage    *usage.Tracker
+	health   *health.Checker
 
 	srv          *http.Server
 	listener     net.Listener
@@ -53,6 +55,7 @@ type Server struct {
 	remoteBans   []pool.HealthBanner
 	remoteLogs   []logbuf.Entry
 	remoteUsage  *usage.Summary
+	remoteHealth *health.Report
 }
 
 func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptors.Registry, logs *logbuf.Buffer) *Server {
@@ -74,6 +77,27 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		logs:     logs,
 		usage:    usageTrk,
 	}
+	s.health = health.New(
+		func() []config.AccountConfig {
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+			return append([]config.AccountConfig(nil), s.cfg.Accounts...)
+		},
+		func(ctx context.Context, acct config.AccountConfig) ([]string, error) {
+			return s.TestAccount(ctx, acct)
+		},
+		func(acct config.AccountConfig, _ []string, err error) {
+			if err == nil {
+				s.pool.RecordSuccess(acct.ID)
+			} else if be, ok := backend.AsBackendError(err); ok {
+				if be.Kind == backend.ErrKindAuth || be.Kind == backend.ErrKindRestricted || be.Kind == backend.ErrKindRateLimit {
+					s.pool.RecordError(acct.ID, err, config.RoutingRule{Strategy: config.StrategyManual})
+				}
+			}
+		},
+		logs,
+		cfg.Health,
+	)
 	if logs != nil {
 		logs.RegisterSecret(cfg.Server.LocalKey)
 	}
@@ -110,6 +134,7 @@ func (s *Server) CLI() *clibackend.Manager    { return s.cliBE }
 func (s *Server) HTTPBackend() *httpbackend.Client { return s.httpBE }
 func (s *Server) Logs() *logbuf.Buffer        { return s.logs }
 func (s *Server) Usage() *usage.Tracker       { return s.usage }
+func (s *Server) Health() *health.Checker     { return s.health }
 func (s *Server) DataDir() string             { return s.dataDir }
 
 func (s *Server) ReloadConfig(cfg *config.Config) error {
@@ -126,6 +151,9 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	s.router.UpdateConfig(cfg)
 	s.pool.SyncAccounts(cfg.Accounts)
 	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)
+	if s.health != nil {
+		s.health.UpdateConfig(cfg.Health)
+	}
 	if err := config.Save(s.dataDir, cfg); err != nil {
 		return err
 	}
@@ -307,6 +335,79 @@ func (s *Server) SyncFromDaemon() {
 			_ = resp.Body.Close()
 		}
 	}
+
+	// Fetch /admin/health
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/health", nil); err == nil {
+		req.Header.Set("Authorization", "Bearer "+key)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				var rep health.Report
+				if err := json.NewDecoder(resp.Body).Decode(&rep); err == nil {
+					s.mu.Lock()
+					s.remoteHealth = &rep
+					s.mu.Unlock()
+				}
+			}
+			_ = resp.Body.Close()
+		}
+	}
+}
+
+// LiveHealth returns the latest health check report (from daemon when attached, or local checker).
+func (s *Server) LiveHealth() health.Report {
+	s.mu.RLock()
+	attached := s.attached
+	rh := s.remoteHealth
+	s.mu.RUnlock()
+	if attached && rh != nil {
+		return *rh
+	}
+	if s.health == nil {
+		return health.Report{Overall: health.StatusUnknown}
+	}
+	return s.health.Report()
+}
+
+// CheckHealthNow runs an immediate health sweep (on the attached daemon if attached, or locally).
+func (s *Server) CheckHealthNow(ctx context.Context, accountID string) (health.Report, error) {
+	s.mu.RLock()
+	attached := s.attached
+	addr := s.listenOn
+	key := s.cfg.Server.LocalKey
+	s.mu.RUnlock()
+
+	if attached && addr != "" {
+		url := "http://" + addr + "/admin/health/check"
+		if accountID != "" {
+			url += "?account=" + accountID
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		if err != nil {
+			return health.Report{}, err
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return health.Report{}, err
+		}
+		defer resp.Body.Close()
+		var rep health.Report
+		if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
+			return health.Report{}, err
+		}
+		s.mu.Lock()
+		s.remoteHealth = &rep
+		s.mu.Unlock()
+		return rep, nil
+	}
+
+	if accountID != "" {
+		if acct := s.Config().FindAccount(accountID); acct != nil {
+			s.health.CheckOne(ctx, *acct)
+			return s.health.Report(), nil
+		}
+	}
+	return s.health.CheckAll(ctx), nil
 }
 
 // LiveUsage returns usage summary from the background daemon when attached, or local tracker.
@@ -397,6 +498,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/state", s.withAuth(s.handleAdminState))
 	mux.HandleFunc("GET /admin/logs", s.withAuth(s.handleAdminLogs))
 	mux.HandleFunc("GET /admin/usage", s.withAuth(s.handleAdminUsage))
+	mux.HandleFunc("GET /admin/health", s.withAuth(s.handleAdminHealth))
+	mux.HandleFunc("POST /admin/health/check", s.withAuth(s.handleAdminHealthCheck))
 	mux.HandleFunc("POST /admin/reload", s.withAuth(s.handleAdminReload))
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleListModels))
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChatCompletions))
@@ -437,6 +540,10 @@ func (s *Server) Start() error {
 		s.logs.Info("system", fmt.Sprintf("gateway listening on http://%s/v1", ln.Addr().String()))
 	}
 
+	if s.health != nil {
+		s.health.Start()
+	}
+
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			if s.logs != nil {
@@ -456,6 +563,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.running = false
 	s.mu.Unlock()
 	s.acpBE.Close()
+	if s.health != nil {
+		s.health.Stop()
+	}
 	if s.usage != nil {
 		_ = s.usage.Close()
 	}
@@ -517,10 +627,29 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	rep := s.LiveHealth()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":  "ok",
-		"version": Version,
+		"status":             "ok",
+		"version":            Version,
+		"overall_health":     rep.Overall,
+		"accounts_total":     rep.TotalCount,
+		"accounts_healthy":   rep.HealthyCount,
+		"accounts_unhealthy": rep.UnhealthyCount,
 	})
+}
+
+func (s *Server) handleAdminHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.LiveHealth())
+}
+
+func (s *Server) handleAdminHealthCheck(w http.ResponseWriter, r *http.Request) {
+	acctID := strings.TrimSpace(r.URL.Query().Get("account"))
+	rep, err := s.CheckHealthNow(r.Context(), acctID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "health_check_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
@@ -571,6 +700,9 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 	s.router.UpdateConfig(cfg)
 	s.pool.SyncAccounts(cfg.Accounts)
 	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)
+	if s.health != nil {
+		s.health.UpdateConfig(cfg.Health)
+	}
 	if s.logs != nil {
 		s.logs.Info("system", fmt.Sprintf("hot-reloaded config (%d accounts, %d models)", len(cfg.Accounts), len(s.router.ListModels(false))))
 	}

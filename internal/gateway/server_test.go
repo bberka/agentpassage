@@ -180,6 +180,41 @@ func TestGatewayOpenAIAndAnthropicEndpoints(t *testing.T) {
 	if !strings.Contains(string(body), `"total_requests":4`) {
 		t.Fatalf("expected 4 recorded requests in /admin/usage, got %s", body)
 	}
+
+	// 8. Active Health Checker API (/admin/health and POST /admin/health/check + enriched /healthz)
+	req, _ = http.NewRequest("POST", ts.URL+"/admin/health/check", nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("POST /admin/health/check failed: %v %d", err, res.StatusCode)
+	}
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(body), `"overall":"healthy"`) || !strings.Contains(string(body), `"healthy_count":1`) {
+		t.Fatalf("expected healthy report from /admin/health/check, got %s", body)
+	}
+
+	req, _ = http.NewRequest("GET", ts.URL+"/admin/health", nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("GET /admin/health failed: %v %d", err, res.StatusCode)
+	}
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(body), `"account_id":"deepseek-default"`) {
+		t.Fatalf("expected deepseek-default in /admin/health, got %s", body)
+	}
+
+	res, err = http.Get(ts.URL + "/healthz")
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("GET /healthz after probe failed: %v %d", err, res.StatusCode)
+	}
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(body), `"overall_health":"healthy"`) || !strings.Contains(string(body), `"accounts_healthy":1`) {
+		t.Fatalf("expected enriched /healthz with overall_health=healthy, got %s", body)
+	}
 }
 
 func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {

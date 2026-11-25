@@ -21,6 +21,7 @@ import (
 	"github.com/bberka/acpx/internal/descriptors"
 	"github.com/bberka/acpx/internal/doctor"
 	"github.com/bberka/acpx/internal/gateway"
+	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/logbuf"
 	"github.com/bberka/acpx/internal/router"
 	"github.com/bberka/acpx/internal/secrets"
@@ -53,6 +54,8 @@ func run(args []string) error {
 			return cmdModels(args[1:])
 		case "usage":
 			return cmdUsage(args[1:])
+		case "health":
+			return cmdHealth(args[1:])
 		case "doctor":
 			return cmdDoctor(args[1:])
 		case "install":
@@ -108,6 +111,7 @@ Usage:
   acpx list [--json]           List configured accounts and models
   acpx models [list|fetch|enable|disable]  Load, list, enable, or disable models per account
   acpx usage [--json]          Print usage report & local Usage Hub web URL
+  acpx health [--json] [acct]  Run live health probes across configured accounts
   acpx doctor                  Check CLIs, profiles, storage, and config
   acpx install <tool|all>      Install any ACP tool from the 45+ agent registry
   acpx connect [client]        Register acpx into T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline
@@ -749,6 +753,97 @@ func cmdUsage(args []string) error {
 	}
 	for _, m := range sum.ByModel {
 		fmt.Printf("  %-28s req=%-5d err=%-4d tokens=%-8d avg=%dms\n", m.Model, m.Requests, m.Errors, m.TotalTokens, m.AvgLatencyMs)
+	}
+	return nil
+}
+
+func cmdHealth(args []string) error {
+	asJSON := false
+	acctID := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--account", "-a":
+			if i+1 < len(args) {
+				i++
+				acctID = args[i]
+			}
+		default:
+			if !strings.HasPrefix(args[i], "-") && acctID == "" {
+				acctID = args[i]
+			}
+		}
+	}
+
+	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	if acctID != "" {
+		if found := cfg.FindAccount(acctID); found != nil {
+			acctID = found.ID
+		} else {
+			for _, a := range cfg.Accounts {
+				if a.Name == acctID || a.Backend+"/"+a.Name == acctID {
+					acctID = a.ID
+					break
+				}
+			}
+		}
+	}
+
+	srv := gateway.New(dataDir, cfg, sec, reg, logs)
+	attached, _ := srv.AttachIfRunning()
+	if !attached {
+		defer srv.ACP().Close()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	rep, err := srv.CheckHealthNow(ctx, acctID)
+	if err != nil {
+		return err
+	}
+
+	if asJSON {
+		if err := json.NewEncoder(os.Stdout).Encode(rep); err != nil {
+			return err
+		}
+		if rep.UnhealthyCount > 0 {
+			return fmt.Errorf("%d account(s) degraded or unhealthy", rep.UnhealthyCount)
+		}
+		return nil
+	}
+
+	mode := "local probe"
+	if attached {
+		mode = "live service (" + srv.Addr() + ")"
+	}
+	fmt.Printf("acpx Health Check — overall: %s (%d/%d healthy) [%s]\n", rep.Overall, rep.HealthyCount, rep.TotalCount, mode)
+	if len(rep.Accounts) == 0 {
+		fmt.Println("  (no accounts configured)")
+		return nil
+	}
+	fmt.Printf("  %-22s %-8s %-10s %-8s %-7s %s\n", "ACCOUNT", "KIND", "STATUS", "LATENCY", "MODELS", "ERROR")
+	for _, r := range rep.Accounts {
+		if acctID != "" && r.AccountID != acctID {
+			continue
+		}
+		lat := "—"
+		if !r.CheckedAt.IsZero() {
+			lat = fmt.Sprintf("%dms", r.LatencyMs)
+		}
+		errMsg := r.Error
+		if errMsg == "" && r.Status == health.StatusUnknown {
+			errMsg = "(disabled / not checked)"
+		}
+		fmt.Printf("  %-22s %-8s %-10s %-8s %-7d %s\n", r.AccountName, r.Kind, r.Status, lat, r.ModelsFound, errMsg)
+	}
+	if rep.UnhealthyCount > 0 {
+		return fmt.Errorf("%d account(s) degraded or unhealthy", rep.UnhealthyCount)
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/bberka/acpx/internal/service"
 )
 
-const settingsCount = 8
+const settingsCount = 9
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -136,6 +136,27 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				a.setStatus("Auto-start on login disabled", false)
 			}
+		case 8: // Cycle Health Check Interval: off -> 1m -> 5m -> 15m -> 30m -> off
+			intervals := []int{0, 60, 300, 900, 1800}
+			cur := 0
+			if cfg.Health.Enabled {
+				cur = cfg.Health.IntervalSeconds
+			}
+			next := intervals[1]
+			for i, v := range intervals {
+				if v == cur {
+					next = intervals[(i+1)%len(intervals)]
+					break
+				}
+			}
+			cfg.Health.Enabled = next > 0
+			cfg.Health.IntervalSeconds = next
+			_ = a.srv.ReloadConfig(cfg)
+			if next == 0 {
+				a.setStatus("Background health checks disabled", false)
+			} else {
+				a.setStatus(fmt.Sprintf("Background health check interval set to %s", formatHealthInterval(next)), false)
+			}
 		}
 	case "S":
 		// Uninstall background service when on Settings
@@ -167,6 +188,11 @@ func (a *App) viewSettings(bodyHeight int) string {
 		autoStartVal = "enabled   (enter to disable)"
 	}
 
+	healthVal := "off   (enter to cycle: off / 1m / 5m / 15m / 30m)"
+	if cfg.Health.Enabled && cfg.Health.IntervalSeconds > 0 {
+		healthVal = fmt.Sprintf("every %s   (enter to cycle: off / 1m / 5m / 15m / 30m)", formatHealthInterval(cfg.Health.IntervalSeconds))
+	}
+
 	rows := []struct {
 		label string
 		value string
@@ -179,6 +205,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Data Directory", a.srv.DataDir() + "   (secrets: " + a.srv.Secrets().Backend() + ")"},
 		{"Background Service", svcVal},
 		{"Auto-Start on Login", autoStartVal},
+		{"Health Check", healthVal},
 	}
 
 	var lines []string
@@ -194,4 +221,14 @@ func (a *App) viewSettings(bodyHeight int) string {
 		}
 	}
 	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
+}
+
+func formatHealthInterval(sec int) string {
+	if sec <= 0 {
+		return "off"
+	}
+	if sec%60 == 0 {
+		return fmt.Sprintf("%dm", sec/60)
+	}
+	return fmt.Sprintf("%ds", sec)
 }

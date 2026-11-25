@@ -79,6 +79,7 @@ const usageHubHTML = `<!doctype html>
   <div class="brand"><span class="pill">◆ acpx</span> Usage Report Hub</div>
   <div class="controls">
     <span id="liveDot" class="muted" style="font-size:12px;">localhost</span>
+    <button id="checkHealthBtn">Check Health</button>
     <button id="toggleChart">24h / 14d</button>
     <button id="toggleAuto">Auto: ON</button>
     <button id="refreshBtn" class="primary">Refresh</button>
@@ -110,8 +111,8 @@ const usageHubHTML = `<!doctype html>
 
   <section class="grid2">
     <div class="card">
-      <h2>By Account &amp; Live Health</h2>
-      <table><thead><tr><th>Account</th><th>State</th><th>Reqs</th><th>Err</th><th>Tokens</th><th>Avg ms</th></tr></thead><tbody id="acctBody"></tbody></table>
+      <h2><span>By Account &amp; Live Health</span><span id="healthMeta" class="muted" style="font-size:12px;font-weight:400;"></span></h2>
+      <table><thead><tr><th>Account</th><th>State</th><th>Probe</th><th>Reqs</th><th>Err</th><th>Tokens</th></tr></thead><tbody id="acctBody"></tbody></table>
     </div>
     <div class="card">
       <h2>By Model</h2>
@@ -136,6 +137,7 @@ let chartMode = '24h';
 let autoRefresh = true;
 let lastUsage = null;
 let lastState = null;
+let lastHealth = null;
 
 const $ = id => document.getElementById(id);
 const fmt = n => Number(n || 0).toLocaleString();
@@ -158,9 +160,10 @@ async function fetchData() {
   if (!apiKey) { showAuth(); return; }
   try {
     const h = { 'Authorization': 'Bearer ' + apiKey };
-    const [uRes, sRes] = await Promise.all([
+    const [uRes, sRes, hRes] = await Promise.all([
       fetch('/admin/usage', { headers: h }),
       fetch('/admin/state', { headers: h }),
+      fetch('/admin/health', { headers: h }),
     ]);
     if (uRes.status === 401 || sRes.status === 401) {
       sessionStorage.removeItem('acpx_key');
@@ -170,6 +173,7 @@ async function fetchData() {
     }
     lastUsage = await uRes.json();
     lastState = await sRes.json();
+    lastHealth = hRes.ok ? await hRes.json() : null;
     showApp();
     render();
     $('liveDot').textContent = '● ' + (lastState.address || '127.0.0.1') + ' · updated ' + new Date().toLocaleTimeString();
@@ -228,8 +232,19 @@ function render() {
     Object.assign(cur, a);
     mergedAccts.set(a.account, cur);
   });
+  const probeByKey = {};
+  (lastHealth && lastHealth.accounts || []).forEach(p => { probeByKey[p.account_name] = p; });
+  if (lastHealth) {
+    $('healthMeta').textContent = lastHealth.healthy_count + '/' + lastHealth.total_count + ' healthy' +
+      (lastHealth.last_sweep_at ? ' · ' + new Date(lastHealth.last_sweep_at).toLocaleTimeString() : '');
+  }
+  const probeBadge = p => {
+    if (!p || p.status === 'unknown') return '<span class="muted">—</span>';
+    if (p.status === 'healthy') return '<span class="badge b-ok">' + fmt(p.latency_ms) + 'ms</span>';
+    return '<span class="badge b-err" title="' + esc(p.error || '') + '">' + esc(p.status) + '</span>';
+  };
   $('acctBody').innerHTML = Array.from(mergedAccts.values()).map(a =>
-    '<tr><td>' + esc(a.account) + '</td><td>' + stateBadge(a.state) + '</td><td>' + fmt(a.requests) + '</td><td>' + fmt(a.errors) + '</td><td>' + fmt(a.total_tokens) + '</td><td>' + fmt(a.avg_latency_ms) + '</td></tr>'
+    '<tr><td>' + esc(a.account) + '</td><td>' + stateBadge(a.state) + '</td><td>' + probeBadge(probeByKey[a.account]) + '</td><td>' + fmt(a.requests) + '</td><td>' + fmt(a.errors) + '</td><td>' + fmt(a.total_tokens) + '</td></tr>'
   ).join('') || '<tr><td colspan="6" class="muted">No accounts yet</td></tr>';
 
   const totalReq = Math.max(1, u.total_requests || 1);
@@ -252,6 +267,16 @@ $('unlockBtn').onclick = () => {
 $('keyInput').onkeydown = e => { if (e.key === 'Enter') $('unlockBtn').click(); };
 $('logoutBtn').onclick = () => { sessionStorage.removeItem('acpx_key'); apiKey = ''; showAuth(); };
 $('refreshBtn').onclick = fetchData;
+$('checkHealthBtn').onclick = async () => {
+  if (!apiKey) return;
+  $('checkHealthBtn').textContent = 'Checking...';
+  try {
+    await fetch('/admin/health/check', { method: 'POST', headers: { 'Authorization': 'Bearer ' + apiKey } });
+    await fetchData();
+  } finally {
+    $('checkHealthBtn').textContent = 'Check Health';
+  }
+};
 $('toggleChart').onclick = () => { chartMode = chartMode === '24h' ? '14d' : '24h'; render(); };
 $('toggleAuto').onclick = () => { autoRefresh = !autoRefresh; $('toggleAuto').textContent = 'Auto: ' + (autoRefresh ? 'ON' : 'OFF'); };
 
