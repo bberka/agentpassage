@@ -40,18 +40,30 @@ func main() {
 func run(args []string) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		switch args[0] {
+		case "status":
+			return cmdStatus(args[1:])
 		case "serve":
 			return cmdServe(args[1:])
 		case "service":
 			return cmdService(args[1:])
 		case "acp":
 			return cmdACPBridge(args[1:])
+		case "accounts", "account":
+			return cmdAccounts(args[1:])
 		case "add":
 			return cmdAdd(args[1:])
 		case "list", "ls":
 			return cmdList(args[1:])
 		case "models":
 			return cmdModels(args[1:])
+		case "routing", "route":
+			return cmdRouting(args[1:])
+		case "privacy":
+			return cmdPrivacy(args[1:])
+		case "embed", "embeddings":
+			return cmdEmbed(args[1:])
+		case "rerank":
+			return cmdRerank(args[1:])
 		case "usage":
 			return cmdUsage(args[1:])
 		case "health":
@@ -74,8 +86,10 @@ func run(args []string) error {
 			return cmdRegistry(args[1:])
 		case "export-env":
 			return cmdExportEnv(args[1:])
+		case "agent-guide":
+			return cmdAgentGuide()
 		case "version":
-			fmt.Printf("apx %s\n", gateway.Version)
+			fmt.Printf("AgentPassage (apx) %s\n", gateway.Version)
 			return nil
 		case "help", "-h", "--help":
 			printUsage()
@@ -107,34 +121,41 @@ func run(args []string) error {
 }
 
 func printUsage() {
-	fmt.Println(`apx - ACP and API-key gateway with a TUI
+	fmt.Println(`AgentPassage (apx) — multi-account ACP, CLI, and API-key gateway
 
 Usage:
-  apx [flags]                 Start gateway and open full-screen TUI
-  apx --no-tui [flags]        Start gateway without TUI
-  apx serve [flags]           Start headless HTTP gateway
-  apx service <cmd>           Manage OS background service (install|uninstall|start|stop|restart|status|logs)
-  apx acp                     Run apx as an ACP stdio server (for T3 Code, Zed, etc.)
-  apx add [flags]             Add an ACP or API-key account
-  apx list [--json]           List configured accounts and models
-  apx models [list|fetch|enable|disable]  Load, list, enable, or disable models per account
-  apx usage [--json]          Print usage report & local Usage Hub web URL
-  apx health [--json] [acct]  Run live health probes across configured accounts
-  apx doctor                  Check CLIs, profiles, storage, and config
-  apx install <tool|all>      Install any ACP tool from the 45+ agent registry
-  apx connect [client...]     Connect T3 Code, Zed, VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude, Pi, Grok, Aider...
-  apx disconnect <client|all> Cleanly remove apx from one or all connected IDEs & CLIs
-  apx uninstall [--yes]       Disconnect all IDEs/CLIs and uninstall the background service
-  apx keys [list|create|enable|disable|revoke]  Manage multiple client/admin API keys
-  apx remote                  Show Tailscale Serve & Cloudflare Tunnel remote access setup
-  apx registry sync           Fetch latest official ACP Registry JSON
-  apx export-env [--shell sh] Print shell exports for OpenAI/Anthropic clients
-  apx version                 Print version
+  apx [flags]                     Start gateway and open full-screen TUI
+  apx status [--json]             Show gateway, service, catalog, and privacy status
+  apx serve [flags]               Start headless HTTP gateway
+  apx service <cmd>               Manage OS background service (install|uninstall|start|stop|restart|status|logs)
+  apx acp                         Run apx as an ACP stdio bridge (for T3 Code, Zed, JetBrains...)
+  apx accounts <cmd>              Manage accounts (list|add|enable|disable|edit|remove)
+  apx models <cmd>                Manage models (list|fetch|enable|disable)
+  apx routing <cmd>               Manage routing, project rules & model fallbacks (list|add|edit|remove)
+  apx privacy <cmd>               Configure & test reversible privacy filter (status|enable|disable|config|test)
+  apx keys <cmd>                  Manage scoped client/admin/project API keys (list|create|enable|disable|revoke)
+  apx usage [--period 1h|24h|7d|30d|all] [--refresh] [--json]
+                                  Print usage, estimated costs, and live subscription limits
+  apx health [--json] [acct]      Run live health probes across configured accounts
+  apx embed --model <m> <text>    Call POST /v1/embeddings through the gateway
+  apx rerank --model <m> --query <q> <docs...>
+                                  Call POST /v1/rerank through the gateway
+  apx connect [client...]         Connect IDEs & coding CLIs (T3 Code, Zed, VS Code, JetBrains, OpenCode...)
+  apx disconnect <client|all>     Cleanly remove apx from connected IDEs & CLIs
+  apx uninstall [--yes]           Disconnect all IDEs/CLIs and uninstall the background service
+  apx install <tool|all>          Install an ACP agent from the 45+ agent registry
+  apx remote                      Show Tailscale Serve & Cloudflare Tunnel setup guide
+  apx doctor                      Check CLIs, profiles, storage, and config
+  apx registry sync               Fetch latest official ACP Registry JSON
+  apx export-env [--shell sh]     Print shell exports for OpenAI/Anthropic clients
+  apx agent-guide                 Print compact CLI automation reference for AI agents
+  apx version                     Print version
 
 Flags (root / serve):
-  --port <int>                 Override listening port (default 8787)
-  --bind <addr>                Override bind address (default 127.0.0.1)
-  --allow-remote               Allow binding to a non-loopback address`)
+  --no-tui                        Start headless HTTP gateway without TUI
+  --port <int>                    Override listening port (default 8787)
+  --bind <addr>                   Override bind address (default 127.0.0.1)
+  --allow-remote                  Allow binding to a non-loopback address`)
 }
 
 func loadRuntime(port int, bind string, allowRemote bool) (string, *config.Config, *secrets.Store, *descriptors.Registry, *logbuf.Buffer, error) {
@@ -729,6 +750,7 @@ func cmdUsage(args []string) error {
 	fs := flag.NewFlagSet("usage", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "output JSON")
 	refresh := fs.Bool("refresh", false, "force live subscription quota refresh")
+	period := fs.String("period", "all", "time period: 1h, 24h, 7d, 30d, all")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -764,7 +786,7 @@ func cmdUsage(args []string) error {
 		cancel()
 	}
 
-	sum := srv.LiveUsage()
+	sum := srv.LiveUsagePeriod(*period)
 
 	if *asJSON {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{
@@ -774,18 +796,27 @@ func cmdUsage(args []string) error {
 	}
 
 	hubURL := strings.TrimSuffix(cfg.BaseURL(), "/v1") + "/usage"
-	fmt.Printf("apx Usage Report Hub — %s\n", hubURL)
+	fmtCost := func(c float64) string {
+		if c <= 0 {
+			return "$0.00"
+		}
+		if c < 0.01 {
+			return fmt.Sprintf("~$%.4f", c)
+		}
+		return fmt.Sprintf("~$%.2f", c)
+	}
+	fmt.Printf("AgentPassage (apx) Usage Report [period=%s] — %s\n", sum.Period, hubURL)
 	fmt.Printf("Requests: %d total (24h: %d, 7d: %d) | Success: %.1f%% (%d errors)\n",
 		sum.TotalRequests, sum.Requests24h, sum.Requests7d, sum.SuccessRate, sum.ErrorRequests)
-	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Avg latency: %dms\n\n",
-		sum.TotalTokens, sum.PromptTokens, sum.CompletionTokens, sum.Tokens24h, sum.AvgLatencyMs)
+	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Est. Cost: %s (ref rates) | Avg latency: %dms\n\n",
+		sum.TotalTokens, sum.PromptTokens, sum.CompletionTokens, sum.Tokens24h, fmtCost(sum.EstimatedCostUSD), sum.AvgLatencyMs)
 
 	fmt.Println("Subscription Limits (Hourly / Weekly):")
 	if len(qrep.Accounts) == 0 {
 		fmt.Println("  (no accounts configured)")
 	} else {
 		now := time.Now()
-		fmt.Printf("  %-18s %-8s %-28s %-26s %s\n", "ACCOUNT", "PLAN", "PRIMARY / HOURLY", "WEEKLY / SECONDARY", "AgentPassage 5h/7d")
+		fmt.Printf("  %-18s %-8s %-28s %-26s %s\n", "ACCOUNT", "PLAN", "PRIMARY / HOURLY", "WEEKLY / SECONDARY", "APX 5h/7d")
 		fmtWin := func(w *quota.Window) string {
 			if w == nil {
 				return "—"
@@ -819,14 +850,26 @@ func cmdUsage(args []string) error {
 		fmt.Println("  (no traffic recorded yet)")
 	}
 	for _, a := range sum.ByAccount {
-		fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d avg=%dms\n", a.Account, a.Requests, a.Errors, a.TotalTokens, a.AvgLatencyMs)
+		fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", a.Account, a.Requests, a.Errors, a.TotalTokens, fmtCost(a.EstimatedCostUSD), a.AvgLatencyMs)
 	}
 	fmt.Println("\nBy Model:")
 	if len(sum.ByModel) == 0 {
 		fmt.Println("  (no traffic recorded yet)")
 	}
 	for _, m := range sum.ByModel {
-		fmt.Printf("  %-28s req=%-5d err=%-4d tokens=%-8d avg=%dms\n", m.Model, m.Requests, m.Errors, m.TotalTokens, m.AvgLatencyMs)
+		fmt.Printf("  %-28s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", m.Model, m.Requests, m.Errors, m.TotalTokens, fmtCost(m.EstimatedCostUSD), m.AvgLatencyMs)
+	}
+	if len(sum.ByKey) > 0 {
+		fmt.Println("\nBy API Key:")
+		for _, k := range sum.ByKey {
+			fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", k.Key, k.Requests, k.Errors, k.TotalTokens, fmtCost(k.EstimatedCostUSD), k.AvgLatencyMs)
+		}
+	}
+	if len(sum.ByProject) > 0 {
+		fmt.Println("\nBy Project:")
+		for _, p := range sum.ByProject {
+			fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", p.Project, p.Requests, p.Errors, p.TotalTokens, fmtCost(p.EstimatedCostUSD), p.AvgLatencyMs)
+		}
 	}
 	return nil
 }
@@ -1353,14 +1396,21 @@ func cmdKeys(args []string) error {
 
 	case "create", "add", "new":
 		role := config.KeyRoleClient
+		project := ""
 		var models []string
 		name := ""
+		asJSON := false
 		for i := 0; i < len(args); i++ {
 			switch args[i] {
 			case "--role":
 				if i+1 < len(args) {
 					i++
 					role = args[i]
+				}
+			case "--project":
+				if i+1 < len(args) {
+					i++
+					project = strings.TrimSpace(args[i])
 				}
 			case "--models":
 				if i+1 < len(args) {
@@ -1371,6 +1421,8 @@ func cmdKeys(args []string) error {
 						}
 					}
 				}
+			case "--json":
+				asJSON = true
 			default:
 				if !strings.HasPrefix(args[i], "-") && name == "" {
 					name = args[i]
@@ -1378,11 +1430,17 @@ func cmdKeys(args []string) error {
 			}
 		}
 		if name == "" {
-			return fmt.Errorf("usage: apx keys create <name> [--role client|admin] [--models a,b]")
+			return fmt.Errorf("usage: apx keys create <name> [--role client|admin] [--project name] [--models a,b] [--json]")
 		}
 		ck, err := cfg.AddAPIKey(name, role, models)
 		if err != nil {
 			return err
+		}
+		if project != "" {
+			if stored := cfg.FindAPIKey(ck.ID); stored != nil {
+				stored.Project = project
+				ck.Project = project
+			}
 		}
 		if err := config.Save(dataDir, cfg); err != nil {
 			return err
@@ -1391,7 +1449,10 @@ func cmdKeys(args []string) error {
 		if gateway.NotifyRunningDaemon(cfg) {
 			reloaded = " (hot-reloaded running service)"
 		}
-		fmt.Printf("Created API key %q (role=%s)%s:\n", ck.Name, ck.Role, reloaded)
+		if asJSON {
+			return json.NewEncoder(os.Stdout).Encode(ck)
+		}
+		fmt.Printf("Created API key %q (role=%s project=%q)%s:\n", ck.Name, ck.Role, ck.Project, reloaded)
 		fmt.Printf("  %s\n", ck.Key)
 		if len(ck.Models) > 0 {
 			fmt.Printf("  Allowed models: %s\n", strings.Join(ck.Models, ", "))

@@ -124,6 +124,32 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return nil
 		})
 
+	case "p":
+		rule := cfg.Routing[a.routingCursor]
+		return a, a.openEditModal("Rule Project Scope", "Project identifier or glob (e.g. work, client-*, or blank for all projects)", rule.Project, func(val string) error {
+			cfg := a.srv.Config()
+			cfg.Routing[a.routingCursor].Project = strings.TrimSpace(val)
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus("Updated project scope for rule "+rule.Pattern, false)
+			return nil
+		})
+
+	case "b":
+		rule := cfg.Routing[a.routingCursor]
+		return a, a.openEditModal("Model Fallback Chain", "Comma-separated fallback models (e.g. codex/gpt-5,deepseek/deepseek-chat)", strings.Join(rule.FallbackModels, ","), func(val string) error {
+			cfg := a.srv.Config()
+			var list []string
+			for _, part := range strings.Split(val, ",") {
+				if p := strings.TrimSpace(part); p != "" {
+					list = append(list, p)
+				}
+			}
+			cfg.Routing[a.routingCursor].FallbackModels = list
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus("Updated fallback models for rule "+rule.Pattern, false)
+			return nil
+		})
+
 	case "4":
 		cfg.Routing[a.routingCursor].AllowCrossAccountRetryOn429 = !cfg.Routing[a.routingCursor].AllowCrossAccountRetryOn429
 		_ = a.srv.ReloadConfig(cfg)
@@ -156,22 +182,30 @@ func (a *App) viewRouting(bodyHeight int) string {
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-24s %-14s %-11s %s", "PATTERN", "STRATEGY", "429 RETRY", "ACCOUNTS")))
+	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-18s %-10s %-12s %-5s %-18s %s", "PATTERN", "PROJECT", "STRATEGY", "429", "ACCOUNTS", "FALLBACKS")))
 
 	for i, r := range cfg.Routing {
 		if a.filterText != "" && !strings.Contains(strings.ToLower(r.Pattern), strings.ToLower(a.filterText)) {
 			continue
 		}
-		accts := "(all matching)"
+		proj := r.Project
+		if proj == "" {
+			proj = "*"
+		}
+		accts := "(all)"
 		if len(r.Accounts) > 0 {
-			accts = strings.Join(r.Accounts, ", ")
+			accts = strings.Join(r.Accounts, ",")
+		}
+		fbs := "—"
+		if len(r.FallbackModels) > 0 {
+			fbs = strings.Join(r.FallbackModels, " -> ")
 		}
 		retry429 := "off"
 		if r.AllowCrossAccountRetryOn429 {
 			retry429 = "on"
 		}
-		row := fmt.Sprintf("%-24s %-14s %-11s %s",
-			truncate(r.Pattern, 24), r.Strategy, retry429, truncate(accts, max(innerW-54, 12)))
+		row := fmt.Sprintf("%-18s %-10s %-12s %-5s %-18s %s",
+			truncate(r.Pattern, 18), truncate(proj, 10), r.Strategy, retry429, truncate(accts, 18), truncate(fbs, max(innerW-70, 10)))
 		if i == a.routingCursor {
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 		} else {

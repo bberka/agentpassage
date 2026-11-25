@@ -28,6 +28,21 @@ func (a *App) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t":
 		a.usageShow14d = !a.usageShow14d
+	case "p":
+		periods := []string{"all", "1h", "24h", "7d", "30d"}
+		cur := a.usagePeriod
+		if cur == "" {
+			cur = "all"
+		}
+		next := periods[0]
+		for i, p := range periods {
+			if p == cur {
+				next = periods[(i+1)%len(periods)]
+				break
+			}
+		}
+		a.usagePeriod = next
+		a.setStatus("Usage period -> "+next, false)
 	case "r", "R":
 		a.setStatus("Refreshing live subscription limits...", false)
 		return a, a.refreshQuotaCmd()
@@ -121,7 +136,11 @@ func (a *App) renderQuotaWindowInline(w *quota.Window, now time.Time) string {
 }
 
 func (a *App) viewUsage(bodyHeight int) string {
-	u := a.srv.LiveUsage()
+	period := a.usagePeriod
+	if period == "" {
+		period = "all"
+	}
+	u := a.srv.LiveUsagePeriod(period)
 	qRep := a.srv.LiveQuota()
 	now := time.Now()
 	fullW := max(a.width-2, 40)
@@ -146,9 +165,19 @@ func (a *App) viewUsage(bodyHeight int) string {
 		chartTitle = "Last 14 Days"
 	}
 
+	costStr := "$0.00"
+	if u.EstimatedCostUSD > 0 {
+		if u.EstimatedCostUSD < 0.01 {
+			costStr = fmt.Sprintf("~$%.4f est", u.EstimatedCostUSD)
+		} else {
+			costStr = fmt.Sprintf("~$%.2f est", u.EstimatedCostUSD)
+		}
+	}
+
 	hubURL := a.srv.UsageHubURL(false)
 	topLines := []string{
-		a.styles.Title.Render("◆ Usage Report Hub") + a.styles.ColGap(3) +
+		a.styles.Title.Render("◆ Usage Report Hub") + a.styles.ColGap(2) +
+			a.styles.Muted.Render("["+period+" · p:period]") + a.styles.ColGap(3) +
 			a.styles.Highlight.Render(hubURL),
 		a.styles.Divider.Render(strings.Repeat("─", innerW)),
 		a.surfaceText("  Requests: ") + a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalRequests)) +
@@ -156,7 +185,8 @@ func (a *App) viewUsage(bodyHeight int) string {
 			rateStyle.Render(fmt.Sprintf("%.1f%%", rate)) +
 			a.surfaceText(fmt.Sprintf(" (%d err)   Tokens: ", u.ErrorRequests)) +
 			a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalTokens)) +
-			a.surfaceText(fmt.Sprintf(" (in:%d out:%d)   Avg: %dms", u.PromptTokens, u.CompletionTokens, u.AvgLatencyMs)),
+			a.surfaceText("   Cost: ") + a.styles.Highlight.Render(costStr) +
+			a.surfaceText(fmt.Sprintf("   Avg: %dms", u.AvgLatencyMs)),
 		a.surfaceText("  ") + a.styles.Muted.Render(chartTitle) + a.surfaceText(":  ") + a.styles.Highlight.Render(renderSparkline(buckets)),
 	}
 	topCard := a.styles.Card.Width(fullW).Render(strings.Join(topLines, "\n"))
@@ -173,7 +203,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "PLAN")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-34s", "PRIMARY / HOURLY")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-26s", "WEEKLY / SECONDARY")),
-		a.styles.TableHeader.Render("AgentPassage 5h/7d"),
+		a.styles.TableHeader.Render("APX 5h/7d"),
 	))
 	if len(qRep.Accounts) == 0 {
 		qLines = append(qLines, a.styles.Muted.Render("No accounts configured yet."))

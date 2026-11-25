@@ -122,6 +122,7 @@ type App struct {
 	logCursor     int
 	logLevel      string
 	usageShow14d  bool
+	usagePeriod   string
 	settingCursor int
 
 	// Welcome / ACP Registry Detect & Install modal

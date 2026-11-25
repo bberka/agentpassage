@@ -14,7 +14,7 @@ import (
 	"github.com/bberka/agentpassage/internal/service"
 )
 
-const settingsCount = 11
+const settingsCount = 12
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -161,6 +161,14 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.openKeysModal()
 		case 10: // Remote Access Guide (Tailscale & Cloudflare Tunnel)
 			a.openRemoteModal()
+		case 11: // Toggle Reversible Privacy Filter
+			cfg.Privacy.Enabled = !cfg.Privacy.Enabled
+			_ = a.srv.ReloadConfig(cfg)
+			if cfg.Privacy.Enabled {
+				a.setStatus("Privacy filter enabled (reversible redaction for API keys, emails, phones)", false)
+			} else {
+				a.setStatus("Privacy filter disabled", false)
+			}
 		}
 	case "S":
 		// Uninstall background service when on Settings
@@ -197,6 +205,12 @@ func (a *App) viewSettings(bodyHeight int) string {
 		healthVal = fmt.Sprintf("every %s   (enter to cycle: off / 1m / 5m / 15m / 30m)", formatHealthInterval(cfg.Health.IntervalSeconds))
 	}
 
+	privVal := "off   (enter to toggle reversible API-key/email/phone redaction)"
+	if cfg.Privacy.Enabled {
+		privVal = fmt.Sprintf("ON (keys=%v emails=%v phones=%v custom=%d)   (enter to toggle)",
+			cfg.Privacy.RedactAPIKeys, cfg.Privacy.RedactEmails, cfg.Privacy.RedactPhones, len(cfg.Privacy.CustomPatterns))
+	}
+
 	rows := []struct {
 		label string
 		value string
@@ -212,6 +226,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Health Check", healthVal},
 		{"API Keys", fmt.Sprintf("1 primary + %d client key(s)   (enter to create/revoke keys)", len(cfg.Server.APIKeys))},
 		{"Remote Access", "Tailscale Serve & Cloudflare Tunnel setup guide   (enter to open)"},
+		{"Privacy Filter", privVal},
 	}
 
 	var lines []string
