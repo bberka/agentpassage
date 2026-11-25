@@ -114,7 +114,7 @@ Usage:
   acpx health [--json] [acct]  Run live health probes across configured accounts
   acpx doctor                  Check CLIs, profiles, storage, and config
   acpx install <tool|all>      Install any ACP tool from the 45+ agent registry
-  acpx connect [client]        Register acpx into T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline
+  acpx connect [client]        Register acpx into T3 Code, Zed, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline
   acpx registry sync           Fetch latest official ACP Registry JSON
   acpx export-env [--shell sh] Print shell exports for OpenAI/Anthropic clients
   acpx version                 Print version
@@ -972,7 +972,7 @@ func cmdConnect(args []string) error {
 			}
 			fmt.Printf("  %-12s %-24s %-14s %s\n", t.ID, t.Name, det, t.Description)
 		}
-		fmt.Println("\nUsage: acpx connect <t3code|opencode|codex|claude|pi|grok|cursor|cline|agy> [--dry-run]")
+		fmt.Println("\nUsage: acpx connect <t3code|zed|opencode|codex|claude|pi|grok|cursor|cline|agy> [--dry-run]")
 		return nil
 	}
 

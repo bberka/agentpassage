@@ -61,12 +61,66 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		t.Fatalf("expected idempotent single acpx block, got:\n%s", codexRaw)
 	}
 
-	// 3. T3 Code provider file
-	t3Path := filepath.Join(dir, "acpx-provider.json")
+	// 3. T3 Code settings.json merge separates commandPath and commandArgs: ["acp"] and keeps snippet concise
+	t3Path := filepath.Join(dir, "t3-settings.json")
+	if err := os.WriteFile(t3Path, []byte(`{"favorites":[],"providerInstances":{"pi":{"driver":"pi","enabled":true},"acpx":{"driver":"acpRegistry","displayName":"My ACPX","config":{"commandPath":"/bad/acpx acp","commandArgs":[]}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	tT3, _ := FindTarget("t3code")
 	res3, err := ApplyAtPath(tT3, t3Path, cfg, models, true)
-	if err != nil || !res3.Applied || !strings.Contains(res3.Snippet, "acp") {
+	if err != nil || !res3.Applied || !strings.Contains(res3.Snippet, "Command Args: acp") {
 		t.Fatalf("t3code connect failed: res=%+v err=%v", res3, err)
+	}
+	if strings.Contains(res3.Snippet, "a-gemini-4-neon") {
+		t.Fatalf("expected concise t3code snippet without listing all models, got:\n%s", res3.Snippet)
+	}
+	t3Raw, _ := os.ReadFile(t3Path)
+	var t3Parsed map[string]any
+	if err := json.Unmarshal(t3Raw, &t3Parsed); err != nil {
+		t.Fatal(err)
+	}
+	t3Provs := t3Parsed["providerInstances"].(map[string]any)
+	if _, ok := t3Provs["pi"]; !ok {
+		t.Fatalf("expected existing T3 Code provider pi preserved")
+	}
+	t3Acpx := t3Provs["acpx"].(map[string]any)
+	if t3Acpx["displayName"] != "My ACPX" {
+		t.Fatalf("expected custom displayName preserved, got %v", t3Acpx["displayName"])
+	}
+	t3Cfg := t3Acpx["config"].(map[string]any)
+	if strings.Contains(t3Cfg["commandPath"].(string), " ") {
+		t.Fatalf("commandPath must not include args, got %q", t3Cfg["commandPath"])
+	}
+	t3Args := t3Cfg["commandArgs"].([]any)
+	if len(t3Args) != 1 || t3Args[0] != "acp" {
+		t.Fatalf("expected commandArgs [acp], got %v", t3Args)
+	}
+
+	// 3b. Zed JSONC settings.json merge (with // comments & trailing commas)
+	zedPath := filepath.Join(dir, "zed-settings.json")
+	zedJSONC := "// Zed settings\n{\n  \"theme\": {\n    \"dark\": \"One Dark\",\n  },\n  \"context_servers\": {\n    \"browse\": { \"command\": \"/usr/bin/browse\" },\n  },\n}\n"
+	if err := os.WriteFile(zedPath, []byte(zedJSONC), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tZed, ok := FindTarget("zed")
+	if !ok {
+		t.Fatalf("expected zed target registered")
+	}
+	resZed, err := ApplyAtPath(tZed, zedPath, cfg, models, true)
+	if err != nil || !resZed.Applied || resZed.Backup == "" {
+		t.Fatalf("zed connect failed: res=%+v err=%v", resZed, err)
+	}
+	zedRaw, _ := os.ReadFile(zedPath)
+	var zedParsed map[string]any
+	if err := json.Unmarshal(zedRaw, &zedParsed); err != nil {
+		t.Fatalf("zed output not valid JSON: %v\n%s", err, zedRaw)
+	}
+	if _, ok := zedParsed["context_servers"]; !ok {
+		t.Fatalf("expected existing context_servers preserved in zed settings")
+	}
+	zedServers := zedParsed["agent_servers"].(map[string]any)
+	if _, ok := zedServers["acpx"]; !ok {
+		t.Fatalf("expected agent_servers.acpx in zed settings, got %s", zedRaw)
 	}
 
 	// 4. Claude Code settings merge

@@ -61,10 +61,18 @@ func ListTargets() []Target {
 		{
 			ID:          "t3code",
 			Name:        "T3 Code",
-			Description: "Register acpx as a Custom ACP agent (`acpx acp`) or OpenAI-compatible provider in T3 Code",
-			ConfigPath:  filepath.Join(home, ".t3", "acpx-provider.json"),
+			Description: "Register acpx as a native ACP agent (`acpx acp`) in ~/.t3/userdata/settings.json",
+			ConfigPath:  filepath.Join(home, ".t3", "userdata", "settings.json"),
 			AutoApply:   true,
 			Detected:    exists(filepath.Join(home, ".t3")),
+		},
+		{
+			ID:          "zed",
+			Name:        "Zed",
+			Description: "Register acpx as a native ACP agent_server (`acpx acp`) in ~/.config/zed/settings.json",
+			ConfigPath:  filepath.Join(home, ".config", "zed", "settings.json"),
+			AutoApply:   true,
+			Detected:    hasBin("zed") || hasBin("zeditor") || exists(filepath.Join(home, ".config", "zed")),
 		},
 		{
 			ID:          "opencode",
@@ -183,39 +191,83 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 
 	switch t.ID {
 	case "t3code":
-		payload := map[string]any{
-			"name": "acpx",
-			"acp": map[string]any{
-				"command": acpxBin,
-				"args":    []string{"acp"},
-			},
-			"openai_compatible": map[string]any{
-				"base_url": baseURL,
-				"api_key":  key,
-				"models":   modelIDs,
-			},
-		}
-		raw, _ := json.MarshalIndent(payload, "", "  ")
 		res.Snippet = fmt.Sprintf(
-			"T3 Code — Option A (Native ACP Agent — recommended):\n"+
-				"  Settings -> Providers -> Custom ACP Agent:\n"+
-				"    Name:    acpx\n"+
-				"    Command: %s acp\n\n"+
-				"T3 Code — Option B (OpenAI-compatible endpoint):\n"+
+			"T3 Code — Native ACP Agent (Settings -> Providers -> Custom ACP Agent):\n"+
+				"    Name:         ACPX\n"+
+				"    Command Path: %s\n"+
+				"    Command Args: acp\n"+
+				"    Models:       %d enabled (auto-discovered via ACP)\n\n"+
+				"OpenAI-compatible endpoint (optional):\n"+
 				"    Base URL: %s\n"+
-				"    API Key:  %s\n"+
-				"    Models:   %s\n",
-			acpxBin, baseURL, key, strings.Join(modelIDs, ", "),
+				"    API Key:  %s\n",
+			acpxBin, len(modelIDs), baseURL, key,
 		)
 		if apply && path != "" {
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				return nil, err
-			}
-			if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				provs, _ := root["providerInstances"].(map[string]any)
+				if provs == nil {
+					provs = make(map[string]any)
+				}
+				existing, _ := provs["acpx"].(map[string]any)
+				displayName := "ACPX"
+				accentColor := "#0050ff"
+				if existing != nil {
+					if dn, ok := existing["displayName"].(string); ok && dn != "" {
+						displayName = dn
+					}
+					if ac, ok := existing["accentColor"].(string); ok && ac != "" {
+						accentColor = ac
+					}
+				}
+				provs["acpx"] = map[string]any{
+					"driver":      "acpRegistry",
+					"displayName": displayName,
+					"accentColor": accentColor,
+					"enabled":     true,
+					"config": map[string]any{
+						"agentId":     "acpx",
+						"source":      "local",
+						"commandPath": acpxBin,
+						"commandArgs": []string{"acp"},
+					},
+				}
+				root["providerInstances"] = provs
+			})
+			if err != nil {
 				return nil, err
 			}
 			res.Applied = true
-			res.Message = "Saved T3 Code provider config to " + path + " — add `" + acpxBin + " acp` in T3 Code Providers!"
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered ACPX provider (%s + [acp]) in %s — reload T3 Code to activate", acpxBin, path)
+		}
+
+	case "zed":
+		agentEntry := map[string]any{
+			"command": acpxBin,
+			"args":    []string{"acp"},
+		}
+		snipRaw, _ := json.MarshalIndent(map[string]any{
+			"agent_servers": map[string]any{
+				"acpx": agentEntry,
+			},
+		}, "", "  ")
+		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# %d models auto-discovered via ACP\n", len(modelIDs))
+
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				servers, _ := root["agent_servers"].(map[string]any)
+				if servers == nil {
+					servers = make(map[string]any)
+				}
+				servers["acpx"] = agentEntry
+				root["agent_servers"] = servers
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered acpx ACP agent_server in %s (%d models auto-discovered)", path, len(modelIDs))
 		}
 
 	case "opencode":
@@ -235,8 +287,14 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			},
 			"models": modelMap,
 		}
-		snipRaw, _ := json.MarshalIndent(map[string]any{"provider": map[string]any{"acpx": providerObj}}, "", "  ")
-		res.Snippet = string(snipRaw)
+		res.Snippet = fmt.Sprintf(
+			"OpenCode provider `acpx`:\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Header:   X-Acpx-Client: opencode\n"+
+				"  Models:   %d configured%s (run `acpx list` to view)\n",
+			baseURL, key, len(modelIDs), loopNote,
+		)
 
 		if apply && path != "" {
 			bak, err := mergeJSONFile(path, func(root map[string]any) {
@@ -326,8 +384,14 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			},
 			"models": piModels,
 		}
-		snipRaw, _ := json.MarshalIndent(map[string]any{"providers": map[string]any{"acpx": piProv}}, "", "  ")
-		res.Snippet = string(snipRaw)
+		res.Snippet = fmt.Sprintf(
+			"Pi Coding Agent provider `acpx`:\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Header:   X-Acpx-Client: pi\n"+
+				"  Models:   %d configured%s (run `acpx list` to view)\n",
+			baseURL, key, len(modelIDs), loopNote,
+		)
 
 		if apply && path != "" {
 			bak, err := mergeJSONFile(path, func(root map[string]any) {
@@ -375,8 +439,8 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			"Cursor Settings -> Models -> OpenAI API Key:\n"+
 				"  Override OpenAI Base URL: %s\n"+
 				"  OpenAI API Key:           %s\n"+
-				"  Add Custom Models:        %s\n",
-			baseURL, key, strings.Join(modelIDs, ", "),
+				"  Models:                   %d enabled (run `acpx list` or GET %s/models)\n",
+			baseURL, key, len(modelIDs), baseURL,
 		)
 		res.Message = "Copy Cursor settings above (Cursor stores settings in its GUI)."
 
@@ -413,7 +477,8 @@ func mergeJSONFile(path string, mutate func(map[string]any)) (string, error) {
 	root := make(map[string]any)
 	var backupPath string
 	if existing, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(existing))) > 0 {
-		if err := json.Unmarshal(existing, &root); err != nil {
+		clean := stripJSONC(existing)
+		if err := json.Unmarshal(clean, &root); err != nil {
 			return "", fmt.Errorf("existing %s is not valid JSON: %w", path, err)
 		}
 		backupPath = path + ".acpx.bak"
@@ -434,6 +499,86 @@ func mergeJSONFile(path string, mutate func(map[string]any)) (string, error) {
 		return "", err
 	}
 	return backupPath, nil
+}
+
+// stripJSONC removes // and /* */ comments and trailing commas outside string literals
+// so JSONC config files (e.g. Zed's settings.json) parse cleanly with encoding/json.
+func stripJSONC(src []byte) []byte {
+	var noComments []byte
+	inStr := false
+	escaped := false
+	for i := 0; i < len(src); i++ {
+		c := src[i]
+		if inStr {
+			noComments = append(noComments, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			noComments = append(noComments, c)
+			continue
+		}
+		if c == '/' && i+1 < len(src) && src[i+1] == '/' {
+			for i < len(src) && src[i] != '\n' {
+				i++
+			}
+			if i < len(src) {
+				noComments = append(noComments, '\n')
+			}
+			continue
+		}
+		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
+			i += 2
+			for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
+				i++
+			}
+			i++
+			continue
+		}
+		noComments = append(noComments, c)
+	}
+
+	// Second pass: strip trailing commas immediately before '}' or ']' (outside strings).
+	out := make([]byte, 0, len(noComments))
+	inStr = false
+	escaped = false
+	for i := 0; i < len(noComments); i++ {
+		c := noComments[i]
+		if inStr {
+			out = append(out, c)
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			out = append(out, c)
+			continue
+		}
+		if c == ',' {
+			j := i + 1
+			for j < len(noComments) && (noComments[j] == ' ' || noComments[j] == '\t' || noComments[j] == '\n' || noComments[j] == '\r') {
+				j++
+			}
+			if j < len(noComments) && (noComments[j] == '}' || noComments[j] == ']') {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func upsertTOMLBlock(path, startMarker, endMarker, block string) (string, error) {

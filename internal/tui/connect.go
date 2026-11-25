@@ -64,7 +64,7 @@ func (a *App) viewConnectModal() string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render("◆ Connect Coding CLIs & T3 Code to acpx"))
-	lines = append(lines, a.styles.Muted.Render("Register your local acpx gateway & models into T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline."))
+	lines = append(lines, a.styles.Muted.Render("Register your local acpx gateway & models into T3 Code, Zed, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline."))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
 
@@ -113,10 +113,10 @@ func (a *App) viewConnectModal() string {
 
 	lines = append(lines, "")
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-	lines = append(lines, strings.Join([]string{
+	lines = append(lines, a.styles.JoinHints(
 		a.styles.KeyHint("enter", "apply / copy"),
 		a.styles.KeyHint("c", "copy snippet"),
 		a.styles.KeyHint("esc", "close"),
-	}, "   "))
+	))
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
 }
