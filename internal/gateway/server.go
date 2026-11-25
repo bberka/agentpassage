@@ -647,6 +647,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/messages", s.withAuth(s.handleAnthropicMessages))
 	mux.HandleFunc("POST /v1/embeddings", s.withAuth(s.handleEmbeddings))
 	mux.HandleFunc("POST /v1/rerank", s.withAuth(s.handleRerank))
+	s.registerCLIProxyCompatRoutes(mux)
 	return mux
 }
 
@@ -804,6 +805,9 @@ func (s *Server) authenticateRequest(r *http.Request) (*authPrincipal, bool) {
 	}
 	if token == "" {
 		token = strings.TrimSpace(r.Header.Get("x-api-key"))
+	}
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("X-Management-Key"))
 	}
 	if token == "" {
 		return nil, false
