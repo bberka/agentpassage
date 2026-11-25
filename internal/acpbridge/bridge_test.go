@@ -65,11 +65,27 @@ func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
 		t.Fatalf("expected b-gemini-4-neon routed to account B, got:\n%s", got)
 	}
 
-	// Verify every output line is valid JSON-RPC 2.0
+	// Verify every output line is valid JSON-RPC 2.0 and session/set_config_option returns configOptions
+	foundSetConfigOpts := false
 	for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
 		var m map[string]any
 		if err := json.Unmarshal([]byte(line), &m); err != nil {
 			t.Fatalf("invalid JSON-RPC line %q: %v", line, err)
 		}
+		if id, ok := m["id"].(float64); ok && id == 3 {
+			res, _ := m["result"].(map[string]any)
+			opts, okOpts := res["configOptions"].([]any)
+			if !okOpts || len(opts) == 0 {
+				t.Fatalf("session/set_config_option must return non-empty configOptions (ACP v1 schema), got: %s", line)
+			}
+			first := opts[0].(map[string]any)
+			if first["currentValue"] != "b-gemini-4-neon" {
+				t.Fatalf("expected updated currentValue b-gemini-4-neon, got %v", first["currentValue"])
+			}
+			foundSetConfigOpts = true
+		}
+	}
+	if !foundSetConfigOpts {
+		t.Fatalf("missing response for session/set_config_option (id=3)")
 	}
 }

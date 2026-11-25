@@ -102,7 +102,13 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				},
 				"agentCapabilities": map[string]any{
 					"loadSession": false,
+					"promptCapabilities": map[string]any{
+						"image":           false,
+						"audio":           false,
+						"embeddedContext": true,
+					},
 				},
+				"authMethods": []any{},
 			})
 
 		case "session/new":
@@ -111,21 +117,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 			_ = json.Unmarshal(msg.Params, &p)
 
-			models := s.gw.Router().ListModels(false)
-			opts := make([]map[string]string, 0, len(models))
-			availModels := make([]map[string]string, 0, len(models))
-			defaultModel := ""
-			for _, m := range models {
-				if defaultModel == "" {
-					defaultModel = m.ID
-				}
-				label := m.ID
-				if m.DisplayName != "" {
-					label = m.DisplayName
-				}
-				opts = append(opts, map[string]string{"value": m.ID, "name": label})
-				availModels = append(availModels, map[string]string{"modelId": m.ID, "name": label})
-			}
+			configOpts, availModels, defaultModel := s.buildModelOptions("")
 
 			sid := fmt.Sprintf("acpx-sess-%d", s.nextID.Add(1))
 			s.sessMu.Lock()
@@ -137,17 +129,8 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.sessMu.Unlock()
 
 			replyOK(msg.ID, map[string]any{
-				"sessionId": sid,
-				"configOptions": []map[string]any{
-					{
-						"id":           "model",
-						"name":         "Model",
-						"category":     "model",
-						"type":         "select",
-						"currentValue": defaultModel,
-						"options":      opts,
-					},
-				},
+				"sessionId":     sid,
+				"configOptions": configOpts,
 				"models": map[string]any{
 					"currentModelId":  defaultModel,
 					"availableModels": availModels,
@@ -161,12 +144,19 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				Value     string `json:"value"`
 			}
 			_ = json.Unmarshal(msg.Params, &p)
+			curModel := p.Value
 			s.sessMu.Lock()
-			if bs, ok := s.sess[p.SessionID]; ok && (p.ConfigID == "model" || p.ConfigID == "") {
-				bs.model = p.Value
+			if bs, ok := s.sess[p.SessionID]; ok {
+				if p.ConfigID == "model" || p.ConfigID == "" {
+					bs.model = p.Value
+				}
+				curModel = bs.model
 			}
 			s.sessMu.Unlock()
-			replyOK(msg.ID, map[string]any{})
+			configOpts, _, _ := s.buildModelOptions(curModel)
+			replyOK(msg.ID, map[string]any{
+				"configOptions": configOpts,
+			})
 
 		case "session/set_model":
 			var p struct {
@@ -185,8 +175,12 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			var p struct {
 				SessionID string `json:"sessionId"`
 				Prompt    []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
+					Type     string `json:"type"`
+					Text     string `json:"text"`
+					Resource *struct {
+						URI  string `json:"uri"`
+						Text string `json:"text"`
+					} `json:"resource,omitempty"`
 				} `json:"prompt"`
 			}
 			_ = json.Unmarshal(msg.Params, &p)
@@ -202,7 +196,18 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			var promptSB strings.Builder
 			for _, b := range p.Prompt {
 				if b.Text != "" {
+					if promptSB.Len() > 0 {
+						promptSB.WriteString("\n")
+					}
 					promptSB.WriteString(b.Text)
+				} else if b.Resource != nil && b.Resource.Text != "" {
+					if promptSB.Len() > 0 {
+						promptSB.WriteString("\n")
+					}
+					if b.Resource.URI != "" {
+						promptSB.WriteString("[" + b.Resource.URI + "]\n")
+					}
+					promptSB.WriteString(b.Resource.Text)
 				}
 			}
 			userText := promptSB.String()
@@ -253,4 +258,44 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		}
 	}
 	return scanner.Err()
+}
+
+func (s *Server) buildModelOptions(selected string) ([]map[string]any, []map[string]string, string) {
+	models := s.gw.Router().ListModels(false)
+	opts := make([]map[string]string, 0, len(models)+1)
+	availModels := make([]map[string]string, 0, len(models)+1)
+	defaultModel := ""
+	hasSelected := false
+	for _, m := range models {
+		if defaultModel == "" {
+			defaultModel = m.ID
+		}
+		if m.ID == selected {
+			hasSelected = true
+		}
+		label := m.ID
+		if m.DisplayName != "" {
+			label = m.DisplayName
+		}
+		opts = append(opts, map[string]string{"value": m.ID, "name": label})
+		availModels = append(availModels, map[string]string{"modelId": m.ID, "name": label})
+	}
+	cur := selected
+	if cur == "" {
+		cur = defaultModel
+	} else if !hasSelected {
+		opts = append(opts, map[string]string{"value": cur, "name": cur})
+		availModels = append(availModels, map[string]string{"modelId": cur, "name": cur})
+	}
+	configOpts := []map[string]any{
+		{
+			"id":           "model",
+			"name":         "Model",
+			"category":     "model",
+			"type":         "select",
+			"currentValue": cur,
+			"options":      opts,
+		},
+	}
+	return configOpts, availModels, cur
 }
