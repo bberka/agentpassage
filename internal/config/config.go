@@ -93,8 +93,9 @@ type ClientKey struct {
 	ID        string   `toml:"id" json:"id"`
 	Name      string   `toml:"name" json:"name"`
 	Key       string   `toml:"key" json:"key"`
-	Role      string   `toml:"role,omitempty" json:"role,omitempty"`     // "client" (default) or "admin"
-	Models    []string `toml:"models,omitempty" json:"models,omitempty"` // optional glob allowlist (empty = all)
+	Role      string   `toml:"role,omitempty" json:"role,omitempty"`       // "client" (default) or "admin"
+	Project   string   `toml:"project,omitempty" json:"project,omitempty"` // optional project scope for project-based routing & usage
+	Models    []string `toml:"models,omitempty" json:"models,omitempty"`   // optional glob allowlist (empty = all)
 	Disabled  bool     `toml:"disabled,omitempty" json:"disabled,omitempty"`
 	CreatedAt string   `toml:"created_at,omitempty" json:"created_at,omitempty"`
 }
@@ -303,11 +304,23 @@ type ModelOverride struct {
 }
 
 type RoutingRule struct {
-	Pattern                     string   `toml:"pattern"` // exact model id, prefix glob like "agy/*", or "*"
+	Pattern                     string   `toml:"pattern"`                                  // exact model id, prefix glob like "agy/*", or "*"
+	Project                     string   `toml:"project,omitempty"`                        // optional project id or glob (matched from X-Apx-Project or API key)
 	Accounts                    []string `toml:"accounts"`
 	Strategy                    string   `toml:"strategy"`
 	AllowCrossAccountRetryOn429 bool     `toml:"allow_cross_account_retry_on_429"`
 	SubscriptionWarningAcked    bool     `toml:"subscription_warning_acked,omitempty"`
+	FallbackModels              []string `toml:"fallback_models,omitempty"`                // alternate models/providers tried after primary model fails
+	FallbackOn                  []string `toml:"fallback_on,omitempty"`                    // eligible error kinds: rate_limit, transient, unavailable
+}
+
+// EffectiveFallbackOn returns the error kinds eligible to trigger model fallback.
+// Defaults strictly to safe, recoverable error cases (never auth/restricted/client-400).
+func (r RoutingRule) EffectiveFallbackOn() []string {
+	if len(r.FallbackOn) > 0 {
+		return r.FallbackOn
+	}
+	return []string{"rate_limit", "transient", "unavailable"}
 }
 
 // DataDir resolves the AgentPassage (apx) storage directory.

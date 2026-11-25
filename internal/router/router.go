@@ -31,6 +31,7 @@ type Plan struct {
 	UpstreamModel   string
 	ReasoningEffort string
 	Backend         string
+	Project         string
 	Rule            config.RoutingRule
 	CandidateIDs    []string
 	IsManual        bool
@@ -219,10 +220,17 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 
 // Resolve maps a requested model name to a routing plan and ordered candidate account IDs.
 func (r *Router) Resolve(requested string) (*Plan, error) {
+	return r.ResolveForProject(requested, "")
+}
+
+// ResolveForProject maps a requested model name and optional project identifier to a routing plan.
+// Project-scoped routing rules take priority over global rules when the project matches.
+func (r *Router) ResolveForProject(requested, project string) (*Plan, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	requested = strings.TrimSpace(requested)
+	project = strings.TrimSpace(project)
 	if requested == "" {
 		return nil, fmt.Errorf("model is required")
 	}
@@ -296,13 +304,14 @@ func (r *Router) Resolve(requested string) (*Plan, error) {
 		upstream := strings.Join(parts[1:], "/")
 		matchedAccounts := r.accountsForBackendLocked(backendID, upstream)
 		if len(matchedAccounts) > 0 {
-			rule := r.matchRuleLocked(canonical, backendID, matchedAccounts)
+			rule := r.matchRuleLocked(canonical, backendID, project, matchedAccounts)
 			candidates := r.orderCandidatesLocked(rule, matchedAccounts)
 			return &Plan{
 				RequestedModel: requested,
 				CanonicalModel: canonical,
 				UpstreamModel:  upstream,
 				Backend:        backendID,
+				Project:        project,
 				Rule:           rule,
 				CandidateIDs:   candidates,
 			}, nil
@@ -333,13 +342,14 @@ func (r *Router) Resolve(requested string) (*Plan, error) {
 		}
 	}
 	if len(matched) > 0 {
-		rule := r.matchRuleLocked(canonical, matched[0].Backend, matched)
+		rule := r.matchRuleLocked(canonical, matched[0].Backend, project, matched)
 		candidates := r.orderCandidatesLocked(rule, matched)
 		return &Plan{
 			RequestedModel: requested,
 			CanonicalModel: canonical,
 			UpstreamModel:  canonical,
 			Backend:        matched[0].Backend,
+			Project:        project,
 			Rule:           rule,
 			CandidateIDs:   candidates,
 		}, nil
@@ -370,7 +380,31 @@ func (r *Router) accountsForBackendLocked(backendID, upstream string) []*config.
 	return anyInBackend
 }
 
-func (r *Router) matchRuleLocked(model, backendID string, accounts []*config.AccountConfig) config.RoutingRule {
+func matchProjectPattern(ruleProj, reqProj string) (matched bool, exact bool) {
+	rp := strings.TrimSpace(ruleProj)
+	if rp == "" {
+		return true, false
+	}
+	qp := strings.TrimSpace(reqProj)
+	if qp == "" {
+		return false, false
+	}
+	if strings.EqualFold(rp, qp) {
+		return true, true
+	}
+	if ok, err := path.Match(strings.ToLower(rp), strings.ToLower(qp)); err == nil && ok {
+		return true, false
+	}
+	if strings.HasSuffix(rp, "*") {
+		prefix := strings.ToLower(strings.TrimSuffix(rp, "*"))
+		if strings.HasPrefix(strings.ToLower(qp), prefix) {
+			return true, false
+		}
+	}
+	return false, false
+}
+
+func (r *Router) matchRuleLocked(model, backendID, project string, accounts []*config.AccountConfig) config.RoutingRule {
 	// Match against both requested model (e.g. "gemini-4-neon") and qualified "<backend>/<model>" (e.g. "agy/gemini-4-neon").
 	targets := []string{model}
 	if backendID != "" && !strings.HasPrefix(model, backendID+"/") {
@@ -381,9 +415,26 @@ func (r *Router) matchRuleLocked(model, backendID string, accounts []*config.Acc
 	bestScore := -1
 	for i := range r.cfg.Routing {
 		rule := &r.cfg.Routing[i]
+		projMatched, projExact := matchProjectPattern(rule.Project, project)
+		if !projMatched {
+			continue
+		}
+		projBonus := 0
+		if strings.TrimSpace(rule.Project) != "" {
+			projBonus = 10000 + len(strings.TrimSuffix(rule.Project, "*"))
+			if projExact {
+				projBonus += 1000
+			}
+		}
+
 		for _, t := range targets {
 			if rule.Pattern == t {
-				return *rule
+				score := projBonus + 500 + len(t)
+				if score > bestScore {
+					bestScore = score
+					best = rule
+				}
+				continue
 			}
 			matched, err := path.Match(rule.Pattern, t)
 			if !matched || err != nil {
@@ -393,7 +444,7 @@ func (r *Router) matchRuleLocked(model, backendID string, accounts []*config.Acc
 				}
 			}
 			if matched {
-				score := len(strings.TrimSuffix(rule.Pattern, "*"))
+				score := projBonus + len(strings.TrimSuffix(rule.Pattern, "*"))
 				if score > bestScore {
 					bestScore = score
 					best = rule
@@ -410,6 +461,7 @@ func (r *Router) matchRuleLocked(model, backendID string, accounts []*config.Acc
 	}
 	return config.RoutingRule{
 		Pattern:                     model,
+		Project:                     project,
 		Accounts:                    ids,
 		Strategy:                    config.StrategyFailover,
 		AllowCrossAccountRetryOn429: true,

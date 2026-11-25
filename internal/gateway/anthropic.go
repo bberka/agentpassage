@@ -61,10 +61,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		})
 	}
 
-	sessionKey := strings.TrimSpace(r.Header.Get("X-Apx-Session"))
+	sessionKey := headerFirst(r, "X-Apx-Session", "X-Acpx-Session")
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(req.Metadata.UserID)
 	}
+	project := projectFromRequest(r)
 
 	effort := ""
 	if req.OutputConfig != nil && req.OutputConfig.Effort != "" {
@@ -77,19 +78,20 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		Model:           req.Model,
 		ReasoningEffort: effort,
 		Messages:        msgs,
-		Stream:      req.Stream,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
-		SessionKey:  sessionKey,
-		Cwd:         strings.TrimSpace(r.Header.Get("X-Apx-Cwd")),
-		HasTools:    len(req.Tools) > 0,
+		Stream:          req.Stream,
+		Temperature:     req.Temperature,
+		MaxTokens:       req.MaxTokens,
+		SessionKey:      sessionKey,
+		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
+		HasTools:        len(req.Tools) > 0,
 	}
 
-	if p := principalFromContext(r.Context()); p != nil && p.Client != nil && !p.Client.AllowsModel(req.Model) {
-		writeAnthropicError(w, http.StatusForbidden, "permission_error", fmt.Sprintf("API key %q is not allowed to access model %q.", p.KeyName, req.Model))
+	principal := principalFromContext(r.Context())
+	if principal != nil && principal.Client != nil && !principal.Client.AllowsModel(req.Model) {
+		writeAnthropicError(w, http.StatusForbidden, "permission_error", fmt.Sprintf("API key %q is not allowed to access model %q.", principal.KeyName, req.Model))
 		return
 	}
-	plan, err := s.router.Resolve(req.Model)
+	plan, err := s.router.ResolveForProject(req.Model, project)
 	if err != nil {
 		s.logRequest(r, req.Model, "", http.StatusNotFound, start, err)
 		writeAnthropicError(w, http.StatusNotFound, "not_found_error", err.Error())
@@ -106,11 +108,12 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	chatReq = applyPrivacyToRequest(privSess, chatReq)
 
 	if req.Stream {
-		s.executeAnthropicStream(w, r, plan, chatReq, privSess, start)
+		s.executeAnthropicStream(w, r, plan, project, principal, chatReq, privSess, start)
 		return
 	}
 
-	resp, acct, status, execErr := s.executeNonStream(r.Context(), plan, chatReq)
+	res := s.executeNonStreamWithFallback(r.Context(), plan, project, principal, chatReq)
+	resp, acct, status, execErr := res.Resp, res.Account, res.Status, res.Err
 	if execErr != nil {
 		acctName := ""
 		if acct != nil {
@@ -122,11 +125,18 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	if privSess != nil {
 		resp.Content = privSess.RestoreText(resp.Content)
-		s.recordPrivacyHeader(w, privSess, req.Model)
+		s.recordPrivacyHeader(w, privSess, res.UsedModel)
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
 	w.Header().Set("X-Apx-Account", acctName)
+	w.Header().Set("X-Apx-Model", res.UsedModel)
+	if res.FallbackFrom != "" {
+		w.Header().Set("X-Apx-Fallback-From", res.FallbackFrom)
+	}
+	if project != "" {
+		w.Header().Set("X-Apx-Project", project)
+	}
 	if resp.ToolsIgnored {
 		w.Header().Set("X-Apx-Tools-Ignored", "true")
 	}
@@ -159,174 +169,195 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, plan *router.Plan, req backend.ChatRequest, privSess *privacy.Session, start time.Time) {
-	tried := make(map[string]bool)
+func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, primaryPlan *router.Plan, project string, principal *authPrincipal, req backend.ChatRequest, privSess *privacy.Session, start time.Time) {
+	chain := s.buildModelChain(primaryPlan, project, principal)
 	var lastErr error
 	var lastAcct string
 
-	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-		lease, err := s.pool.Acquire(pool.SelectRequest{
-			RuleKey:                  plan.Rule.Pattern,
-			Strategy:                 plan.Rule.Strategy,
-			CandidateIDs:             plan.CandidateIDs,
-			SessionKey:               req.SessionKey,
-			SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-			ExcludeIDs:               tried,
-		})
-		if err != nil {
-			if lastErr != nil {
-				s.logRequest(r, req.Model, lastAcct, httpStatusFromError(lastErr), start, lastErr)
-				writeAnthropicError(w, httpStatusFromError(lastErr), "api_error", lastErr.Error())
-				return
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeAnthropicError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
+		return
+	}
+
+	for planIdx, plan := range chain {
+		if planIdx > 0 {
+			if loopErr := checkLoopGuard(r, plan); loopErr != nil {
+				continue
 			}
-			s.logRequest(r, req.Model, "", httpStatusFromPoolError(err), start, err)
-			writeAnthropicError(w, httpStatusFromPoolError(err), "overloaded_error", err.Error())
-			return
 		}
+		tried := make(map[string]bool)
+		var planErr error
 
-		acct := lease.Account
-		acctName := acct.Backend + "/" + acct.Name
-		lastAcct = acctName
-		tried[acct.ID] = true
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			lease.Release()
-			writeAnthropicError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
-			return
-		}
-
-		headersSent := false
-		msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
-		stopReason := "end_turn"
-		var outputTokens int
-
-		sendStart := func(toolsIgnored bool, sessionID string) {
-			if headersSent {
-				return
-			}
-			headersSent = true
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
-			w.Header().Set("X-Apx-Account", acctName)
-			if toolsIgnored {
-				w.Header().Set("X-Apx-Tools-Ignored", "true")
-			}
-			if sessionID != "" {
-				w.Header().Set("X-Apx-Session-Id", sessionID)
-			}
-			s.recordPrivacyHeader(w, privSess, req.Model)
-			w.WriteHeader(http.StatusOK)
-			writeAnthropicEvent(w, "message_start", map[string]any{
-				"type": "message_start",
-				"message": map[string]any{
-					"id":      msgID,
-					"type":    "message",
-					"role":    "assistant",
-					"model":   req.Model,
-					"content": []any{},
-					"usage":   map[string]any{"input_tokens": 0, "output_tokens": 0},
-				},
+		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
+			lease, err := s.pool.Acquire(pool.SelectRequest{
+				RuleKey:                  plan.Rule.Pattern,
+				Strategy:                 plan.Rule.Strategy,
+				CandidateIDs:             plan.CandidateIDs,
+				SessionKey:               req.SessionKey,
+				SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
+				ExcludeIDs:               tried,
 			})
-			writeAnthropicEvent(w, "content_block_start", map[string]any{
-				"type":          "content_block_start",
-				"index":         0,
-				"content_block": map[string]any{"type": "text", "text": ""},
-			})
-			flusher.Flush()
-		}
-
-		deltaRestorer := privSess.NewStreamRestorer()
-		cb := func(ch backend.StreamChunk) error {
-			sendStart(ch.ToolsIgnored, ch.SessionID)
-			restored := deltaRestorer.Push(ch.Delta)
-			if ch.FinishReason != "" {
-				restored += deltaRestorer.Flush()
+			if err != nil {
+				if planErr == nil {
+					planErr = err
+				}
+				break
 			}
-			if restored != "" {
-				writeAnthropicEvent(w, "content_block_delta", map[string]any{
-					"type":  "content_block_delta",
-					"index": 0,
-					"delta": map[string]any{"type": "text_delta", "text": restored},
+
+			acct := lease.Account
+			acctName := acct.Backend + "/" + acct.Name
+			lastAcct = acctName
+			tried[acct.ID] = true
+
+			headersSent := false
+			msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+			stopReason := "end_turn"
+			var outputTokens int
+			usedModel := plan.RequestedModel
+
+			sendStart := func(toolsIgnored bool, sessionID string) {
+				if headersSent {
+					return
+				}
+				headersSent = true
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.Header().Set("X-Apx-Account", acctName)
+				w.Header().Set("X-Apx-Model", usedModel)
+				if planIdx > 0 {
+					w.Header().Set("X-Apx-Fallback-From", primaryPlan.RequestedModel)
+				}
+				if project != "" {
+					w.Header().Set("X-Apx-Project", project)
+				}
+				if toolsIgnored {
+					w.Header().Set("X-Apx-Tools-Ignored", "true")
+				}
+				if sessionID != "" {
+					w.Header().Set("X-Apx-Session-Id", sessionID)
+				}
+				s.recordPrivacyHeader(w, privSess, usedModel)
+				w.WriteHeader(http.StatusOK)
+				writeAnthropicEvent(w, "message_start", map[string]any{
+					"type": "message_start",
+					"message": map[string]any{
+						"id":      msgID,
+						"type":    "message",
+						"role":    "assistant",
+						"model":   usedModel,
+						"content": []any{},
+						"usage":   map[string]any{"input_tokens": 0, "output_tokens": 0},
+					},
+				})
+				writeAnthropicEvent(w, "content_block_start", map[string]any{
+					"type":          "content_block_start",
+					"index":         0,
+					"content_block": map[string]any{"type": "text", "text": ""},
 				})
 				flusher.Flush()
 			}
-			if ch.FinishReason == "length" {
-				stopReason = "max_tokens"
+
+			deltaRestorer := privSess.NewStreamRestorer()
+			cb := func(ch backend.StreamChunk) error {
+				sendStart(ch.ToolsIgnored, ch.SessionID)
+				restored := deltaRestorer.Push(ch.Delta)
+				if ch.FinishReason != "" {
+					restored += deltaRestorer.Flush()
+				}
+				if restored != "" {
+					writeAnthropicEvent(w, "content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": 0,
+						"delta": map[string]any{"type": "text_delta", "text": restored},
+					})
+					flusher.Flush()
+				}
+				if ch.FinishReason == "length" {
+					stopReason = "max_tokens"
+				}
+				if ch.Usage != nil && ch.Usage.CompletionTokens > 0 {
+					outputTokens = ch.Usage.CompletionTokens
+				}
+				return nil
 			}
-			if ch.Usage != nil && ch.Usage.CompletionTokens > 0 {
-				outputTokens = ch.Usage.CompletionTokens
+
+			acctReq := req
+			acctReq.Model = usedModel
+			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, req.ReasoningEffort)
+
+			var streamErr error
+			switch acct.Kind {
+			case config.KindACP:
+				streamErr = s.acpBE.Stream(r.Context(), acct, acctReq, cb)
+			case config.KindCLI:
+				streamErr = s.cliBE.Stream(r.Context(), acct, acctReq, cb)
+			default:
+				apiKey, _ := s.secrets.Get(acct.ID)
+				streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, acctReq, cb)
 			}
-			return nil
-		}
+			lease.Release()
 
-		acctReq := req
-		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, req.ReasoningEffort)
-
-		var streamErr error
-		switch acct.Kind {
-		case config.KindACP:
-			streamErr = s.acpBE.Stream(r.Context(), acct, acctReq, cb)
-		case config.KindCLI:
-			streamErr = s.cliBE.Stream(r.Context(), acct, acctReq, cb)
-		default:
-			apiKey, _ := s.secrets.Get(acct.ID)
-			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, acctReq, cb)
-		}
-		lease.Release()
-
-		if streamErr == nil {
-			s.pool.RecordSuccess(acct.ID)
-			sendStart(acct.Kind == config.KindACP && req.HasTools, "")
-			if tail := deltaRestorer.Flush(); tail != "" {
-				writeAnthropicEvent(w, "content_block_delta", map[string]any{
-					"type":  "content_block_delta",
+			if streamErr == nil {
+				s.pool.RecordSuccess(acct.ID)
+				sendStart(acct.Kind == config.KindACP && req.HasTools, "")
+				if tail := deltaRestorer.Flush(); tail != "" {
+					writeAnthropicEvent(w, "content_block_delta", map[string]any{
+						"type":  "content_block_delta",
+						"index": 0,
+						"delta": map[string]any{"type": "text_delta", "text": tail},
+					})
+				}
+				writeAnthropicEvent(w, "content_block_stop", map[string]any{
+					"type":  "content_block_stop",
 					"index": 0,
-					"delta": map[string]any{"type": "text_delta", "text": tail},
 				})
+				writeAnthropicEvent(w, "message_delta", map[string]any{
+					"type":  "message_delta",
+					"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+					"usage": map[string]any{"output_tokens": outputTokens},
+				})
+				writeAnthropicEvent(w, "message_stop", map[string]any{"type": "message_stop"})
+				flusher.Flush()
+				u := backend.Usage{PromptTokens: estimateMessagesTokens(req.Messages), CompletionTokens: outputTokens}
+				u.TotalTokens = u.PromptTokens + u.CompletionTokens
+				s.recordUsage(r.URL.Path, usedModel, acctName, acct.Backend, http.StatusOK, start, u, outputTokens == 0)
+				s.logRequest(r, usedModel, acctName, http.StatusOK, start, nil)
+				return
 			}
-			writeAnthropicEvent(w, "content_block_stop", map[string]any{
-				"type":  "content_block_stop",
-				"index": 0,
-			})
-			writeAnthropicEvent(w, "message_delta", map[string]any{
-				"type":  "message_delta",
-				"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
-				"usage": map[string]any{"output_tokens": outputTokens},
-			})
-			writeAnthropicEvent(w, "message_stop", map[string]any{"type": "message_stop"})
-			flusher.Flush()
-			u := backend.Usage{PromptTokens: estimateMessagesTokens(req.Messages), CompletionTokens: outputTokens}
-			u.TotalTokens = u.PromptTokens + u.CompletionTokens
-			s.recordUsage(r.URL.Path, req.Model, acctName, acct.Backend, http.StatusOK, start, u, outputTokens == 0)
-			s.logRequest(r, req.Model, acctName, http.StatusOK, start, nil)
-			return
+
+			planErr = streamErr
+			lastErr = streamErr
+			allowFailover := s.pool.RecordError(acct.ID, streamErr, plan.Rule)
+			if headersSent {
+				s.logRequest(r, usedModel, acctName, httpStatusFromError(streamErr), start, streamErr)
+				writeAnthropicEvent(w, "error", map[string]any{
+					"type":  "error",
+					"error": map[string]any{"type": "api_error", "message": streamErr.Error()},
+				})
+				flusher.Flush()
+				return
+			}
+			if !allowFailover {
+				break
+			}
 		}
 
-		lastErr = streamErr
-		allowFailover := s.pool.RecordError(acct.ID, streamErr, plan.Rule)
-		if headersSent {
-			s.logRequest(r, req.Model, acctName, httpStatusFromError(streamErr), start, streamErr)
-			writeAnthropicEvent(w, "error", map[string]any{
-				"type":  "error",
-				"error": map[string]any{"type": "api_error", "message": streamErr.Error()},
-			})
-			flusher.Flush()
-			return
+		if planErr != nil {
+			lastErr = planErr
 		}
-		if !allowFailover {
-			s.logRequest(r, req.Model, acctName, httpStatusFromError(streamErr), start, streamErr)
-			writeAnthropicError(w, httpStatusFromError(streamErr), "api_error", streamErr.Error())
-			return
+		if !shouldFallbackModel(lastErr, primaryPlan.Rule) {
+			break
 		}
 	}
 
 	if lastErr == nil {
 		lastErr = pool.ErrNoAvailableAccount
 	}
-	s.logRequest(r, req.Model, lastAcct, httpStatusFromError(lastErr), start, lastErr)
-	writeAnthropicError(w, httpStatusFromError(lastErr), "api_error", lastErr.Error())
+	status := httpStatusFromError(lastErr)
+	s.logRequest(r, req.Model, lastAcct, status, start, lastErr)
+	writeAnthropicError(w, status, "api_error", lastErr.Error())
 }
 
 func writeAnthropicEvent(w io.Writer, event string, payload any) {

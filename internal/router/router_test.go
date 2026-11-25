@@ -178,3 +178,28 @@ func TestPrefixedModelRegistrationAndPrimaryFirstFailover(t *testing.T) {
 		t.Fatalf("expected failover to agy-b after agy-a 429, got %s", l3.Account.ID)
 	}
 }
+
+func TestProjectBasedRoutingPriority(t *testing.T) {
+	cfg := config.Default()
+	cfg.Accounts = []config.AccountConfig{
+		{ID: "ds-personal", Name: "personal", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"deepseek-chat"}},
+		{ID: "ds-work", Name: "work", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"deepseek-chat"}},
+	}
+	cfg.Routing = []config.RoutingRule{
+		{Pattern: "deepseek/*", Accounts: []string{"ds-personal"}, Strategy: config.StrategyFailover},
+		{Pattern: "deepseek/*", Project: "work", Accounts: []string{"ds-work"}, Strategy: config.StrategyFailover, FallbackModels: []string{"openai/gpt-4o"}},
+	}
+	r := New(cfg)
+
+	// Default (no project) matches global rule -> ds-personal
+	pGlobal, err := r.ResolveForProject("deepseek/deepseek-chat", "")
+	if err != nil || pGlobal.CandidateIDs[0] != "ds-personal" {
+		t.Fatalf("expected ds-personal for default project, got %+v err=%v", pGlobal, err)
+	}
+
+	// Project "work" matches project-scoped rule -> ds-work with fallback chain
+	pWork, err := r.ResolveForProject("deepseek/deepseek-chat", "work")
+	if err != nil || pWork.CandidateIDs[0] != "ds-work" || len(pWork.Rule.FallbackModels) != 1 {
+		t.Fatalf("expected ds-work with fallback for project 'work', got %+v err=%v", pWork, err)
+	}
+}

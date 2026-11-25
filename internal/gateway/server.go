@@ -990,29 +990,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if maxTok == 0 {
 		maxTok = req.MaxCompTok
 	}
-	sessionKey := strings.TrimSpace(r.Header.Get("X-Apx-Session"))
+	sessionKey := headerFirst(r, "X-Apx-Session", "X-Acpx-Session")
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(req.User)
 	}
+	project := projectFromRequest(r)
 
 	chatReq := backend.ChatRequest{
 		Model:           req.Model,
 		ReasoningEffort: router.NormalizeEffort(req.ReasoningEffort),
 		Messages:        msgs,
-		Stream:        req.Stream,
-		Temperature:   req.Temperature,
-		MaxTokens:     maxTok,
-		SessionKey:    sessionKey,
-		Cwd:           strings.TrimSpace(r.Header.Get("X-Apx-Cwd")),
-		HasTools:      len(req.Tools) > 0 || len(req.Functions) > 0,
-		RawOpenAIBody: rawBody,
+		Stream:          req.Stream,
+		Temperature:     req.Temperature,
+		MaxTokens:       maxTok,
+		SessionKey:      sessionKey,
+		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
+		HasTools:        len(req.Tools) > 0 || len(req.Functions) > 0,
+		RawOpenAIBody:   rawBody,
 	}
 
-	if p := principalFromContext(r.Context()); p != nil && p.Client != nil && !p.Client.AllowsModel(req.Model) {
-		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", fmt.Sprintf("API key %q is not allowed to access model %q.", p.KeyName, req.Model))
+	principal := principalFromContext(r.Context())
+	if principal != nil && principal.Client != nil && !principal.Client.AllowsModel(req.Model) {
+		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", fmt.Sprintf("API key %q is not allowed to access model %q.", principal.KeyName, req.Model))
 		return
 	}
-	plan, err := s.router.Resolve(req.Model)
+	plan, err := s.router.ResolveForProject(req.Model, project)
 	if err != nil {
 		s.logRequest(r, req.Model, "", http.StatusNotFound, start, err)
 		writeOpenAIError(w, http.StatusNotFound, "model_not_found", err.Error())
@@ -1029,11 +1031,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	chatReq = applyPrivacyToRequest(privSess, chatReq)
 
 	if req.Stream {
-		s.executeOpenAIStream(w, r, plan, chatReq, privSess, start)
+		s.executeOpenAIStream(w, r, plan, project, principal, chatReq, privSess, start)
 		return
 	}
 
-	resp, acct, status, execErr := s.executeNonStream(r.Context(), plan, chatReq)
+	res := s.executeNonStreamWithFallback(r.Context(), plan, project, principal, chatReq)
+	resp, acct, status, execErr := res.Resp, res.Account, res.Status, res.Err
 	if execErr != nil {
 		acctName := ""
 		backendID := plan.Backend
@@ -1048,11 +1051,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	if privSess != nil {
 		resp.Content = privSess.RestoreText(resp.Content)
-		s.recordPrivacyHeader(w, privSess, req.Model)
+		s.recordPrivacyHeader(w, privSess, res.UsedModel)
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
 	w.Header().Set("X-Apx-Account", acctName)
+	w.Header().Set("X-Apx-Model", res.UsedModel)
+	if res.FallbackFrom != "" {
+		w.Header().Set("X-Apx-Fallback-From", res.FallbackFrom)
+	}
+	if project != "" {
+		w.Header().Set("X-Apx-Project", project)
+	}
 	if resp.ToolsIgnored {
 		w.Header().Set("X-Apx-Tools-Ignored", "true")
 	}
@@ -1188,209 +1198,236 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 	return nil, lastAcct, httpStatusFromError(lastErr), lastErr
 }
 
-func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, plan *router.Plan, req backend.ChatRequest, privSess *privacy.Session, start time.Time) {
-	tried := make(map[string]bool)
+func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, primaryPlan *router.Plan, project string, principal *authPrincipal, req backend.ChatRequest, privSess *privacy.Session, start time.Time) {
+	chain := s.buildModelChain(primaryPlan, project, principal)
 	var lastErr error
 	var lastAcct string
 
-	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-		lease, err := s.pool.Acquire(pool.SelectRequest{
-			RuleKey:                  plan.Rule.Pattern,
-			Strategy:                 plan.Rule.Strategy,
-			CandidateIDs:             plan.CandidateIDs,
-			SessionKey:               req.SessionKey,
-			SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-			ExcludeIDs:               tried,
-		})
-		if err != nil {
-			if lastErr != nil {
-				s.logRequest(r, req.Model, lastAcct, httpStatusFromError(lastErr), start, lastErr)
-				writeOpenAIError(w, httpStatusFromError(lastErr), "backend_error", lastErr.Error())
-				return
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeOpenAIError(w, http.StatusInternalServerError, "streaming_unsupported", "streaming unsupported")
+		return
+	}
+
+	for planIdx, plan := range chain {
+		if planIdx > 0 {
+			if loopErr := checkLoopGuard(r, plan); loopErr != nil {
+				continue
 			}
-			s.logRequest(r, req.Model, "", httpStatusFromPoolError(err), start, err)
-			writeOpenAIError(w, httpStatusFromPoolError(err), "pool_error", err.Error())
-			return
 		}
+		tried := make(map[string]bool)
+		var planErr error
 
-		acct := lease.Account
-		acctName := acct.Backend + "/" + acct.Name
-		lastAcct = acctName
-		tried[acct.ID] = true
-
-		flusher, ok := w.(http.Flusher)
-		if !ok {
-			lease.Release()
-			writeOpenAIError(w, http.StatusInternalServerError, "streaming_unsupported", "streaming unsupported")
-			return
-		}
-
-		headersSent := false
-		compID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
-		created := time.Now().Unix()
-
-		sendHeaders := func(toolsIgnored bool, sessionID string) {
-			if headersSent {
-				return
-			}
-			headersSent = true
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("Connection", "keep-alive")
-			w.Header().Set("X-Apx-Account", acctName)
-			if toolsIgnored {
-				w.Header().Set("X-Apx-Tools-Ignored", "true")
-			}
-			if sessionID != "" {
-				w.Header().Set("X-Apx-Session-Id", sessionID)
-			}
-			s.recordPrivacyHeader(w, privSess, req.Model)
-			w.WriteHeader(http.StatusOK)
-			// Initial role chunk
-			writeSSE(w, map[string]any{
-				"id":      compID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   req.Model,
-				"choices": []map[string]any{
-					{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil},
-				},
+		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
+			lease, err := s.pool.Acquire(pool.SelectRequest{
+				RuleKey:                  plan.Rule.Pattern,
+				Strategy:                 plan.Rule.Strategy,
+				CandidateIDs:             plan.CandidateIDs,
+				SessionKey:               req.SessionKey,
+				SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
+				ExcludeIDs:               tried,
 			})
-			flusher.Flush()
-		}
+			if err != nil {
+				if planErr == nil {
+					planErr = err
+				}
+				break
+			}
 
-		var finishedSent bool
-		var streamUsage backend.Usage
-		var outTextLen int
-		deltaRestorer := privSess.NewStreamRestorer()
-		reasonRestorer := privSess.NewStreamRestorer()
-		cb := func(ch backend.StreamChunk) error {
-			sendHeaders(ch.ToolsIgnored, ch.SessionID)
-			restoredDelta := deltaRestorer.Push(ch.Delta)
-			restoredReason := reasonRestorer.Push(ch.Reasoning)
-			if ch.FinishReason != "" {
-				restoredDelta += deltaRestorer.Flush()
-				restoredReason += reasonRestorer.Flush()
+			acct := lease.Account
+			acctName := acct.Backend + "/" + acct.Name
+			lastAcct = acctName
+			tried[acct.ID] = true
+
+			headersSent := false
+			compID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+			created := time.Now().Unix()
+			usedModel := plan.RequestedModel
+
+			sendHeaders := func(toolsIgnored bool, sessionID string) {
+				if headersSent {
+					return
+				}
+				headersSent = true
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				w.Header().Set("X-Apx-Account", acctName)
+				w.Header().Set("X-Apx-Model", usedModel)
+				if planIdx > 0 {
+					w.Header().Set("X-Apx-Fallback-From", primaryPlan.RequestedModel)
+				}
+				if project != "" {
+					w.Header().Set("X-Apx-Project", project)
+				}
+				if toolsIgnored {
+					w.Header().Set("X-Apx-Tools-Ignored", "true")
+				}
+				if sessionID != "" {
+					w.Header().Set("X-Apx-Session-Id", sessionID)
+				}
+				s.recordPrivacyHeader(w, privSess, usedModel)
+				w.WriteHeader(http.StatusOK)
+				// Initial role chunk
+				writeSSE(w, map[string]any{
+					"id":      compID,
+					"object":  "chat.completion.chunk",
+					"created": created,
+					"model":   usedModel,
+					"choices": []map[string]any{
+						{"index": 0, "delta": map[string]any{"role": "assistant"}, "finish_reason": nil},
+					},
+				})
+				flusher.Flush()
 			}
-			delta := map[string]any{}
-			if restoredDelta != "" {
-				delta["content"] = restoredDelta
-				outTextLen += len(restoredDelta)
-			}
-			if restoredReason != "" {
-				delta["reasoning_content"] = restoredReason
-			}
-			if len(delta) == 0 && ch.FinishReason == "" && ch.Usage == nil {
+
+			var finishedSent bool
+			var streamUsage backend.Usage
+			var outTextLen int
+			deltaRestorer := privSess.NewStreamRestorer()
+			reasonRestorer := privSess.NewStreamRestorer()
+			cb := func(ch backend.StreamChunk) error {
+				sendHeaders(ch.ToolsIgnored, ch.SessionID)
+				restoredDelta := deltaRestorer.Push(ch.Delta)
+				restoredReason := reasonRestorer.Push(ch.Reasoning)
+				if ch.FinishReason != "" {
+					restoredDelta += deltaRestorer.Flush()
+					restoredReason += reasonRestorer.Flush()
+				}
+				delta := map[string]any{}
+				if restoredDelta != "" {
+					delta["content"] = restoredDelta
+					outTextLen += len(restoredDelta)
+				}
+				if restoredReason != "" {
+					delta["reasoning_content"] = restoredReason
+				}
+				if len(delta) == 0 && ch.FinishReason == "" && ch.Usage == nil {
+					return nil
+				}
+				var fr any = nil
+				if ch.FinishReason != "" {
+					fr = ch.FinishReason
+					finishedSent = true
+				}
+				payload := map[string]any{
+					"id":      compID,
+					"object":  "chat.completion.chunk",
+					"created": created,
+					"model":   usedModel,
+					"choices": []map[string]any{
+						{"index": 0, "delta": delta, "finish_reason": fr},
+					},
+				}
+				if ch.Usage != nil {
+					payload["usage"] = ch.Usage
+					streamUsage = *ch.Usage
+				}
+				writeSSE(w, payload)
+				flusher.Flush()
 				return nil
 			}
-			var fr any = nil
-			if ch.FinishReason != "" {
-				fr = ch.FinishReason
-				finishedSent = true
-			}
-			payload := map[string]any{
-				"id":      compID,
-				"object":  "chat.completion.chunk",
-				"created": created,
-				"model":   req.Model,
-				"choices": []map[string]any{
-					{"index": 0, "delta": delta, "finish_reason": fr},
-				},
-			}
-			if ch.Usage != nil {
-				payload["usage"] = ch.Usage
-				streamUsage = *ch.Usage
-			}
-			writeSSE(w, payload)
-			flusher.Flush()
-			return nil
-		}
 
-		acctReq := req
-		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, req.ReasoningEffort)
+			acctReq := req
+			acctReq.Model = usedModel
+			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, req.ReasoningEffort)
 
-		var streamErr error
-		switch acct.Kind {
-		case config.KindACP:
-			streamErr = s.acpBE.Stream(r.Context(), acct, acctReq, cb)
-		case config.KindCLI:
-			streamErr = s.cliBE.Stream(r.Context(), acct, acctReq, cb)
-		default:
-			apiKey, _ := s.secrets.Get(acct.ID)
-			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, acctReq, cb)
-		}
-		lease.Release()
-
-		if streamErr == nil {
-			s.pool.RecordSuccess(acct.ID)
-			if !headersSent {
-				sendHeaders(acct.Kind == config.KindACP && req.HasTools, "")
+			var streamErr error
+			switch acct.Kind {
+			case config.KindACP:
+				streamErr = s.acpBE.Stream(r.Context(), acct, acctReq, cb)
+			case config.KindCLI:
+				streamErr = s.cliBE.Stream(r.Context(), acct, acctReq, cb)
+			default:
+				apiKey, _ := s.secrets.Get(acct.ID)
+				streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, acctReq, cb)
 			}
-			if tailDelta, tailReason := deltaRestorer.Flush(), reasonRestorer.Flush(); tailDelta != "" || tailReason != "" {
-				delta := map[string]any{}
-				if tailDelta != "" {
-					delta["content"] = tailDelta
-					outTextLen += len(tailDelta)
+			lease.Release()
+
+			if streamErr == nil {
+				s.pool.RecordSuccess(acct.ID)
+				if !headersSent {
+					sendHeaders(acct.Kind == config.KindACP && req.HasTools, "")
 				}
-				if tailReason != "" {
-					delta["reasoning_content"] = tailReason
+				if tailDelta, tailReason := deltaRestorer.Flush(), reasonRestorer.Flush(); tailDelta != "" || tailReason != "" {
+					delta := map[string]any{}
+					if tailDelta != "" {
+						delta["content"] = tailDelta
+						outTextLen += len(tailDelta)
+					}
+					if tailReason != "" {
+						delta["reasoning_content"] = tailReason
+					}
+					writeSSE(w, map[string]any{
+						"id":      compID,
+						"object":  "chat.completion.chunk",
+						"created": created,
+						"model":   usedModel,
+						"choices": []map[string]any{
+							{"index": 0, "delta": delta, "finish_reason": nil},
+						},
+					})
 				}
-				writeSSE(w, map[string]any{
-					"id":      compID,
-					"object":  "chat.completion.chunk",
-					"created": created,
-					"model":   req.Model,
-					"choices": []map[string]any{
-						{"index": 0, "delta": delta, "finish_reason": nil},
-					},
-				})
+				if !finishedSent {
+					writeSSE(w, map[string]any{
+						"id":      compID,
+						"object":  "chat.completion.chunk",
+						"created": created,
+						"model":   usedModel,
+						"choices": []map[string]any{
+							{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"},
+						},
+					})
+				}
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+				flusher.Flush()
+				est := false
+				if streamUsage.TotalTokens == 0 {
+					streamUsage.PromptTokens = estimateMessagesTokens(req.Messages)
+					streamUsage.CompletionTokens = (outTextLen + 3) / 4
+					streamUsage.TotalTokens = streamUsage.PromptTokens + streamUsage.CompletionTokens
+					est = true
+				}
+				s.recordUsage(r.URL.Path, usedModel, acctName, acct.Backend, http.StatusOK, start, streamUsage, est)
+				s.logRequest(r, usedModel, acctName, http.StatusOK, start, nil)
+				return
 			}
-			if !finishedSent {
-				writeSSE(w, map[string]any{
-					"id":      compID,
-					"object":  "chat.completion.chunk",
-					"created": created,
-					"model":   req.Model,
-					"choices": []map[string]any{
-						{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"},
-					},
-				})
+
+			planErr = streamErr
+			lastErr = streamErr
+			allowFailover := s.pool.RecordError(acct.ID, streamErr, plan.Rule)
+			if headersSent {
+				// Cannot retry after streaming started; emit error comment/event and close.
+				s.logRequest(r, usedModel, acctName, httpStatusFromError(streamErr), start, streamErr)
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+				flusher.Flush()
+				return
 			}
-			_, _ = io.WriteString(w, "data: [DONE]\n\n")
-			flusher.Flush()
-			est := false
-			if streamUsage.TotalTokens == 0 {
-				streamUsage.PromptTokens = estimateMessagesTokens(req.Messages)
-				streamUsage.CompletionTokens = (outTextLen + 3) / 4
-				streamUsage.TotalTokens = streamUsage.PromptTokens + streamUsage.CompletionTokens
-				est = true
+			if !allowFailover {
+				break
 			}
-			s.recordUsage(r.URL.Path, req.Model, acctName, acct.Backend, http.StatusOK, start, streamUsage, est)
-			s.logRequest(r, req.Model, acctName, http.StatusOK, start, nil)
-			return
 		}
 
-		lastErr = streamErr
-		allowFailover := s.pool.RecordError(acct.ID, streamErr, plan.Rule)
-		if headersSent {
-			// Cannot retry after streaming started; emit error comment/event and close.
-			s.logRequest(r, req.Model, acctName, httpStatusFromError(streamErr), start, streamErr)
-			_, _ = io.WriteString(w, "data: [DONE]\n\n")
-			flusher.Flush()
-			return
+		if planErr != nil {
+			lastErr = planErr
 		}
-		if !allowFailover {
-			s.logRequest(r, req.Model, acctName, httpStatusFromError(streamErr), start, streamErr)
-			writeOpenAIError(w, httpStatusFromError(streamErr), "backend_error", streamErr.Error())
-			return
+		if !shouldFallbackModel(lastErr, primaryPlan.Rule) {
+			break
+		}
+		if planIdx+1 < len(chain) && s.logs != nil {
+			s.logs.Warn("fallback", fmt.Sprintf("stream model %s failed (%s); falling back to %s", plan.RequestedModel, classifyFallbackKind(lastErr), chain[planIdx+1].RequestedModel))
 		}
 	}
 
 	if lastErr == nil {
 		lastErr = pool.ErrNoAvailableAccount
 	}
-	s.logRequest(r, req.Model, lastAcct, httpStatusFromError(lastErr), start, lastErr)
-	writeOpenAIError(w, httpStatusFromError(lastErr), "backend_error", lastErr.Error())
+	status := httpStatusFromError(lastErr)
+	if errors.Is(lastErr, pool.ErrNoAvailableAccount) || errors.Is(lastErr, pool.ErrStrategyOptInNeeded) {
+		status = httpStatusFromPoolError(lastErr)
+	}
+	s.logRequest(r, req.Model, lastAcct, status, start, lastErr)
+	writeOpenAIError(w, status, "backend_error", lastErr.Error())
 }
 
 func (s *Server) recordUsage(endpoint, model, acct, backendID string, status int, start time.Time, u backend.Usage, estimated bool) {
