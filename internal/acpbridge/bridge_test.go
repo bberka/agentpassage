@@ -58,8 +58,11 @@ func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
 	}
 
 	got := out.String()
-	if !strings.Contains(got, `"a-gemini-4-neon"`) || !strings.Contains(got, `"b-gemini-4-neon"`) || !strings.Contains(got, `"gemini-4-neon"`) {
-		t.Fatalf("expected both prefixed and pooled models in session/new, got:\n%s", got)
+	if !strings.Contains(got, `"a-gemini-4-neon"`) || !strings.Contains(got, `"b-gemini-4-neon"`) || !strings.Contains(got, `"deepseek/gemini-4-neon"`) {
+		t.Fatalf("expected both prefixed and provider-pooled models in session/new, got:\n%s", got)
+	}
+	if strings.Contains(got, `"modelId":"gemini-4-neon"`) {
+		t.Fatalf("expected bare trimmed model hidden by default, got:\n%s", got)
 	}
 	if !strings.Contains(got, "from-account-B") {
 		t.Fatalf("expected b-gemini-4-neon routed to account B, got:\n%s", got)

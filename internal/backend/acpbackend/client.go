@@ -122,9 +122,16 @@ func (m *Manager) LoginCommand(acct config.AccountConfig) (*exec.Cmd, string, er
 
 // TestAccount launches the ACP worker, runs initialize + session/new, and returns discovered models.
 func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([]string, error) {
+	models, _, err := m.TestAccountWithLabels(ctx, acct)
+	return models, err
+}
+
+// TestAccountWithLabels launches the ACP worker, runs initialize + session/new, and returns
+// both discovered model IDs and upstream human labels (e.g. "fable" -> "Fable 5.2").
+func (m *Manager) TestAccountWithLabels(ctx context.Context, acct config.AccountConfig) ([]string, map[string]string, error) {
 	w, err := m.getOrStartWorker(ctx, acct)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cwd := acct.DefaultCwd
 	if cwd == "" {
@@ -134,9 +141,9 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 	defer cancel()
 	sess, err := w.newSession(testCtx, cwd)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return sess.availableModels, nil
+	return sess.availableModels, sess.modelLabels, nil
 }
 
 func (m *Manager) Complete(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest) (*backend.ChatResponse, error) {
@@ -320,6 +327,7 @@ type acpSession struct {
 	useSetModel     bool
 	currentModel    string
 	availableModels []string
+	modelLabels     map[string]string
 }
 
 type worker struct {
@@ -711,15 +719,20 @@ func (w *worker) newSession(ctx context.Context, cwd string) (*acpSession, error
 	}
 
 	s := &acpSession{
-		id:  res.SessionID,
-		cwd: cwd,
+		id:          res.SessionID,
+		cwd:         cwd,
+		modelLabels: make(map[string]string),
 	}
 	seenModels := make(map[string]bool)
-	addModel := func(id string) {
+	addModel := func(id, name string) {
 		id = strings.TrimSpace(id)
 		if id != "" && !seenModels[id] {
 			seenModels[id] = true
 			s.availableModels = append(s.availableModels, id)
+		}
+		name = strings.TrimSpace(name)
+		if id != "" && name != "" && name != id && !strings.HasPrefix(strings.ToLower(name), "default (") {
+			s.modelLabels[id] = name
 		}
 	}
 	var collectOptionValues func(opts []configOptionValue)
@@ -729,9 +742,9 @@ func (w *worker) newSession(ctx context.Context, cwd string) (*acpSession, error
 				collectOptionValues(v.Options)
 			}
 			if v.Value != "" {
-				addModel(v.Value)
+				addModel(v.Value, v.Name)
 			} else if v.ID != "" {
-				addModel(v.ID)
+				addModel(v.ID, v.Name)
 			}
 		}
 	}
@@ -753,9 +766,9 @@ func (w *worker) newSession(ctx context.Context, cwd string) (*acpSession, error
 		}
 		for _, m := range res.Models.AvailableModels {
 			if m.ModelID != "" {
-				addModel(m.ModelID)
+				addModel(m.ModelID, m.Name)
 			} else if m.ID != "" {
-				addModel(m.ID)
+				addModel(m.ID, m.Name)
 			}
 		}
 	}

@@ -292,8 +292,12 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort string) ([]map[
 			selectedEfforts = m.Efforts
 		}
 		label := m.ID
-		if m.DisplayName != "" {
-			label = m.DisplayName
+		if m.DisplayName != "" && m.DisplayName != m.ID {
+			if strings.Contains(strings.ToLower(m.DisplayName), strings.ToLower(m.ID)) {
+				label = m.DisplayName
+			} else {
+				label = m.ID + " — " + m.DisplayName
+			}
 		}
 		opts = append(opts, map[string]string{"value": m.ID, "name": label})
 		availModels = append(availModels, map[string]string{"modelId": m.ID, "name": label})

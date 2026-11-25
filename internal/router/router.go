@@ -52,14 +52,13 @@ func (r *Router) UpdateConfig(cfg *config.Config) {
 	r.cfg = cfg
 }
 
-// ListModels builds the merged model namespace:
-// - If account.ExposeMode is "pool" or "both":
-//     - <backend>/<model> (pooled across accounts for that backend)
-//     - bare <model> (when not "default" and unambiguous across backends, so clients see e.g. "gemini-4-neon")
-//     - <backend>/<account>/<model> (explicit manual targeting)
-// - If account.ExposeMode is "prefix" or "both":
-//     - <prefix><model> (e.g. "a-gemini-4-neon", "b-gemini-4-neon") targeting that account directly
-// - Plus aliases configured in config.Models
+// ListModels builds the exposed model catalog according to cfg.Catalog.EffectiveMode():
+//   - "provider" (default): <provider>/<model> only (never merges across providers, no bare trimmed names)
+//   - "provider+account":   <provider>/<model> AND <provider>/<account>/<model> (no bare trimmed names)
+//   - "account":            <provider>/<account>/<model> only (every provider & account individually)
+//   - "bare":               legacy unambiguous bare <model> (falls back to <provider>/<model> on collision)
+//
+// Accounts with ExposeMode "prefix" or "both" also emit <prefix><model>, plus aliases from config.Models.
 func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -68,6 +67,11 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 	for _, ov := range r.cfg.Models {
 		overrides[ov.ID] = ov
 	}
+
+	catalogMode := r.cfg.Catalog.EffectiveMode()
+	emitProvider := catalogMode == config.CatalogModeProvider || catalogMode == config.CatalogModeProviderAccount || catalogMode == config.CatalogModeBare
+	emitDirect := catalogMode == config.CatalogModeProviderAccount || catalogMode == config.CatalogModeAccount
+	emitBare := catalogMode == config.CatalogModeBare
 
 	pooled := make(map[string]*ModelEntry)
 	bare := make(map[string]*ModelEntry)
@@ -79,13 +83,14 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 		if !acct.Enabled {
 			continue
 		}
-		models := acct.Models
-		if len(models) == 0 && acct.Kind == config.KindACP {
-			models = []string{"default"}
+		rawModels := acct.Models
+		if len(rawModels) == 0 && acct.Kind == config.KindACP {
+			rawModels = []string{"default"}
 		}
+		models := rawModels
 		var effortsByBase map[string][]string
 		if !r.cfg.Catalog.ShowEffortVariants {
-			models, effortsByBase = GroupEffortVariants(models)
+			models, effortsByBase = GroupEffortVariants(rawModels)
 		}
 		mode := acct.ExposeMode
 		if mode == "" {
@@ -98,25 +103,31 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 				continue
 			}
 			efforts := effortsByBase[m]
+			label := resolveAccountModelLabel(acct, m, len(efforts) > 0)
 
 			if mode == config.ExposePool || mode == config.ExposeBoth {
-				poolID := acct.Backend + "/" + m
-				if entry, ok := pooled[poolID]; ok {
-					entry.AccountIDs = append(entry.AccountIDs, acct.ID)
-					entry.Efforts = mergeEfforts(entry.Efforts, efforts)
-				} else {
-					pooled[poolID] = &ModelEntry{
-						ID:         poolID,
-						Backend:    acct.Backend,
-						Upstream:   m,
-						Kind:       acct.Kind,
-						AccountIDs: []string{acct.ID},
-						Efforts:    append([]string(nil), efforts...),
+				if emitProvider {
+					poolID := acct.Backend + "/" + m
+					if entry, ok := pooled[poolID]; ok {
+						entry.AccountIDs = append(entry.AccountIDs, acct.ID)
+						entry.Efforts = mergeEfforts(entry.Efforts, efforts)
+						if entry.DisplayName == "" && label != "" {
+							entry.DisplayName = label
+						}
+					} else {
+						pooled[poolID] = &ModelEntry{
+							ID:          poolID,
+							DisplayName: label,
+							Backend:     acct.Backend,
+							Upstream:    m,
+							Kind:        acct.Kind,
+							AccountIDs:  []string{acct.ID},
+							Efforts:     append([]string(nil), efforts...),
+						}
 					}
 				}
 
-				// Also expose bare model name (e.g. "gemini-4-neon") for clean pooled rotation.
-				if m != "default" && !strings.Contains(m, "/") {
+				if emitBare && m != "default" && !strings.Contains(m, "/") {
 					if bareBackends[m] == nil {
 						bareBackends[m] = make(map[string]bool)
 					}
@@ -124,24 +135,29 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 					if entry, ok := bare[m]; ok {
 						entry.AccountIDs = append(entry.AccountIDs, acct.ID)
 						entry.Efforts = mergeEfforts(entry.Efforts, efforts)
+						if entry.DisplayName == "" && label != "" {
+							entry.DisplayName = label
+						}
 					} else {
 						bare[m] = &ModelEntry{
-							ID:         m,
-							Backend:    acct.Backend,
-							Upstream:   m,
-							Kind:       acct.Kind,
-							AccountIDs: []string{acct.ID},
-							Efforts:    append([]string(nil), efforts...),
+							ID:          m,
+							DisplayName: label,
+							Backend:     acct.Backend,
+							Upstream:    m,
+							Kind:        acct.Kind,
+							AccountIDs:  []string{acct.ID},
+							Efforts:     append([]string(nil), efforts...),
 						}
 					}
 				}
 
-				if r.cfg.Catalog.ExposeDirectModels {
+				if emitDirect {
 					manualID := acct.Backend + "/" + acct.Name + "/" + m
 					if !seenDirect[manualID] {
 						seenDirect[manualID] = true
 						direct = append(direct, ModelEntry{
 							ID:          manualID,
+							DisplayName: label,
 							Backend:     acct.Backend,
 							AccountID:   acct.ID,
 							AccountName: acct.Name,
@@ -160,6 +176,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 					seenDirect[prefID] = true
 					direct = append(direct, ModelEntry{
 						ID:          prefID,
+						DisplayName: label,
 						Backend:     acct.Backend,
 						AccountID:   acct.ID,
 						AccountName: acct.Name,
@@ -176,14 +193,16 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 
 	var all []ModelEntry
 	bareExposed := make(map[string]bool)
-	for m, e := range bare {
-		if len(bareBackends[m]) == 1 && !seenDirect[m] {
-			bareExposed[m] = true
-			all = append(all, *e)
+	if emitBare {
+		for m, e := range bare {
+			if len(bareBackends[m]) == 1 && !seenDirect[m] {
+				bareExposed[m] = true
+				all = append(all, *e)
+			}
 		}
 	}
 	for _, e := range pooled {
-		if r.cfg.Catalog.HideBackendQualified && bareExposed[e.Upstream] {
+		if emitBare && bareExposed[e.Upstream] {
 			continue
 		}
 		all = append(all, *e)
@@ -193,7 +212,9 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 	out := make([]ModelEntry, 0, len(all))
 	for _, e := range all {
 		if ov, ok := overrides[e.ID]; ok {
-			e.DisplayName = ov.DisplayName
+			if ov.DisplayName != "" {
+				e.DisplayName = ov.DisplayName
+			}
 			e.Alias = ov.Alias
 			e.Hidden = ov.Hidden
 		}
@@ -216,6 +237,37 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 		return out[i].ID < out[j].ID
 	})
 	return out
+}
+
+func resolveAccountModelLabel(acct config.AccountConfig, modelID string, collapsedEfforts bool) string {
+	if len(acct.ModelLabels) == 0 {
+		return ""
+	}
+	if lbl := strings.TrimSpace(acct.ModelLabels[modelID]); lbl != "" {
+		if collapsedEfforts {
+			return stripEffortParenthetical(lbl)
+		}
+		return lbl
+	}
+	if collapsedEfforts {
+		for _, eff := range []string{"high", "medium", "low", "xhigh", "max", "ultra"} {
+			for _, cand := range []string{modelID + "-" + eff, modelID + "[" + eff + "]"} {
+				if lbl := strings.TrimSpace(acct.ModelLabels[cand]); lbl != "" {
+					return stripEffortParenthetical(lbl)
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func stripEffortParenthetical(label string) string {
+	for _, suf := range []string{" (Low)", " (Medium)", " (High)", " (XHigh)", " (Max)", " (Ultra)", " (low)", " (medium)", " (high)", " (xhigh)", " (max)", " (ultra)"} {
+		if strings.HasSuffix(label, suf) {
+			return strings.TrimSpace(strings.TrimSuffix(label, suf))
+		}
+	}
+	return label
 }
 
 // Resolve maps a requested model name to a routing plan and ordered candidate account IDs.

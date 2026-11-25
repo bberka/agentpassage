@@ -72,6 +72,7 @@ type permReqMsg backend.PermissionRequest
 type testResultMsg struct {
 	accountID string
 	models    []string
+	labels    map[string]string
 	err       error
 }
 
@@ -402,6 +403,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cfg := a.srv.Config()
 		if acct := cfg.FindAccount(msg.accountID); acct != nil {
+			if len(msg.labels) > 0 {
+				acct.MergeModelLabels(msg.labels)
+			}
 			if len(msg.models) > 0 {
 				acct.MergeDiscoveredModels(msg.models)
 			}
@@ -1080,8 +1084,8 @@ func (a *App) testAccountCmd(acct config.AccountConfig) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		models, err := a.srv.TestAccount(ctx, acct)
-		return testResultMsg{accountID: acct.ID, models: models, err: err}
+		models, labels, err := a.srv.TestAccountWithLabels(ctx, acct)
+		return testResultMsg{accountID: acct.ID, models: models, labels: labels, err: err}
 	}
 }
 

@@ -90,7 +90,11 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 			return append([]config.AccountConfig(nil), s.cfg.Accounts...)
 		},
 		func(ctx context.Context, acct config.AccountConfig) ([]string, error) {
-			return s.TestAccount(ctx, acct)
+			models, labels, err := s.TestAccountWithLabels(ctx, acct)
+			if err == nil && len(labels) > 0 {
+				s.persistAccountLabels(acct.ID, labels)
+			}
+			return models, err
 		},
 		func(acct config.AccountConfig, _ []string, err error) {
 			if err == nil {
@@ -721,14 +725,43 @@ func (s *Server) Stop(ctx context.Context) error {
 
 // TestAccount runs a live connectivity test against an API-key, ACP, or direct CLI account and returns discovered models.
 func (s *Server) TestAccount(ctx context.Context, acct config.AccountConfig) ([]string, error) {
+	models, _, err := s.TestAccountWithLabels(ctx, acct)
+	return models, err
+}
+
+// TestAccountWithLabels runs a live connectivity test and also returns upstream display names
+// (e.g. "fable" -> "Fable 5.2") when the backend provides them.
+func (s *Server) TestAccountWithLabels(ctx context.Context, acct config.AccountConfig) ([]string, map[string]string, error) {
 	switch acct.Kind {
 	case config.KindACP:
-		return s.acpBE.TestAccount(ctx, acct)
+		return s.acpBE.TestAccountWithLabels(ctx, acct)
 	case config.KindCLI:
-		return s.cliBE.TestAccount(ctx, acct)
+		models, err := s.cliBE.TestAccount(ctx, acct)
+		return models, nil, err
 	default:
 		key, _ := s.secrets.Get(acct.ID)
-		return s.httpBE.TestAccount(ctx, acct, key)
+		models, err := s.httpBE.TestAccount(ctx, acct, key)
+		return models, nil, err
+	}
+}
+
+func (s *Server) persistAccountLabels(accountID string, labels map[string]string) {
+	if len(labels) == 0 {
+		return
+	}
+	s.mu.Lock()
+	changed := false
+	for i := range s.cfg.Accounts {
+		if s.cfg.Accounts[i].ID == accountID {
+			changed = s.cfg.Accounts[i].MergeModelLabels(labels)
+			break
+		}
+	}
+	cfg := s.cfg
+	s.mu.Unlock()
+	if changed {
+		s.router.UpdateConfig(cfg)
+		_ = config.Save(s.dataDir, cfg)
 	}
 }
 
@@ -942,6 +975,9 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			"object":   "model",
 			"created":  now,
 			"owned_by": owner,
+		}
+		if m.DisplayName != "" {
+			entry["display_name"] = m.DisplayName
 		}
 		if len(m.Efforts) > 0 {
 			entry["reasoning_efforts"] = m.Efforts

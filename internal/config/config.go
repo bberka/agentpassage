@@ -78,10 +78,39 @@ type HealthConfig struct {
 	IntervalSeconds int  `toml:"interval_seconds"` // 0 = manual only, default 300 (5m)
 }
 
+const (
+	CatalogModeProvider        = "provider"         // <provider>/<model> only (default; never merges across providers, no bare trimmed names)
+	CatalogModeProviderAccount = "provider+account" // <provider>/<model> + <provider>/<account>/<model>
+	CatalogModeAccount         = "account"          // <provider>/<account>/<model> only (every provider & account individually)
+	CatalogModeBare            = "bare"             // legacy unambiguous bare names
+)
+
 type CatalogConfig struct {
-	ExposeDirectModels   bool `toml:"expose_direct_models"`             // show <backend>/<account>/<model> in /v1/models (default false)
-	HideBackendQualified bool `toml:"hide_backend_qualified"`           // hide <backend>/<model> when bare <model> exists (default false)
-	ShowEffortVariants   bool `toml:"show_effort_variants,omitempty"`   // expand -low/-medium/-high/[xhigh] as separate models (default false = grouped into thinking effort levels)
+	Mode                 string `toml:"mode,omitempty"`               // "provider" (default), "provider+account", "account", or "bare"
+	ExposeDirectModels   bool   `toml:"expose_direct_models"`         // legacy: show <backend>/<account>/<model> in /v1/models
+	HideBackendQualified bool   `toml:"hide_backend_qualified"`       // legacy: hide <backend>/<model> when bare <model> exists
+	ShowEffortVariants   bool   `toml:"show_effort_variants,omitempty"` // expand -low/-medium/-high/[xhigh] as separate models (default false = grouped into thinking effort levels)
+}
+
+// EffectiveMode returns the normalized catalog listing mode, preserving legacy boolean flags when Mode is unset.
+func (c CatalogConfig) EffectiveMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.Mode)) {
+	case CatalogModeProvider:
+		return CatalogModeProvider
+	case CatalogModeProviderAccount:
+		return CatalogModeProviderAccount
+	case CatalogModeAccount:
+		return CatalogModeAccount
+	case CatalogModeBare:
+		return CatalogModeBare
+	}
+	if c.HideBackendQualified {
+		return CatalogModeBare
+	}
+	if c.ExposeDirectModels {
+		return CatalogModeProviderAccount
+	}
+	return CatalogModeProvider
 }
 
 const (
@@ -161,6 +190,7 @@ type AccountConfig struct {
 	Models          []string          `toml:"models,omitempty"`           // enabled models served by this account
 	AvailableModels []string          `toml:"available_models,omitempty"` // full discovered catalog for enable/disable toggling
 	DisabledModels  []string          `toml:"disabled_models,omitempty"`  // explicitly disabled models from the catalog
+	ModelLabels     map[string]string `toml:"model_labels,omitempty"`     // upstream model id -> human display name (e.g. "fable" -> "Fable 5.2")
 	ExposeMode      string            `toml:"expose_mode,omitempty"`      // "pool" (default), "prefix", "both"
 	ModelPrefix     string            `toml:"model_prefix,omitempty"`     // e.g. "a-", "b-" (defaults to "<name>-")
 	MaxConcurrency  int               `toml:"max_concurrency"`
@@ -234,6 +264,30 @@ func (a *AccountConfig) MergeDiscoveredModels(fetched []string) {
 	}
 	a.AvailableModels = catalog
 	a.Models = enabled
+}
+
+// MergeModelLabels merges upstream display names (e.g. "fable" -> "Fable 5.2") onto the account.
+// Returns true if any label was added or updated.
+func (a *AccountConfig) MergeModelLabels(labels map[string]string) bool {
+	if len(labels) == 0 {
+		return false
+	}
+	if a.ModelLabels == nil {
+		a.ModelLabels = make(map[string]string, len(labels))
+	}
+	changed := false
+	for k, v := range labels {
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" || v == "" || v == k {
+			continue
+		}
+		if a.ModelLabels[k] != v {
+			a.ModelLabels[k] = v
+			changed = true
+		}
+	}
+	return changed
 }
 
 // SetModelEnabled enables or disables one model ID on this account.

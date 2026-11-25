@@ -33,36 +33,42 @@ func (a *App) filterModelList(all []router.ModelEntry) []router.ModelEntry {
 
 func (a *App) cycleModelNamingMode() {
 	cfg := a.srv.Config()
-	switch {
-	case !cfg.Catalog.ExposeDirectModels && cfg.Catalog.HideBackendQualified:
-		// Clean -> + Provider
-		cfg.Catalog.HideBackendQualified = false
-		cfg.Catalog.ExposeDirectModels = false
-		_ = a.srv.ReloadConfig(cfg)
-		a.setStatus("Model names: + Provider (e.g. claude-sonnet-5-5 and agy/claude-sonnet-5-5)", false)
-	case !cfg.Catalog.ExposeDirectModels && !cfg.Catalog.HideBackendQualified:
-		// + Provider -> + Per-account
+	switch cfg.Catalog.EffectiveMode() {
+	case config.CatalogModeProvider:
+		// Provider -> Provider + Account
+		cfg.Catalog.Mode = config.CatalogModeProviderAccount
 		cfg.Catalog.HideBackendQualified = false
 		cfg.Catalog.ExposeDirectModels = true
 		_ = a.srv.ReloadConfig(cfg)
-		a.setStatus("Model names: + Per-account (includes agy/account/model routes)", false)
+		a.setStatus("Model listing: Provider + Account (provider/model and provider/account/model; no bare duplicates)", false)
+	case config.CatalogModeProviderAccount:
+		// Provider + Account -> Per-Account only
+		cfg.Catalog.Mode = config.CatalogModeAccount
+		cfg.Catalog.HideBackendQualified = false
+		cfg.Catalog.ExposeDirectModels = true
+		_ = a.srv.ReloadConfig(cfg)
+		a.setStatus("Model listing: Per-Account only (provider/account/model for each provider & account)", false)
 	default:
-		// + Per-account -> Clean
-		cfg.Catalog.HideBackendQualified = true
+		// Per-Account / Bare -> Provider only
+		cfg.Catalog.Mode = config.CatalogModeProvider
+		cfg.Catalog.HideBackendQualified = false
 		cfg.Catalog.ExposeDirectModels = false
 		_ = a.srv.ReloadConfig(cfg)
-		a.setStatus("Model names: Clean (short shared router names only)", false)
+		a.setStatus("Model listing: Provider (provider/model — separate per provider, no bare duplicates)", false)
 	}
 }
 
 func modelNamingLabel(cfg *config.Config) string {
-	if cfg.Catalog.ExposeDirectModels {
-		return "Names: + Per-account"
+	switch cfg.Catalog.EffectiveMode() {
+	case config.CatalogModeProviderAccount:
+		return "List: Provider + Account"
+	case config.CatalogModeAccount:
+		return "List: Per-Account"
+	case config.CatalogModeBare:
+		return "List: Bare (legacy)"
+	default:
+		return "List: Provider"
 	}
-	if cfg.Catalog.HideBackendQualified {
-		return "Names: Clean"
-	}
-	return "Names: + Provider"
 }
 
 func (a *App) upsertModelOverride(id string, mutate func(*config.ModelOverride)) {
@@ -239,9 +245,9 @@ func (a *App) viewModels(bodyHeight int) string {
 
 	lines = append(lines, "  "+a.styles.JoinRow(2,
 		a.styles.TableHeader.Render(fmt.Sprintf("%-10s", "STATUS")),
-		a.styles.TableHeader.Render(fmt.Sprintf("%-30s", "MODEL")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-34s", "MODEL")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-22s", "NAME")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-11s", "ROUTING")),
-		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "KIND")),
 		a.styles.TableHeader.Render("NOTES"),
 	))
 
@@ -251,6 +257,7 @@ func (a *App) viewModels(bodyHeight int) string {
 		start = a.modelCursor - maxRows + 1
 	}
 
+	notesW := max(innerW-87, 10)
 	for i := start; i < len(models) && i < start+maxRows; i++ {
 		m := models[i]
 		status := a.styles.StateReady.Render("● enabled")
@@ -265,6 +272,10 @@ func (a *App) viewModels(bodyHeight int) string {
 		} else if m.AccountID != "" {
 			routing = "1 account"
 		}
+		dispName := m.DisplayName
+		if dispName == "" {
+			dispName = "—"
+		}
 		var flags []string
 		if len(m.Efforts) > 0 {
 			flags = append(flags, "thinking:"+strings.Join(m.Efforts, "/"))
@@ -272,28 +283,29 @@ func (a *App) viewModels(bodyHeight int) string {
 		if m.Alias != "" {
 			flags = append(flags, "alias:"+m.Alias)
 		}
-		if m.DisplayName != "" {
-			flags = append(flags, "name:"+m.DisplayName)
-		}
 		if m.AccountName != "" {
 			flags = append(flags, "acct:"+m.AccountName)
 		}
-		notes := truncate(strings.Join(flags, " "), max(innerW-70, 10))
+		notes := truncate(strings.Join(flags, " "), notesW)
 		if i == a.modelCursor {
-			row := fmt.Sprintf("%-10s  %-30s  %-11s  %-8s  %s",
+			row := fmt.Sprintf("> %-10s  %-34s  %-22s  %-11s  %s",
 				plainSt,
-				truncate(m.ID, 30),
+				truncate(m.ID, 34),
+				truncate(dispName, 22),
 				routing,
-				truncate(m.Kind, 8),
 				notes,
 			)
-			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+			lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(row, innerW)))
 		} else {
+			nameStyle := a.styles.Highlight
+			if m.DisplayName == "" {
+				nameStyle = a.styles.Muted
+			}
 			row := a.styles.JoinRow(2,
 				a.styles.PadCell(status, 10),
-				a.styles.PadCell(truncate(m.ID, 30), 30),
-				a.styles.PadCell(routing, 11),
-				a.styles.PadCell(a.styles.Muted.Render(truncate(m.Kind, 8)), 8),
+				a.styles.PadCell(a.surfaceText(truncate(m.ID, 34)), 34),
+				a.styles.PadCell(nameStyle.Render(truncate(dispName, 22)), 22),
+				a.styles.PadCell(a.surfaceText(routing), 11),
 				a.styles.Muted.Render(notes),
 			)
 			lines = append(lines, "  "+row)

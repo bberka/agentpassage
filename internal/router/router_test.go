@@ -10,10 +10,11 @@ import (
 
 func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
 	cfg := config.Default()
-	cfg.Catalog.ExposeDirectModels = true
+	cfg.Catalog.Mode = config.CatalogModeProviderAccount
 	cfg.Accounts = []config.AccountConfig{
-		{ID: "agy-work", Name: "work", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"gemini-3.1-pro"}},
+		{ID: "agy-work", Name: "work", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"gemini-3.1-pro", "claude-sonnet-5-5"}},
 		{ID: "agy-personal", Name: "personal", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"gemini-3.1-pro"}},
+		{ID: "claude-main", Name: "main", Kind: config.KindACP, Backend: "claude", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"claude-sonnet-5-5", "fable"}, ModelLabels: map[string]string{"fable": "Fable 5.2"}},
 		{ID: "deepseek-main", Name: "main", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"deepseek-chat"}},
 	}
 	cfg.Models = []config.ModelOverride{
@@ -23,24 +24,35 @@ func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
 
 	r := New(cfg)
 	models := r.ListModels(false)
-	foundAlias := false
-	foundBare := false
+	ids := make(map[string]ModelEntry, len(models))
 	for _, m := range models {
 		if m.ID == "deepseek/main/deepseek-chat" {
 			t.Fatalf("expected hidden model excluded from ListModels(false)")
 		}
-		if m.ID == "work-pro" {
-			foundAlias = true
-		}
-		if m.ID == "gemini-3.1-pro" {
-			foundBare = true
-		}
+		ids[m.ID] = m
 	}
-	if !foundAlias {
+	if _, ok := ids["work-pro"]; !ok {
 		t.Fatalf("expected alias work-pro in model list")
 	}
-	if !foundBare {
-		t.Fatalf("expected pooled bare model gemini-3.1-pro in model list")
+	// Bare/trimmed models must NOT appear in provider or provider+account mode
+	for _, bare := range []string{"gemini-3.1-pro", "fable", "claude-sonnet-5-5", "deepseek-chat"} {
+		if _, ok := ids[bare]; ok {
+			t.Fatalf("unexpected bare trimmed model %q in %s mode", bare, cfg.Catalog.Mode)
+		}
+	}
+	// Same model served by Google (agy) and Claude must NEVER merge
+	if _, ok := ids["agy/claude-sonnet-5-5"]; !ok {
+		t.Fatalf("expected agy/claude-sonnet-5-5 separate from claude")
+	}
+	if _, ok := ids["claude/claude-sonnet-5-5"]; !ok {
+		t.Fatalf("expected claude/claude-sonnet-5-5 separate from agy")
+	}
+	// Upstream ModelLabels must populate DisplayName (e.g. fable -> Fable 5.2)
+	if got := ids["claude/fable"].DisplayName; got != "Fable 5.2" {
+		t.Fatalf("expected claude/fable DisplayName='Fable 5.2', got %q", got)
+	}
+	if got := ids["claude/main/fable"].DisplayName; got != "Fable 5.2" {
+		t.Fatalf("expected claude/main/fable DisplayName='Fable 5.2', got %q", got)
 	}
 
 	plan, err := r.Resolve("agy/work/gemini-3.1-pro")
@@ -67,23 +79,42 @@ func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
 		t.Fatalf("expected 2 candidates for pooled agy/gemini-3.1-pro, got %v", poolPlan.CandidateIDs)
 	}
 
-	// Default catalog (ExposeDirectModels=false) hides <backend>/<account>/<model> from ListModels,
-	// while still allowing manual resolution if requested explicitly.
-	cfgClean := config.Default()
-	cfgClean.Accounts = cfg.Accounts
-	rClean := New(cfgClean)
-	for _, m := range rClean.ListModels(false) {
-		if m.ID == "agy/work/gemini-3.1-pro" || m.ID == "agy/personal/gemini-3.1-pro" {
-			t.Fatalf("expected account-specific direct model hidden by default, got %s", m.ID)
+	// Default catalog (Provider mode) exposes only <provider>/<model> (no bare, no per-account),
+	// while explicit manual Resolve still works.
+	cfgProv := config.Default()
+	cfgProv.Accounts = cfg.Accounts
+	rProv := New(cfgProv)
+	for _, m := range rProv.ListModels(false) {
+		if m.ID == "agy/work/gemini-3.1-pro" || m.ID == "gemini-3.1-pro" || m.ID == "fable" {
+			t.Fatalf("expected provider-only mode to hide %q", m.ID)
 		}
 	}
-	if _, err := rClean.Resolve("agy/work/gemini-3.1-pro"); err != nil {
-		t.Fatalf("explicit manual Resolve should still work when direct models are hidden: %v", err)
+	if _, err := rProv.Resolve("agy/work/gemini-3.1-pro"); err != nil {
+		t.Fatalf("explicit manual Resolve should still work in provider mode: %v", err)
 	}
 
-	// HideBackendQualified keeps only bare router models (e.g. "gemini-3.1-pro")
-	cfgClean.Catalog.HideBackendQualified = true
-	for _, m := range rClean.ListModels(false) {
+	// Per-Account mode exposes ONLY <provider>/<account>/<model> (no pooled, no bare)
+	cfgAcct := config.Default()
+	cfgAcct.Catalog.Mode = config.CatalogModeAccount
+	cfgAcct.Accounts = cfg.Accounts
+	rAcct := New(cfgAcct)
+	acctIDs := map[string]bool{}
+	for _, m := range rAcct.ListModels(false) {
+		acctIDs[m.ID] = true
+		if m.ID == "agy/gemini-3.1-pro" || m.ID == "gemini-3.1-pro" || m.ID == "claude/fable" {
+			t.Fatalf("expected account-only mode to hide %q", m.ID)
+		}
+	}
+	if !acctIDs["agy/work/gemini-3.1-pro"] || !acctIDs["agy/personal/gemini-3.1-pro"] || !acctIDs["claude/main/fable"] {
+		t.Fatalf("expected per-account models in account mode, got %+v", acctIDs)
+	}
+
+	// Legacy HideBackendQualified maps to Bare mode
+	cfgBare := config.Default()
+	cfgBare.Accounts = cfg.Accounts
+	cfgBare.Catalog.HideBackendQualified = true
+	rBare := New(cfgBare)
+	for _, m := range rBare.ListModels(false) {
 		if m.ID == "agy/gemini-3.1-pro" {
 			t.Fatalf("expected backend-qualified duplicate hidden when HideBackendQualified=true")
 		}

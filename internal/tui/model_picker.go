@@ -158,11 +158,14 @@ func (a *App) fetchAllAccountsModelsCmd() tea.Cmd {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			models, err := a.srv.TestAccount(ctx, *acct)
+			models, labels, err := a.srv.TestAccountWithLabels(ctx, *acct)
 			cancel()
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %v", acct.Name, err))
 				continue
+			}
+			if len(labels) > 0 {
+				acct.MergeModelLabels(labels)
 			}
 			if len(models) > 0 {
 				acct.MergeDiscoveredModels(models)
