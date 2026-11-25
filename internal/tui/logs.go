@@ -1,0 +1,99 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/bberka/acpx/internal/logbuf"
+)
+
+func (a *App) filteredLogs() []logbuf.Entry {
+	all := a.srv.Logs().Entries()
+	q := strings.ToLower(a.filterText)
+	var out []logbuf.Entry
+	for _, e := range all {
+		if a.logLevel != "" && string(e.Level) != a.logLevel {
+			continue
+		}
+		if q != "" {
+			hay := strings.ToLower(e.Kind + " " + e.Model + " " + e.Account + " " + e.Message + " " + e.Error + " " + e.Path)
+			if !strings.Contains(hay, q) {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func (a *App) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		a.logCursor++
+	case "down", "j":
+		if a.logCursor > 0 {
+			a.logCursor--
+		}
+	case "l":
+		switch a.logLevel {
+		case "":
+			a.logLevel = "INFO"
+		case "INFO":
+			a.logLevel = "WARN"
+		case "WARN":
+			a.logLevel = "ERROR"
+		default:
+			a.logLevel = ""
+		}
+		a.logCursor = 0
+	}
+	return a, nil
+}
+
+func (a *App) viewLogs(bodyHeight int) string {
+	entries := a.filteredLogs()
+	lvl := a.logLevel
+	if lvl == "" {
+		lvl = "ALL"
+	}
+	var lines []string
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Logs (%d, level=%s)", len(entries), lvl))+"  "+
+		a.styles.Muted.Render("j/k:scroll  l:level  /:filter  (secrets redacted)"))
+	lines = append(lines, "")
+
+	if len(entries) == 0 {
+		lines = append(lines, a.styles.Muted.Render("No log entries yet."))
+		return strings.Join(lines, "\n")
+	}
+
+	maxRows := max(bodyHeight-3, 4)
+	end := len(entries) - a.logCursor
+	if end < 0 {
+		end = 0
+	}
+	start := max(end-maxRows, 0)
+
+	for _, e := range entries[start:end] {
+		ts := e.Time.Format("15:04:05")
+		var msg string
+		if e.Kind == "request" {
+			msg = fmt.Sprintf("%s %s model=%s acct=%s status=%d %dms", e.Method, e.Path, e.Model, e.Account, e.Status, e.DurationMs)
+		} else {
+			msg = fmt.Sprintf("[%s] %s", e.Kind, e.Message)
+		}
+		if e.Error != "" {
+			msg += " err=" + e.Error
+		}
+		row := fmt.Sprintf("%s %-5s %s", ts, e.Level, truncate(msg, max(a.width-16, 20)))
+		switch e.Level {
+		case logbuf.LevelError:
+			row = a.styles.StateErr.Render(row)
+		case logbuf.LevelWarn:
+			row = a.styles.StateWarn.Render(row)
+		}
+		lines = append(lines, row)
+	}
+	return strings.Join(lines, "\n")
+}

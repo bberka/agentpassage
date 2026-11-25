@@ -1,0 +1,201 @@
+package secrets
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"github.com/zalando/go-keyring"
+)
+
+const keyringService = "acpx"
+
+// Store stores API keys in the OS keychain when available, falling back to a 0600 file.
+type Store struct {
+	mu           sync.RWMutex
+	filePath     string
+	useKeyring   bool
+	fallbackNote string
+	cache        map[string]string
+}
+
+func New(dataDir string) *Store {
+	s := &Store{
+		filePath: filepath.Join(dataDir, "secrets.json"),
+		cache:    make(map[string]string),
+	}
+	// Probe keyring with a non-destructive read.
+	if os.Getenv("ACPX_NO_KEYRING") == "" {
+		_, err := keyring.Get(keyringService, "__acpx_probe__")
+		if err == nil || errors.Is(err, keyring.ErrNotFound) {
+			s.useKeyring = true
+		} else {
+			s.fallbackNote = err.Error()
+		}
+	} else {
+		s.fallbackNote = "disabled via ACPX_NO_KEYRING"
+	}
+	// Load any existing file secrets so keys written before/during fallback remain readable.
+	_ = s.loadFileLocked()
+	return s
+}
+
+// NewFileOnly creates a file-backed secret store (useful for tests or headless setups).
+func NewFileOnly(dataDir string) *Store {
+	s := &Store{
+		filePath:     filepath.Join(dataDir, "secrets.json"),
+		useKeyring:   false,
+		fallbackNote: "file-only mode",
+		cache:        make(map[string]string),
+	}
+	_ = s.loadFileLocked()
+	return s
+}
+
+func (s *Store) UsingFileFallback() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.useKeyring
+}
+
+func (s *Store) Backend() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.useKeyring {
+		return "OS keychain"
+	}
+	return "file (0600)"
+}
+
+func (s *Store) FallbackReason() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.fallbackNote
+}
+
+func (s *Store) Set(accountID, secret string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if accountID == "" {
+		return fmt.Errorf("empty account id")
+	}
+	s.cache[accountID] = secret
+	if s.useKeyring {
+		if err := keyring.Set(keyringService, accountID, secret); err == nil {
+			return nil
+		} else {
+			s.useKeyring = false
+			s.fallbackNote = err.Error()
+		}
+	}
+	return s.saveFileLocked()
+}
+
+func (s *Store) Get(accountID string) (string, error) {
+	s.mu.RLock()
+	if v, ok := s.cache[accountID]; ok && v != "" {
+		s.mu.RUnlock()
+		return v, nil
+	}
+	useKR := s.useKeyring
+	s.mu.RUnlock()
+
+	if useKR {
+		v, err := keyring.Get(keyringService, accountID)
+		if err == nil {
+			s.mu.Lock()
+			s.cache[accountID] = v
+			s.mu.Unlock()
+			return v, nil
+		}
+		if !errors.Is(err, keyring.ErrNotFound) {
+			s.mu.Lock()
+			s.useKeyring = false
+			s.fallbackNote = err.Error()
+			s.mu.Unlock()
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if v, ok := s.cache[accountID]; ok {
+		return v, nil
+	}
+	return "", os.ErrNotExist
+}
+
+func (s *Store) Delete(accountID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cache, accountID)
+	if s.useKeyring {
+		_ = keyring.Delete(keyringService, accountID)
+	}
+	if _, err := os.Stat(s.filePath); err == nil {
+		return s.saveFileLocked()
+	}
+	return nil
+}
+
+// KnownSecrets returns all cached non-empty secrets for log redaction.
+func (s *Store) KnownSecrets() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.cache))
+	for _, v := range s.cache {
+		if len(v) >= 6 {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func (s *Store) loadFileLocked() error {
+	data, err := os.ReadFile(s.filePath)
+	if err != nil {
+		return err
+	}
+	var m map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		return err
+	}
+	for k, v := range m {
+		s.cache[k] = v
+	}
+	return nil
+}
+
+func (s *Store) saveFileLocked() error {
+	if err := os.MkdirAll(filepath.Dir(s.filePath), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(s.cache, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.filePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, s.filePath)
+}
+
+// Mask returns a redacted version of a secret suitable for display in TUI/CLI.
+func Mask(secret string) string {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return "(none)"
+	}
+	if len(secret) <= 8 {
+		return "••••••••"
+	}
+	return secret[:4] + "••••" + secret[len(secret)-4:]
+}

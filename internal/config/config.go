@@ -1,0 +1,353 @@
+package config
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
+
+	"github.com/BurntSushi/toml"
+)
+
+const (
+	KindACP    = "acp"
+	KindAPIKey = "api_key"
+
+	AuthBearer    = "bearer"
+	AuthAnthropic = "anthropic"
+	AuthNone      = "none"
+
+	PermDeny        = "deny"
+	PermAutoApprove = "auto-approve"
+	PermAsk         = "ask"
+
+	StrategySticky     = "sticky"
+	StrategyManual     = "manual"
+	StrategyFailover   = "failover"
+	StrategyRoundRobin = "round-robin"
+	StrategyLeastBusy  = "least-busy"
+
+	ToolActivityDrop = "drop"
+	ToolActivityText = "text"
+
+	DefaultBind = "127.0.0.1"
+	DefaultPort = 8787
+)
+
+var validNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+
+type Config struct {
+	Server   ServerConfig    `toml:"server"`
+	UI       UIConfig        `toml:"ui"`
+	ACP      ACPConfig       `toml:"acp"`
+	Accounts []AccountConfig `toml:"accounts"`
+	Models   []ModelOverride `toml:"models"`
+	Routing  []RoutingRule   `toml:"routing"`
+}
+
+type ServerConfig struct {
+	Bind        string `toml:"bind"`
+	Port        int    `toml:"port"`
+	LocalKey    string `toml:"local_key"`
+	AllowRemote bool   `toml:"allow_remote"`
+}
+
+type UIConfig struct {
+	Theme              string `toml:"theme"`
+	OnboardingComplete bool   `toml:"onboarding_complete"`
+}
+
+type ACPConfig struct {
+	ToolActivity string `toml:"tool_activity"` // "drop" or "text"
+}
+
+type AccountConfig struct {
+	ID             string            `toml:"id"`
+	Name           string            `toml:"name"`
+	Kind           string            `toml:"kind"`    // "acp" or "api_key"
+	Backend        string            `toml:"backend"` // descriptor id or preset id
+	Enabled        bool              `toml:"enabled"`
+	DisabledReason string            `toml:"disabled_reason,omitempty"`
+	BaseURL        string            `toml:"base_url,omitempty"`
+	AuthStyle      string            `toml:"auth_style,omitempty"` // bearer, anthropic, none
+	DefaultCwd     string            `toml:"default_cwd,omitempty"`
+	PermissionMode string            `toml:"permission_mode,omitempty"` // deny, auto-approve, ask
+	CustomCommand  []string          `toml:"custom_command,omitempty"`
+	CustomLogin    []string          `toml:"custom_login,omitempty"`
+	CustomEnv      map[string]string `toml:"custom_env,omitempty"`
+	Models         []string          `toml:"models,omitempty"`
+	MaxConcurrency int               `toml:"max_concurrency"`
+	HourlyLimit    int               `toml:"hourly_limit,omitempty"`
+	DailyLimit     int               `toml:"daily_limit,omitempty"`
+}
+
+type ModelOverride struct {
+	ID          string `toml:"id"`
+	DisplayName string `toml:"display_name,omitempty"`
+	Alias       string `toml:"alias,omitempty"`
+	Hidden      bool   `toml:"hidden,omitempty"`
+}
+
+type RoutingRule struct {
+	Pattern                     string   `toml:"pattern"` // exact model id, prefix glob like "agy/*", or "*"
+	Accounts                    []string `toml:"accounts"`
+	Strategy                    string   `toml:"strategy"`
+	AllowCrossAccountRetryOn429 bool     `toml:"allow_cross_account_retry_on_429,omitempty"`
+	SubscriptionWarningAcked    bool     `toml:"subscription_warning_acked,omitempty"`
+}
+
+// DataDir resolves the acpx storage directory.
+func DataDir() (string, error) {
+	if env := strings.TrimSpace(os.Getenv("ACPX_HOME")); env != "" {
+		return filepath.Clean(env), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "acpx"), nil
+	case "windows":
+		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
+			return filepath.Join(appData, "acpx"), nil
+		}
+		return filepath.Join(home, "AppData", "Roaming", "acpx"), nil
+	default:
+		if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
+			return filepath.Join(xdg, "acpx"), nil
+		}
+		return filepath.Join(home, ".config", "acpx"), nil
+	}
+}
+
+func GenerateLocalKey() string {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "acpx_fallback_local_key_change_me"
+	}
+	return "acpx_" + hex.EncodeToString(b)
+}
+
+func Default() *Config {
+	return &Config{
+		Server: ServerConfig{
+			Bind:     DefaultBind,
+			Port:     DefaultPort,
+			LocalKey: GenerateLocalKey(),
+		},
+		UI: UIConfig{
+			Theme: "auto",
+		},
+		ACP: ACPConfig{
+			ToolActivity: ToolActivityDrop,
+		},
+	}
+}
+
+func EnsureDirs(dataDir string) error {
+	dirs := []string{
+		dataDir,
+		filepath.Join(dataDir, "profiles"),
+		filepath.Join(dataDir, "backends.d"),
+		filepath.Join(dataDir, "logs"),
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return fmt.Errorf("create directory %s: %w", d, err)
+		}
+	}
+	return nil
+}
+
+func ConfigPath(dataDir string) string {
+	return filepath.Join(dataDir, "config.toml")
+}
+
+func Load(dataDir string) (*Config, bool, error) {
+	if err := EnsureDirs(dataDir); err != nil {
+		return nil, false, err
+	}
+	path := ConfigPath(dataDir)
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		cfg := Default()
+		if err := Save(dataDir, cfg); err != nil {
+			return nil, true, err
+		}
+		return cfg, true, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("read config: %w", err)
+	}
+	cfg := Default()
+	if _, err := toml.Decode(string(data), cfg); err != nil {
+		return nil, false, fmt.Errorf("parse config.toml: %w", err)
+	}
+	cfg.Normalize()
+	return cfg, false, nil
+}
+
+func Save(dataDir string, cfg *Config) error {
+	if err := EnsureDirs(dataDir); err != nil {
+		return err
+	}
+	cfg.Normalize()
+	var buf strings.Builder
+	enc := toml.NewEncoder(&buf)
+	if err := enc.Encode(cfg); err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	path := ConfigPath(dataDir)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(buf.String()), 0o600); err != nil {
+		return fmt.Errorf("write config temp file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("commit config file: %w", err)
+	}
+	return nil
+}
+
+func (c *Config) Normalize() {
+	if c.Server.Bind == "" {
+		c.Server.Bind = DefaultBind
+	}
+	if c.Server.Port <= 0 || c.Server.Port > 65535 {
+		c.Server.Port = DefaultPort
+	}
+	if c.Server.LocalKey == "" {
+		c.Server.LocalKey = GenerateLocalKey()
+	}
+	if c.UI.Theme == "" {
+		c.UI.Theme = "auto"
+	}
+	if c.ACP.ToolActivity != ToolActivityText && c.ACP.ToolActivity != ToolActivityDrop {
+		c.ACP.ToolActivity = ToolActivityDrop
+	}
+	for i := range c.Accounts {
+		a := &c.Accounts[i]
+		if a.ID == "" {
+			a.ID = SanitizeSlug(a.Backend + "-" + a.Name)
+		}
+		if a.Kind == KindACP {
+			if a.MaxConcurrency <= 0 {
+				a.MaxConcurrency = 1
+			}
+			if a.PermissionMode == "" {
+				a.PermissionMode = PermDeny
+			}
+		} else {
+			a.Kind = KindAPIKey
+			if a.MaxConcurrency <= 0 {
+				a.MaxConcurrency = 8
+			}
+			if a.AuthStyle == "" {
+				a.AuthStyle = AuthBearer
+			}
+		}
+	}
+	for i := range c.Routing {
+		if c.Routing[i].Strategy == "" {
+			c.Routing[i].Strategy = StrategySticky
+		}
+	}
+}
+
+func ValidateName(name string) error {
+	name = strings.TrimSpace(name)
+	if !validNameRe.MatchString(name) {
+		return fmt.Errorf("name %q must be 1-64 chars matching [a-zA-Z0-9._-]", name)
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("name %q must not contain '..'", name)
+	}
+	return nil
+}
+
+func SanitizeSlug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			b.WriteRune(r)
+		} else if r == ' ' || r == '/' || r == ':' {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-._")
+	if out == "" {
+		return "default"
+	}
+	if len(out) > 64 {
+		return out[:64]
+	}
+	return out
+}
+
+func ProfileDir(dataDir, backend, accountName string) (string, error) {
+	if err := ValidateName(backend); err != nil {
+		return "", fmt.Errorf("invalid backend name: %w", err)
+	}
+	if err := ValidateName(accountName); err != nil {
+		return "", fmt.Errorf("invalid account name: %w", err)
+	}
+	base := filepath.Join(dataDir, "profiles")
+	target := filepath.Join(base, backend, accountName)
+	rel, err := filepath.Rel(base, target)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("unsafe profile path")
+	}
+	return target, nil
+}
+
+func EnsureProfileDir(dataDir, backend, accountName string) (string, error) {
+	dir, err := ProfileDir(dataDir, backend, accountName)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("create profile dir: %w", err)
+	}
+	return dir, nil
+}
+
+func DeleteProfileDir(dataDir, backend, accountName string) error {
+	dir, err := ProfileDir(dataDir, backend, accountName)
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(dir)
+}
+
+func (c *Config) FindAccount(idOrKey string) *AccountConfig {
+	for i := range c.Accounts {
+		a := &c.Accounts[i]
+		if a.ID == idOrKey || a.Backend+"/"+a.Name == idOrKey || a.Name == idOrKey {
+			return a
+		}
+	}
+	return nil
+}
+
+func (c *Config) IsLoopbackBind() bool {
+	b := strings.TrimSpace(c.Server.Bind)
+	return b == "" || b == "127.0.0.1" || b == "localhost" || b == "::1"
+}
+
+func (c *Config) BaseURL() string {
+	host := c.Server.Bind
+	if host == "" || host == "0.0.0.0" {
+		host = "127.0.0.1"
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return fmt.Sprintf("http://%s:%d/v1", host, c.Server.Port)
+}
