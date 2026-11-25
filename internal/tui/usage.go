@@ -164,7 +164,13 @@ func (a *App) viewUsage(bodyHeight int) string {
 		qMeta = "updated " + qRep.UpdatedAt.Format("15:04:05")
 	}
 	qLines = append(qLines, a.styles.Subtitle.Render("Subscription Limits (Hourly / Weekly)")+"   "+a.styles.Muted.Render(qMeta))
-	qLines = append(qLines, a.styles.TableHeader.Render(fmt.Sprintf("%-18s %-8s %-30s %-26s %s", "ACCOUNT", "PLAN", "PRIMARY / HOURLY", "WEEKLY / SECONDARY", "ACPX 5h/7d")))
+	qLines = append(qLines, a.styles.JoinRow(2,
+		a.styles.TableHeader.Render(fmt.Sprintf("%-16s", "ACCOUNT")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "PLAN")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-34s", "PRIMARY / HOURLY")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-26s", "WEEKLY / SECONDARY")),
+		a.styles.TableHeader.Render("ACPX 5h/7d"),
+	))
 	if len(qRep.Accounts) == 0 {
 		qLines = append(qLines, a.styles.Muted.Render("No accounts configured yet."))
 	} else {
@@ -188,12 +194,12 @@ func (a *App) viewUsage(bodyHeight int) string {
 			prim := a.renderQuotaWindowInline(q.Primary, now)
 			sec := a.renderQuotaWindowInline(q.Secondary, now)
 			localCol := fmt.Sprintf("%d / %d reqs", q.Local5h, q.Local7d)
-			qLines = append(qLines, fmt.Sprintf("%-18s %-8s %-30s %-26s %s",
-				truncate(q.AccountName, 18),
-				truncate(plan, 8),
-				prim,
-				sec,
-				a.styles.Muted.Render(truncate(localCol, max(innerW-88, 8))),
+			qLines = append(qLines, a.styles.JoinRow(2,
+				a.styles.PadCell(truncate(q.AccountName, 16), 16),
+				a.styles.PadCell(a.styles.Muted.Render(truncate(plan, 8)), 8),
+				a.styles.PadCell(prim, 34),
+				a.styles.PadCell(sec, 26),
+				a.styles.Muted.Render(truncate(localCol, max(innerW-94, 8))),
 			))
 		}
 	}
@@ -256,8 +262,9 @@ func (a *App) viewUsage(bodyHeight int) string {
 	}
 
 	if a.width >= 104 {
-		leftW := (a.width - 3) / 2
-		rightW := a.width - 3 - leftW
+		avail := max(a.width-5, 60)
+		leftW := avail / 2
+		rightW := avail - leftW
 		bottom := lipgloss.JoinHorizontal(lipgloss.Top, renderAccountCard(leftW, remH), " ", renderModelCard(rightW, remH))
 		return lipgloss.JoinVertical(lipgloss.Left, topCard, quotaCard, bottom)
 	}

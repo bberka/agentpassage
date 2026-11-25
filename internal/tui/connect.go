@@ -161,29 +161,40 @@ func (a *App) viewConnectModal() string {
 
 	for i := start; i < end; i++ {
 		t := a.connectTargets[i]
-		badge := a.styles.Muted.Render("○ not found ")
+		badge := a.styles.Muted.Render("○ not found")
+		plainBadge := "○ not found"
 		if t.Connected {
-			badge = a.styles.StateReady.Render("● connected ")
+			badge = a.styles.StateReady.Render("● connected")
+			plainBadge = "● connected"
 		} else if t.Detected {
-			badge = a.styles.StateWarn.Render("◐ detected  ")
+			badge = a.styles.StateWarn.Render("◐ detected")
+			plainBadge = "◐ detected"
 		}
 		mode := a.styles.Muted.Render("manual")
+		plainMode := "manual"
 		if t.AutoApply {
-			mode = a.styles.Highlight.Render("auto  ")
+			mode = a.styles.Highlight.Render("auto")
+			plainMode = "auto"
 		}
 		pathOrDesc := t.ConfigPath
 		if pathOrDesc == "" {
 			pathOrDesc = t.Description
 		}
-		row := fmt.Sprintf("%-18s %-14s %-8s %s",
-			truncate(t.Name, 18),
-			badge,
-			mode,
-			a.styles.Muted.Render(truncate(pathOrDesc, max(innerW-46, 12))),
-		)
 		if i == a.connectCursor {
+			row := fmt.Sprintf("%-18s  %-12s  %-6s  %s",
+				truncate(t.Name, 18),
+				plainBadge,
+				plainMode,
+				truncate(pathOrDesc, max(innerW-44, 12)),
+			)
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 		} else {
+			row := a.styles.JoinRow(2,
+				a.styles.PadCell(truncate(t.Name, 18), 18),
+				a.styles.PadCell(badge, 12),
+				a.styles.PadCell(mode, 6),
+				a.styles.Muted.Render(truncate(pathOrDesc, max(innerW-44, 12))),
+			)
 			lines = append(lines, "  "+row)
 		}
 	}

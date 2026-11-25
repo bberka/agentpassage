@@ -237,7 +237,13 @@ func (a *App) viewModels(bodyHeight int) string {
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-10s %-32s %-11s %-7s %s", "STATUS", "MODEL", "ROUTING", "KIND", "NOTES")))
+	lines = append(lines, "  "+a.styles.JoinRow(2,
+		a.styles.TableHeader.Render(fmt.Sprintf("%-10s", "STATUS")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-30s", "MODEL")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-11s", "ROUTING")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "KIND")),
+		a.styles.TableHeader.Render("NOTES"),
+	))
 
 	maxRows := max(bodyHeight-6, 4)
 	start := 0
@@ -247,9 +253,11 @@ func (a *App) viewModels(bodyHeight int) string {
 
 	for i := start; i < len(models) && i < start+maxRows; i++ {
 		m := models[i]
-		status := a.styles.StateReady.Render("● enabled ")
+		status := a.styles.StateReady.Render("● enabled")
+		plainSt := "● enabled"
 		if m.Hidden {
 			status = a.styles.Muted.Render("○ disabled")
+			plainSt = "○ disabled"
 		}
 		routing := fmt.Sprintf("shared (%d)", len(m.AccountIDs))
 		if m.Prefixed {
@@ -270,16 +278,24 @@ func (a *App) viewModels(bodyHeight int) string {
 		if m.AccountName != "" {
 			flags = append(flags, "acct:"+m.AccountName)
 		}
-		row := fmt.Sprintf("%-10s %-32s %-11s %-7s %s",
-			status,
-			truncate(m.ID, 32),
-			routing,
-			m.Kind,
-			truncate(strings.Join(flags, " "), max(innerW-67, 10)),
-		)
+		notes := truncate(strings.Join(flags, " "), max(innerW-70, 10))
 		if i == a.modelCursor {
+			row := fmt.Sprintf("%-10s  %-30s  %-11s  %-8s  %s",
+				plainSt,
+				truncate(m.ID, 30),
+				routing,
+				truncate(m.Kind, 8),
+				notes,
+			)
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 		} else {
+			row := a.styles.JoinRow(2,
+				a.styles.PadCell(status, 10),
+				a.styles.PadCell(truncate(m.ID, 30), 30),
+				a.styles.PadCell(routing, 11),
+				a.styles.PadCell(a.styles.Muted.Render(truncate(m.Kind, 8)), 8),
+				a.styles.Muted.Render(notes),
+			)
 			lines = append(lines, "  "+row)
 		}
 	}

@@ -224,7 +224,15 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-18s %-7s %-10s %-8s %-13s %-6s %s", "ACCOUNT", "KIND", "STATE", "PROBE", "EXPOSE", "MODELS", "DETAILS")))
+	lines = append(lines, "  "+a.styles.JoinRow(2,
+		a.styles.TableHeader.Render(fmt.Sprintf("%-18s", "ACCOUNT")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "KIND")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-10s", "STATE")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-10s", "PROBE")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-13s", "EXPOSE")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-7s", "MODELS")),
+		a.styles.TableHeader.Render("DETAILS"),
+	))
 
 	maxRows := max(bodyHeight-11, 4)
 	start := 0
@@ -253,18 +261,29 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		}
 		totalModels := max(len(acct.AvailableModels), len(acct.Models))
 		modelCol := fmt.Sprintf("%d/%d", len(acct.Models), totalModels)
-		row := fmt.Sprintf("%-18s %-7s %-10s %-8s %-13s %-6s %s",
-			truncate(acct.Backend+"/"+acct.Name, 18),
-			acct.Kind,
-			a.renderState(snap),
-			a.renderProbeShort(hr),
-			truncate(expose, 13),
-			modelCol,
-			truncate(extra, max(innerW-72, 10)),
-		)
 		if i == a.acctCursor {
+			plainState := plainStateText(snap)
+			plainProbe := plainProbeText(hr)
+			row := fmt.Sprintf("%-18s  %-8s  %-10s  %-10s  %-13s  %-7s  %s",
+				truncate(acct.Backend+"/"+acct.Name, 18),
+				truncate(acct.Kind, 8),
+				truncate(plainState, 10),
+				truncate(plainProbe, 10),
+				truncate(expose, 13),
+				truncate(modelCol, 7),
+				truncate(extra, max(innerW-80, 10)),
+			)
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 		} else {
+			row := a.styles.JoinRow(2,
+				a.styles.PadCell(truncate(acct.Backend+"/"+acct.Name, 18), 18),
+				a.styles.PadCell(a.styles.Muted.Render(truncate(acct.Kind, 8)), 8),
+				a.styles.PadCell(a.renderState(snap), 10),
+				a.styles.PadCell(a.renderProbeShort(hr), 10),
+				a.styles.PadCell(truncate(expose, 13), 13),
+				a.styles.PadCell(truncate(modelCol, 7), 7),
+				truncate(extra, max(innerW-80, 10)),
+			)
 			lines = append(lines, "  "+row)
 		}
 	}
@@ -298,4 +317,32 @@ func (a *App) viewAccounts(bodyHeight int) string {
 	}
 
 	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
+}
+
+func plainStateText(s pool.AccountSnapshot) string {
+	switch s.State {
+	case pool.StateReady:
+		return "● ready"
+	case pool.StateBusy:
+		return "◐ busy"
+	case pool.StateCoolingDown:
+		return "◷ cool"
+	case pool.StateLoginNeeded:
+		return "▲ login"
+	default:
+		return "○ off"
+	}
+}
+
+func plainProbeText(r health.Result) string {
+	switch r.Status {
+	case health.StatusHealthy:
+		return fmt.Sprintf("%dms", r.LatencyMs)
+	case health.StatusDegraded:
+		return "degraded"
+	case health.StatusUnhealthy:
+		return "down"
+	default:
+		return "—"
+	}
 }

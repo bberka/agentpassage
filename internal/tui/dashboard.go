@@ -93,22 +93,41 @@ func (a *App) viewDashboard(bodyHeight int) string {
 
 	renderEndpointCard := func(w int) string {
 		inner := w - 4
+		g := a.styles.ColGap(3)
 		lines := []string{
-			a.styles.Subtitle.Render("Gateway Endpoint") + "   " + status + "   " + a.styles.Muted.Render(fmt.Sprintf("%d models", len(models))),
-			fmt.Sprintf("URL     %s", a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-10, 20)))),
-			fmt.Sprintf("Key     %s", truncate(keyDisp, max(inner-10, 16))),
-			fmt.Sprintf("Service %s   Health %s", a.renderServiceSummaryInline(), renderHealthSummaryInline()),
+			a.styles.Subtitle.Render("Gateway Endpoint") + g + status + g + a.styles.Muted.Render(fmt.Sprintf("%d models", len(models))),
+			a.styles.PadCell("URL", 8) + a.styles.Highlight.Render(truncate(cfg.BaseURL(), max(inner-10, 20))),
+			a.styles.PadCell("Key", 8) + truncate(keyDisp, max(inner-10, 16)),
+			a.styles.PadCell("Service", 8) + a.renderServiceSummaryInline() + g + a.styles.PadCell("Health", 7) + renderHealthSummaryInline(),
 		}
 		return a.styles.Card.Width(w).Render(strings.Join(lines, "\n"))
 	}
 
 	// Build Accounts card
 	renderAccountsCard := func(w, h int) string {
-		inner := w - 4
-		maxRows := max(h-4, 2)
+		inner := max(w-4, 30)
+		maxRows := max(h-5, 2)
+		acctW := 16
+		kindW := 8
+		stateW := 10
+		probeW := 10
+		if inner >= 72 {
+			acctW = 19
+		}
+		usageW := max(inner-(acctW+kindW+stateW+probeW+8), 10)
+
 		var lines []string
 		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("Accounts (%d)", len(snaps))))
-		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-17s %-6s %-10s %-8s %s", "ACCOUNT", "KIND", "STATE", "PROBE", "USAGE")))
+		hdr := a.styles.JoinRow(2,
+			a.styles.TableHeader.Render(fmt.Sprintf("%-*s", acctW, "ACCOUNT")),
+			a.styles.TableHeader.Render(fmt.Sprintf("%-*s", kindW, "KIND")),
+			a.styles.TableHeader.Render(fmt.Sprintf("%-*s", stateW, "STATE")),
+			a.styles.TableHeader.Render(fmt.Sprintf("%-*s", probeW, "PROBE")),
+			a.styles.TableHeader.Render("USAGE"),
+		)
+		lines = append(lines, hdr)
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", inner)))
+
 		for i, s := range snaps {
 			if i >= maxRows {
 				lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("... +%d more (press 2)", len(snaps)-maxRows)))
@@ -116,16 +135,16 @@ func (a *App) viewDashboard(bodyHeight int) string {
 			}
 			probe := a.renderProbeShort(healthByID[s.ID])
 			usage := fmt.Sprintf("req:%d err:%d (%d/%d)", s.TotalRequests, s.TotalErrors, s.InFlight, s.MaxConcurrency)
-			row := fmt.Sprintf("%-17s %-6s %-10s %-8s %s",
-				truncate(s.Backend+"/"+s.Name, 17),
-				s.Kind,
-				a.renderState(s),
-				probe,
-				truncate(usage, max(inner-46, 8)),
+			row := a.styles.JoinRow(2,
+				a.styles.PadCell(truncate(s.Backend+"/"+s.Name, acctW), acctW),
+				a.styles.PadCell(a.styles.Muted.Render(truncate(s.Kind, kindW)), kindW),
+				a.styles.PadCell(a.renderState(s), stateW),
+				a.styles.PadCell(probe, probeW),
+				truncate(usage, usageW),
 			)
 			lines = append(lines, row)
 		}
-		for len(lines) < maxRows+2 {
+		for len(lines) < maxRows+3 {
 			lines = append(lines, "")
 		}
 		return a.styles.Card.Width(w).Height(h - 2).Render(strings.Join(lines, "\n"))
@@ -133,14 +152,15 @@ func (a *App) viewDashboard(bodyHeight int) string {
 
 	// Build Live Activity card
 	renderLogsCard := func(w, h int) string {
-		inner := w - 4
-		maxRows := max(h-3, 3)
+		inner := max(w-4, 24)
+		maxRows := max(h-4, 3)
 		entries := a.srv.LiveLogEntries()
 		var lines []string
 		lines = append(lines, a.styles.Subtitle.Render("Live Activity"))
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", inner)))
 		if len(entries) == 0 {
 			lines = append(lines, a.styles.Muted.Render("Waiting for requests on "+cfg.BaseURL()+" ..."))
-			lines = append(lines, a.styles.Muted.Render("Tip: press 'C' to auto-register acpx into T3 Code, OpenCode, Codex, Claude, Pi, or Grok."))
+			lines = append(lines, a.styles.Muted.Render("Tip: press 'C' to connect T3 Code, Zed, VS Code, JetBrains, OpenCode, or Pi."))
 		} else {
 			start := max(len(entries)-maxRows, 0)
 			for _, e := range entries[start:] {
@@ -166,13 +186,14 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		return a.styles.Card.Width(w).Height(h - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	// Wide terminal (>=104 cols): 2-column OpenCode-style split filling full screen!
+	// Wide terminal (>=104 cols): 2-column split (each bordered card adds 2 cols + 1 col gap = 5 total).
 	if a.width >= 104 {
-		leftW := (a.width - 3) * 52 / 100
-		rightW := a.width - 3 - leftW
+		avail := max(a.width-5, 60)
+		leftW := avail * 54 / 100
+		rightW := avail - leftW
 		epCard := renderEndpointCard(leftW)
 		epH := lipgloss.Height(epCard)
-		acctH := max(bodyHeight-epH, 6)
+		acctH := max(bodyHeight-epH, 7)
 		leftCol := lipgloss.JoinVertical(lipgloss.Left, epCard, renderAccountsCard(leftW, acctH))
 		rightCol := renderLogsCard(rightW, bodyHeight)
 		return lipgloss.JoinHorizontal(lipgloss.Top, leftCol, " ", rightCol)

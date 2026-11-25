@@ -253,3 +253,30 @@ func (s Styles) Place(width, height int, hPos, vPos lipgloss.Position, content s
 	}
 	return lipgloss.Place(width, height, hPos, vPos, content)
 }
+
+// PadCell pads a potentially ANSI-styled string to an exact visible terminal column width.
+func (s Styles) PadCell(text string, width int) string {
+	vis := lipgloss.Width(text)
+	if vis >= width {
+		return text
+	}
+	pad := strings.Repeat(" ", width-vis)
+	if s.HasCanvasBg {
+		pad = lipgloss.NewStyle().Background(s.SurfaceBg).Render(pad)
+	}
+	return text + pad
+}
+
+// ColGap returns a surface-matched horizontal gap between table columns.
+func (s Styles) ColGap(n int) string {
+	gap := strings.Repeat(" ", max(n, 1))
+	if s.HasCanvasBg {
+		return lipgloss.NewStyle().Background(s.SurfaceBg).Render(gap)
+	}
+	return gap
+}
+
+// JoinRow joins pre-padded columns with a consistent horizontal column gap.
+func (s Styles) JoinRow(gap int, cols ...string) string {
+	return strings.Join(cols, s.ColGap(gap))
+}
