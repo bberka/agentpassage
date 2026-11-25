@@ -14,19 +14,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/backend/acpbackend"
-	"github.com/bberka/acpx/internal/backend/clibackend"
-	"github.com/bberka/acpx/internal/backend/httpbackend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/health"
-	"github.com/bberka/acpx/internal/logbuf"
-	"github.com/bberka/acpx/internal/pool"
-	"github.com/bberka/acpx/internal/quota"
-	"github.com/bberka/acpx/internal/router"
-	"github.com/bberka/acpx/internal/secrets"
-	"github.com/bberka/acpx/internal/usage"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/backend/acpbackend"
+	"github.com/bberka/agentpassage/internal/backend/clibackend"
+	"github.com/bberka/agentpassage/internal/backend/httpbackend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/quota"
+	"github.com/bberka/agentpassage/internal/router"
+	"github.com/bberka/agentpassage/internal/secrets"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 const Version = "0.1.0"
@@ -197,7 +197,7 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	return nil
 }
 
-// NotifyRunningDaemon asks an already-running acpx daemon/service to hot-reload config & secrets.
+// NotifyRunningDaemon asks an already-running apx daemon/service to hot-reload config & secrets.
 func NotifyRunningDaemon(cfg *config.Config) bool {
 	if cfg == nil {
 		return false
@@ -251,7 +251,7 @@ func (s *Server) notifyRemoteReload(addr, key string) error {
 	return nil
 }
 
-// AttachIfRunning checks if an acpx daemon is already listening on the configured host:port.
+// AttachIfRunning checks if an apx daemon is already listening on the configured host:port.
 // If so, switches this Server into attached client mode instead of failing with address-in-use.
 func (s *Server) AttachIfRunning() (bool, error) {
 	s.mu.RLock()
@@ -277,7 +277,7 @@ func (s *Server) AttachIfRunning() (bool, error) {
 		Version string `json:"version"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&hz); err != nil || hz.Status != "ok" || hz.Version == "" {
-		return false, fmt.Errorf("listener on %s is not acpx", addr)
+		return false, fmt.Errorf("listener on %s is not apx", addr)
 	}
 
 	s.mu.Lock()
@@ -290,7 +290,7 @@ func (s *Server) AttachIfRunning() (bool, error) {
 	return true, nil
 }
 
-// Attached reports whether this Server is attached to an already-running acpx daemon/service.
+// Attached reports whether this Server is attached to an already-running apx daemon/service.
 func (s *Server) Attached() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -764,7 +764,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := s.authenticateRequest(r)
 		if !ok {
-			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing acpx API key.")
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing apx API key.")
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), authCtxKey{}, p)))
@@ -775,7 +775,7 @@ func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := s.authenticateRequest(r)
 		if !ok {
-			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing acpx API key.")
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing apx API key.")
 			return
 		}
 		if p.Role != config.KeyRoleAdmin {
@@ -986,7 +986,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if maxTok == 0 {
 		maxTok = req.MaxCompTok
 	}
-	sessionKey := strings.TrimSpace(r.Header.Get("X-Acpx-Session"))
+	sessionKey := strings.TrimSpace(r.Header.Get("X-Apx-Session"))
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(req.User)
 	}
@@ -999,7 +999,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Temperature:   req.Temperature,
 		MaxTokens:     maxTok,
 		SessionKey:    sessionKey,
-		Cwd:           strings.TrimSpace(r.Header.Get("X-Acpx-Cwd")),
+		Cwd:           strings.TrimSpace(r.Header.Get("X-Apx-Cwd")),
 		HasTools:      len(req.Tools) > 0 || len(req.Functions) > 0,
 		RawOpenAIBody: rawBody,
 	}
@@ -1041,12 +1041,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
-	w.Header().Set("X-Acpx-Account", acctName)
+	w.Header().Set("X-Apx-Account", acctName)
 	if resp.ToolsIgnored {
-		w.Header().Set("X-Acpx-Tools-Ignored", "true")
+		w.Header().Set("X-Apx-Tools-Ignored", "true")
 	}
 	if resp.SessionID != "" {
-		w.Header().Set("X-Acpx-Session-Id", resp.SessionID)
+		w.Header().Set("X-Apx-Session-Id", resp.SessionID)
 	}
 
 	u := resp.Usage
@@ -1191,12 +1191,12 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
-			w.Header().Set("X-Acpx-Account", acctName)
+			w.Header().Set("X-Apx-Account", acctName)
 			if toolsIgnored {
-				w.Header().Set("X-Acpx-Tools-Ignored", "true")
+				w.Header().Set("X-Apx-Tools-Ignored", "true")
 			}
 			if sessionID != "" {
-				w.Header().Set("X-Acpx-Session-Id", sessionID)
+				w.Header().Set("X-Apx-Session-Id", sessionID)
 			}
 			w.WriteHeader(http.StatusOK)
 			// Initial role chunk
@@ -1416,13 +1416,22 @@ func writeOpenAIError(w http.ResponseWriter, status int, errType, msg string) {
 	})
 }
 
-func checkLoopGuard(r *http.Request, plan *router.Plan) error {
-	if hopRaw := strings.TrimSpace(r.Header.Get("X-Acpx-Hop")); hopRaw != "" {
-		if hop, err := strconv.Atoi(hopRaw); err == nil && hop >= 2 {
-			return fmt.Errorf("recursive acpx loop detected (X-Acpx-Hop=%d)", hop)
+func headerFirst(r *http.Request, names ...string) string {
+	for _, n := range names {
+		if v := strings.TrimSpace(r.Header.Get(n)); v != "" {
+			return v
 		}
 	}
-	client := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Acpx-Client")))
+	return ""
+}
+
+func checkLoopGuard(r *http.Request, plan *router.Plan) error {
+	if hopRaw := headerFirst(r, "X-Apx-Hop", "X-Acpx-Hop"); hopRaw != "" {
+		if hop, err := strconv.Atoi(hopRaw); err == nil && hop >= 2 {
+			return fmt.Errorf("recursive apx loop detected (X-Apx-Hop=%d)", hop)
+		}
+	}
+	client := strings.ToLower(headerFirst(r, "X-Apx-Client", "X-Acpx-Client"))
 	if client != "" && plan.Backend != "" && client == strings.ToLower(plan.Backend) {
 		return fmt.Errorf("loop prevented: client %q cannot route back into backend %q", client, plan.Backend)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bberka/acpx/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/logbuf"
 )
 
 func TestFileFallbackPermissionsAndRedaction(t *testing.T) {

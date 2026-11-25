@@ -18,7 +18,7 @@ const usageHubHTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>acpx — Usage Report Hub</title>
+<title>apx — Usage Report Hub</title>
 <style>
   :root {
     --bg: #0d1117; --surf: #161b22; --elev: #1c2128; --border: #30363d;
@@ -87,7 +87,7 @@ const usageHubHTML = `<!doctype html>
 </head>
 <body>
 <header>
-  <div class="brand"><span class="pill">◆ acpx</span> Usage Report Hub</div>
+  <div class="brand"><span class="pill">◆ apx</span> Usage Report Hub</div>
   <div class="controls">
     <span id="liveDot" class="muted" style="font-size:12px;">localhost</span>
     <button id="refreshQuotaBtn">Refresh Limits</button>
@@ -101,8 +101,8 @@ const usageHubHTML = `<!doctype html>
 
 <div id="authBox" class="card hidden">
   <h2 style="justify-content:center;">Local API Key Required</h2>
-  <p class="muted">Paste your local <code>acpx_...</code> key (from the TUI Dashboard or <code>acpx export-env</code>).</p>
-  <input id="keyInput" type="password" placeholder="acpx_...">
+  <p class="muted">Paste your local <code>apx_...</code> key (from the TUI Dashboard or <code>apx export-env</code>).</p>
+  <input id="keyInput" type="password" placeholder="apx_...">
   <button id="unlockBtn" class="primary" style="width:100%;">Unlock Usage Hub</button>
   <p id="authErr" class="muted" style="color:var(--err);margin-top:8px;"></p>
 </div>
@@ -146,10 +146,10 @@ const usageHubHTML = `<!doctype html>
 <script>
 const qs = new URLSearchParams(location.search);
 if (qs.get('key')) {
-  sessionStorage.setItem('acpx_key', qs.get('key'));
+  sessionStorage.setItem('apx_key', qs.get('key'));
   history.replaceState({}, '', location.pathname);
 }
-let apiKey = sessionStorage.getItem('acpx_key') || '';
+let apiKey = sessionStorage.getItem('apx_key') || '';
 let chartMode = '24h';
 let autoRefresh = true;
 let lastUsage = null;
@@ -185,7 +185,7 @@ async function fetchData() {
       fetch('/admin/quota', { headers: h }),
     ]);
     if (uRes.status === 401 || sRes.status === 401) {
-      sessionStorage.removeItem('acpx_key');
+      sessionStorage.removeItem('apx_key');
       apiKey = '';
       showAuth('Invalid local API key.');
       return;
@@ -266,7 +266,7 @@ function render() {
         (q.error ? '<br><span style="color:var(--warn);">' + esc(q.error) + '</span>' : '<br>Provider has no live quota API — set hourly/weekly budgets in Accounts.') +
         '</div>';
     } else {
-      body += '<div class="muted" style="font-size:11px;font-family:var(--mono);">acpx traffic: 1h=' + fmt(q.local_1h_reqs) + ' · 5h=' + fmt(q.local_5h_reqs) + ' · 7d=' + fmt(q.local_7d_reqs) + tokNote + (q.credits ? ' · ' + esc(q.credits) : '') + '</div>';
+      body += '<div class="muted" style="font-size:11px;font-family:var(--mono);">apx traffic: 1h=' + fmt(q.local_1h_reqs) + ' · 5h=' + fmt(q.local_5h_reqs) + ' · 7d=' + fmt(q.local_7d_reqs) + tokNote + (q.credits ? ' · ' + esc(q.credits) : '') + '</div>';
     }
     return '<div class="q-card"><div class="q-head"><span class="q-name">' + esc(q.account_name) + '</span>' + srcBadge + '</div>' + body + '</div>';
   }).join('') || '<div class="muted">No accounts configured yet.</div>';
@@ -340,10 +340,10 @@ function render() {
 
 $('unlockBtn').onclick = () => {
   apiKey = $('keyInput').value.trim();
-  if (apiKey) { sessionStorage.setItem('acpx_key', apiKey); fetchData(); }
+  if (apiKey) { sessionStorage.setItem('apx_key', apiKey); fetchData(); }
 };
 $('keyInput').onkeydown = e => { if (e.key === 'Enter') $('unlockBtn').click(); };
-$('logoutBtn').onclick = () => { sessionStorage.removeItem('acpx_key'); apiKey = ''; showAuth(); };
+$('logoutBtn').onclick = () => { sessionStorage.removeItem('apx_key'); apiKey = ''; showAuth(); };
 $('refreshBtn').onclick = fetchData;
 $('refreshQuotaBtn').onclick = async () => {
   if (!apiKey) return;

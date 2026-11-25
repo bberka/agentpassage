@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/usage"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 // Window describes one quota window (e.g. 5h / hourly, Weekly / 7d, Monthly / 30d).
@@ -487,7 +487,7 @@ func fetchCodexQuota(ctx context.Context, acct config.AccountConfig, dataDir str
 		_ = cmd.Wait()
 	}()
 
-	reqPayload := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"acpx","version":"0.1.0"}}}` + "\n" +
+	reqPayload := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"apx","version":"0.1.0"}}}` + "\n" +
 		`{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}` + "\n"
 	if _, err := stdin.Write([]byte(reqPayload)); err != nil {
 		return AccountQuota{}, err

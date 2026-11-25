@@ -9,9 +9,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/secrets"
-	"github.com/bberka/acpx/internal/service"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/secrets"
+	"github.com/bberka/agentpassage/internal/service"
 )
 
 const settingsCount = 11
@@ -46,7 +46,7 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				cfg := a.srv.Config()
 				cfg.Server.Port = p
 				_ = a.srv.ReloadConfig(cfg)
-				a.setStatus(fmt.Sprintf("Saved port %d (restart acpx to apply)", p), false)
+				a.setStatus(fmt.Sprintf("Saved port %d (restart apx to apply)", p), false)
 				return nil
 			})
 		case 1:
@@ -57,7 +57,7 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				cfg := a.srv.Config()
 				cfg.Server.Bind = val
 				_ = a.srv.ReloadConfig(cfg)
-				a.setStatus("Saved bind address "+val+" (restart acpx to apply)", false)
+				a.setStatus("Saved bind address "+val+" (restart apx to apply)", false)
 				return nil
 			})
 		case 2:

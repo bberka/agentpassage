@@ -6,11 +6,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/gateway"
-	"github.com/bberka/acpx/internal/logbuf"
-	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/secrets"
 )
 
 func TestTUIFullScreenScreensAndModals(t *testing.T) {

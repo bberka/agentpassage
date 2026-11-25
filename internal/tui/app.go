@@ -11,15 +11,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/connect"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/gateway"
-	"github.com/bberka/acpx/internal/health"
-	"github.com/bberka/acpx/internal/logbuf"
-	"github.com/bberka/acpx/internal/quota"
-	"github.com/bberka/acpx/internal/service"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/connect"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/quota"
+	"github.com/bberka/agentpassage/internal/service"
 )
 
 type Screen int
@@ -95,7 +95,7 @@ type quotaRefreshDoneMsg struct {
 	err    error
 }
 
-// App is the root Bubble Tea model for acpx.
+// App is the root Bubble Tea model for apx.
 type App struct {
 	srv      *gateway.Server
 	styles   Styles
@@ -688,7 +688,7 @@ func (a *App) openEditModal(title, hint, initial string, onSubmit func(string) e
 }
 
 func (a *App) renderTopBar() string {
-	brand := a.styles.Brand.Render("◆ acpx")
+	brand := a.styles.Brand.Render("◆ apx")
 
 	tabs := make([]string, 0, len(screenNames))
 	compact := a.width < 94
@@ -870,7 +870,7 @@ func (a *App) viewModal() string {
 	case modalHelp:
 		cardW := clamp(a.width-12, 56, 80)
 		return a.styles.Modal.Width(cardW).Render(strings.Join([]string{
-			a.styles.Title.Render("acpx Keyboard Shortcuts"),
+			a.styles.Title.Render("apx Keyboard Shortcuts"),
 			a.styles.Divider.Render(strings.Repeat("─", cardW-6)),
 			"",
 			a.styles.Subtitle.Render("Navigation"),
@@ -960,7 +960,7 @@ func (a *App) viewModal() string {
 			fmt.Sprintf("Strategy %q is intended for API-key accounts.", a.warnStrategy),
 			"WARNING: If used on subscription-based (ACP/CLI) accounts,",
 			"spreading requests across accounts can cause provider bans.",
-			"acpx blocks subscription accounts unless you explicitly opt in.",
+			"apx blocks subscription accounts unless you explicitly opt in.",
 			"",
 			a.styles.KeyHint("y", "enable "+a.warnStrategy) + "   " + a.styles.KeyHint("f", "use failover") + "   " + a.styles.KeyHint("n", "cancel"),
 		}, "\n"))

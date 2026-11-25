@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/gateway"
-	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/secrets"
 )
 
 func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
@@ -47,8 +47,8 @@ func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp"}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"session/set_config_option","params":{"sessionId":"acpx-sess-1","configId":"model","value":"b-gemini-4-neon"}}`,
-		`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"acpx-sess-1","prompt":[{"type":"text","text":"hello"}]}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"session/set_config_option","params":{"sessionId":"apx-sess-1","configId":"model","value":"b-gemini-4-neon"}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"apx-sess-1","prompt":[{"type":"text","text":"hello"}]}}`,
 	}, "\n") + "\n"
 
 	var out bytes.Buffer
@@ -126,8 +126,8 @@ func TestACPBridgeThoughtLevelConfigOption(t *testing.T) {
 	input := strings.Join([]string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`,
 		`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp"}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"session/set_config_option","params":{"sessionId":"acpx-sess-1","configId":"thought_level","value":"high"}}`,
-		`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"acpx-sess-1","prompt":[{"type":"text","text":"think hard"}]}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"session/set_config_option","params":{"sessionId":"apx-sess-1","configId":"thought_level","value":"high"}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":"apx-sess-1","prompt":[{"type":"text","text":"think hard"}]}}`,
 	}, "\n") + "\n"
 
 	var out bytes.Buffer

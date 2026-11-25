@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/agentpassage/internal/config"
 )
 
 // --- DeepSeek Official Balance API: GET /user/balance ---

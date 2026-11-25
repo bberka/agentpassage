@@ -3,14 +3,14 @@ package gateway
 import (
 	"context"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/pool"
-	"github.com/bberka/acpx/internal/router"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 // StreamDirect executes a chat completion directly through the router, pool, and backend
-// without an HTTP hop (used by the `acpx acp` stdio bridge server).
+// without an HTTP hop (used by the `apx acp` stdio bridge server).
 func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb backend.StreamCallback) (string, error) {
 	plan, err := s.router.Resolve(req.Model)
 	if err != nil {

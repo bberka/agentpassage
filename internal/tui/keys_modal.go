@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/secrets"
 )
 
 func (a *App) openKeysModal() {
@@ -136,7 +136,7 @@ func (a *App) viewKeysModal() string {
 	maxExtra := clamp(a.height-16, 4, 12)
 	for i, ck := range cfg.Server.APIKeys {
 		if i >= maxExtra {
-			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("  ... +%d more (run `acpx keys`)", len(cfg.Server.APIKeys)-maxExtra)))
+			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("  ... +%d more (run `apx keys`)", len(cfg.Server.APIKeys)-maxExtra)))
 			break
 		}
 		stStyled := a.styles.StateReady.Render("● active")
@@ -210,18 +210,18 @@ func (a *App) viewRemoteModal() string {
 
 	lines := []string{
 		a.styles.Title.Render("◆ Remote Access Guide (Tailscale & Cloudflare Tunnel)"),
-		a.styles.Muted.Render("Keep acpx bound to 127.0.0.1 — let Tailscale or Cloudflare terminate HTTPS safely."),
+		a.styles.Muted.Render("Keep apx bound to 127.0.0.1 — let Tailscale or Cloudflare terminate HTTPS safely."),
 		a.styles.Divider.Render(strings.Repeat("─", innerW)),
 		"",
 		a.styles.Subtitle.Render("Option 1 — Tailscale Serve (Private Tailnet HTTPS — Recommended)"),
-		"  1. Create a device key:  " + a.styles.Highlight.Render("acpx keys create laptop --role client"),
+		"  1. Create a device key:  " + a.styles.Highlight.Render("apx keys create laptop --role client"),
 		"  2. Expose over tailnet:  " + a.styles.Highlight.Render(fmt.Sprintf("tailscale serve --bg --https=443 http://127.0.0.1:%d", port)),
 		a.styles.Muted.Render("  3. Point clients to:     https://<host>.<tailnet>.ts.net/v1"),
 		"",
 		a.styles.Subtitle.Render("Option 2 — Cloudflare Tunnel (Public HTTPS, Zero Open Ports)"),
 		"  Quick test tunnel:       " + a.styles.Highlight.Render(fmt.Sprintf("cloudflared tunnel --url http://127.0.0.1:%d", port)),
-		"  Permanent domain:        " + a.styles.Muted.Render("cloudflared tunnel create acpx && cloudflared tunnel route dns acpx ai.yourdomain.com"),
-		a.styles.Muted.Render("  Full YAML + Access policy guide: docs/remote-access.md  (or run `acpx remote`)"),
+		"  Permanent domain:        " + a.styles.Muted.Render("cloudflared tunnel create apx && cloudflared tunnel route dns apx ai.yourdomain.com"),
+		a.styles.Muted.Render("  Full YAML + Access policy guide: docs/remote-access.md  (or run `apx remote`)"),
 		"",
 		a.styles.Muted.Render("Tip: 'client' keys can use /v1/* models but are blocked from /admin/* & /usage."),
 		a.styles.Divider.Render(strings.Repeat("─", innerW)),

@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/router"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 func (a *App) filteredModels() []router.ModelEntry {

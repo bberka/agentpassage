@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/bberka/acpx/internal/quota"
-	"github.com/bberka/acpx/internal/usage"
+	"github.com/bberka/agentpassage/internal/quota"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 func (a *App) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -173,7 +173,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "PLAN")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-34s", "PRIMARY / HOURLY")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-26s", "WEEKLY / SECONDARY")),
-		a.styles.TableHeader.Render("ACPX 5h/7d"),
+		a.styles.TableHeader.Render("AgentPassage 5h/7d"),
 	))
 	if len(qRep.Accounts) == 0 {
 		qLines = append(qLines, a.styles.Muted.Render("No accounts configured yet."))

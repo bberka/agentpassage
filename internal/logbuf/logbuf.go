@@ -33,7 +33,7 @@ type Entry struct {
 }
 
 var (
-	tokenPattern = regexp.MustCompile(`(?i)(bearer\s+|x-api-key[:=]\s*|sk-[a-zA-Z0-9_-]{8,}|acpx_[a-fA-F0-9]{8,}|AIza[0-9A-Za-z_-]{16,})([^\s"']*)`)
+	tokenPattern = regexp.MustCompile(`(?i)(bearer\s+|x-api-key[:=]\s*|sk-[a-zA-Z0-9_-]{8,}|(?:apx|acpx)_[a-fA-F0-9]{8,}|AIza[0-9A-Za-z_-]{16,})([^\s"']*)`)
 )
 
 // Buffer keeps recent log entries in memory, redacts secrets, optionally appends to disk, and notifies subscribers.
@@ -61,7 +61,7 @@ func New(maxEntries int, dataDir string, secretSource func() []string) *Buffer {
 	if dataDir != "" {
 		logDir := filepath.Join(dataDir, "logs")
 		if err := os.MkdirAll(logDir, 0o700); err == nil {
-			f, err := os.OpenFile(filepath.Join(logDir, "acpx.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			f, err := os.OpenFile(filepath.Join(logDir, "apx.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 			if err == nil {
 				b.file = f
 			}

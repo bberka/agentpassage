@@ -7,9 +7,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/health"
-	"github.com/bberka/acpx/internal/pool"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/pool"
 )
 
 func (a *App) filteredAccounts() []config.AccountConfig {

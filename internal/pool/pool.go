@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
 )
 
 type AccountState string

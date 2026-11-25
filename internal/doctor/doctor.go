@@ -7,9 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/secrets"
 )
 
 type Status string
@@ -71,7 +71,7 @@ func Run(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		bindDetail += " (port free)"
 	} else {
 		bindStatus = StatusWarn
-		bindDetail += " (port currently in use — another acpx instance or service may be running)"
+		bindDetail += " (port currently in use — another apx instance or service may be running)"
 	}
 	checks = append(checks, Check{Name: "Gateway bind", Status: bindStatus, Detail: bindDetail})
 
@@ -92,7 +92,7 @@ func Run(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 				Detail: fmt.Sprintf("found at %s", d.BinaryPath),
 			})
 		} else if primary[d.Descriptor.ID] {
-			detail := fmt.Sprintf("%q not found (run `acpx install %s`)", d.Descriptor.Detect, d.Descriptor.ID)
+			detail := fmt.Sprintf("%q not found (run `apx install %s`)", d.Descriptor.Detect, d.Descriptor.ID)
 			if d.Hint != "" {
 				detail = d.Hint
 			}
@@ -106,7 +106,7 @@ func Run(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 	checks = append(checks, Check{
 		Name:   "ACP Registry",
 		Status: StatusOK,
-		Detail: fmt.Sprintf("%d agents available (%d installed locally; press 'i' in TUI or run `acpx install`)", len(allDetected), installedCount),
+		Detail: fmt.Sprintf("%d agents available (%d installed locally; press 'i' in TUI or run `apx install`)", len(allDetected), installedCount),
 	})
 
 	// 5. Configured accounts
@@ -114,7 +114,7 @@ func Run(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		checks = append(checks, Check{
 			Name:   "Accounts",
 			Status: StatusWarn,
-			Detail: "No accounts configured yet (run `acpx` or `acpx add`)",
+			Detail: "No accounts configured yet (run `apx` or `apx add`)",
 		})
 	} else {
 		for _, a := range cfg.Accounts {

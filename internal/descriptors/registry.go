@@ -67,7 +67,7 @@ func currentPlatformKey() string {
 	return osPart + "-" + archPart
 }
 
-// registryIDAlias maps official ACP Registry IDs to short ergonomic acpx IDs where appropriate.
+// registryIDAlias maps official ACP Registry IDs to short ergonomic apx IDs where appropriate.
 var registryIDAlias = map[string]string{
 	"codex-acp":  "codex",
 	"claude-acp": "claude",
@@ -116,7 +116,7 @@ func parseRegistryDescriptors(raw []byte, dataDir string) ([]ACPDescriptor, erro
 			d.BinaryCmd = cleanCmd
 			d.BinaryArgs = bin.Args
 			d.Detect = filepath.Base(cleanCmd)
-			// Installed path inside acpx dataDir/bin/<id>/<cleanCmd>
+			// Installed path inside apx dataDir/bin/<id>/<cleanCmd>
 			if dataDir != "" {
 				localBin := filepath.Join(dataDir, "bin", id, cleanCmd)
 				d.Command = append([]string{localBin}, bin.Args...)

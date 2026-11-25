@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/health"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/health"
 )
 
 func TestCheckerTransitionsAndReport(t *testing.T) {

@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
 )
 
 // TestHelperCLIProcess emulates a streaming NDJSON coding CLI (stream-json / codex-jsonl / opencode-json).
 func TestHelperCLIProcess(t *testing.T) {
-	mode := os.Getenv("ACPX_TEST_CLI_MODE")
+	mode := os.Getenv("APX_TEST_CLI_MODE")
 	if mode == "" {
 		return
 	}
@@ -63,7 +63,7 @@ func TestDirectCLIStreamingAndParsers(t *testing.T) {
 				Enabled:        true,
 				UseHostProfile: true,
 				CustomCommand:  []string{os.Args[0], "-test.run=TestHelperCLIProcess", "--", "{prompt}"},
-				CustomEnv:      map[string]string{"ACPX_TEST_CLI_MODE": tc.envMode},
+				CustomEnv:      map[string]string{"APX_TEST_CLI_MODE": tc.envMode},
 			}
 			var chunks []string
 			var gotSID string

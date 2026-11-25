@@ -1,6 +1,6 @@
 package descriptors
 
-import "github.com/bberka/acpx/internal/config"
+import "github.com/bberka/agentpassage/internal/config"
 
 // ProviderPreset defines an API-key provider with base URL, auth header style, and default models.
 type ProviderPreset struct {

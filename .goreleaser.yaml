@@ -1,11 +1,11 @@
 version: 2
 
-project_name: acpx
+project_name: agentpassage
 
 builds:
-  - id: acpx
-    main: ./cmd/acpx
-    binary: acpx
+  - id: apx
+    main: ./cmd/apx
+    binary: apx
     env:
       - CGO_ENABLED=0
     ldflags:
@@ -23,7 +23,7 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "apx_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"

@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/descriptors"
 )
 
 type installEventMsg struct {
@@ -243,7 +243,7 @@ func (a *App) viewInstallModal() string {
 	statusLine := a.styles.StateReady.Render("✓ Completed")
 	if st.running {
 		frame := spinFrames[a.spinTick%len(spinFrames)]
-		statusLine = a.styles.StateBusy.Render(frame + " Installing inside acpx (gateway stays running)...")
+		statusLine = a.styles.StateBusy.Render(frame + " Installing inside apx (gateway stays running)...")
 	} else if st.err != nil {
 		statusLine = a.styles.StateErr.Render("✗ Failed: " + truncate(st.err.Error(), innerW-12))
 	}

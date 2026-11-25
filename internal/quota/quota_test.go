@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/quota"
-	"github.com/bberka/acpx/internal/usage"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/quota"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 func TestParseCodexRateLimits(t *testing.T) {

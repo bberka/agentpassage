@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/pool"
-	"github.com/bberka/acpx/internal/router"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 type anthropicRequest struct {
@@ -60,7 +60,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		})
 	}
 
-	sessionKey := strings.TrimSpace(r.Header.Get("X-Acpx-Session"))
+	sessionKey := strings.TrimSpace(r.Header.Get("X-Apx-Session"))
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(req.Metadata.UserID)
 	}
@@ -80,7 +80,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
 		SessionKey:  sessionKey,
-		Cwd:         strings.TrimSpace(r.Header.Get("X-Acpx-Cwd")),
+		Cwd:         strings.TrimSpace(r.Header.Get("X-Apx-Cwd")),
 		HasTools:    len(req.Tools) > 0,
 	}
 
@@ -118,12 +118,12 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
-	w.Header().Set("X-Acpx-Account", acctName)
+	w.Header().Set("X-Apx-Account", acctName)
 	if resp.ToolsIgnored {
-		w.Header().Set("X-Acpx-Tools-Ignored", "true")
+		w.Header().Set("X-Apx-Tools-Ignored", "true")
 	}
 	if resp.SessionID != "" {
-		w.Header().Set("X-Acpx-Session-Id", resp.SessionID)
+		w.Header().Set("X-Apx-Session-Id", resp.SessionID)
 	}
 
 	stopReason := "end_turn"
@@ -201,12 +201,12 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
-			w.Header().Set("X-Acpx-Account", acctName)
+			w.Header().Set("X-Apx-Account", acctName)
 			if toolsIgnored {
-				w.Header().Set("X-Acpx-Tools-Ignored", "true")
+				w.Header().Set("X-Apx-Tools-Ignored", "true")
 			}
 			if sessionID != "" {
-				w.Header().Set("X-Acpx-Session-Id", sessionID)
+				w.Header().Set("X-Apx-Session-Id", sessionID)
 			}
 			w.WriteHeader(http.StatusOK)
 			writeAnthropicEvent(w, "message_start", map[string]any{

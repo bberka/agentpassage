@@ -10,9 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/gateway"
-	"github.com/bberka/acpx/internal/router"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 type rpcMsg struct {
@@ -37,8 +37,8 @@ type bridgeSession struct {
 	history []backend.Message
 }
 
-// Server exposes acpx itself as an ACP JSON-RPC 2.0 stdio server (`acpx acp`).
-// Any ACP host (T3 Code, Zed, JetBrains, etc.) can register `acpx acp` and
+// Server exposes apx itself as an ACP JSON-RPC 2.0 stdio server (`apx acp`).
+// Any ACP host (T3 Code, Zed, JetBrains, etc.) can register `apx acp` and
 // immediately select pooled rotated models or account-prefixed models.
 type Server struct {
 	gw      *gateway.Server
@@ -99,7 +99,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			replyOK(msg.ID, map[string]any{
 				"protocolVersion": 1,
 				"agentInfo": map[string]string{
-					"name":    "acpx ACP Gateway",
+					"name":    "apx ACP Gateway",
 					"version": gateway.Version,
 				},
 				"agentCapabilities": map[string]any{
@@ -121,7 +121,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 			configOpts, availModels, defaultModel, defaultEffort := s.buildModelOptions("", "")
 
-			sid := fmt.Sprintf("acpx-sess-%d", s.nextID.Add(1))
+			sid := fmt.Sprintf("apx-sess-%d", s.nextID.Add(1))
 			s.sessMu.Lock()
 			s.sess[sid] = &bridgeSession{
 				id:     sid,
@@ -229,7 +229,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			bs.history = append(bs.history, backend.Message{Role: "user", Content: userText})
 
 			if bs.model == "" {
-				replyErr(msg.ID, -32602, "no model configured in acpx; add an account first")
+				replyErr(msg.ID, -32602, "no model configured in apx; add an account first")
 				continue
 			}
 

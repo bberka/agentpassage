@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/connect"
+	"github.com/bberka/agentpassage/internal/connect"
 )
 
 func (a *App) openConnectModal() {
@@ -56,7 +56,7 @@ func (a *App) updateConnectModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if len(errs) > 0 {
 					a.setStatus(fmt.Sprintf("Disconnected %d client(s) with %d error(s)", removed, len(errs)), true)
 				} else {
-					a.setStatus(fmt.Sprintf("Disconnected acpx from all %d connected IDE/CLI(s)", removed), false)
+					a.setStatus(fmt.Sprintf("Disconnected apx from all %d connected IDE/CLI(s)", removed), false)
 				}
 			}
 			return a, nil
@@ -207,15 +207,15 @@ func (a *App) viewConnectModal() string {
 		switch a.connectConfirmAction {
 		case "connect":
 			lines = append(lines, a.styles.StateWarn.Render("Confirm Connect — "+a.connectConfirmTarget.Name))
-			lines = append(lines, "  Will write acpx config to: "+a.styles.Highlight.Render(truncate(a.connectConfirmTarget.ConfigPath, innerW-28)))
-			lines = append(lines, a.styles.Muted.Render("  Backup will be saved to .acpx.bak before modifying."))
+			lines = append(lines, "  Will write apx config to: "+a.styles.Highlight.Render(truncate(a.connectConfirmTarget.ConfigPath, innerW-28)))
+			lines = append(lines, a.styles.Muted.Render("  Backup will be saved to .apx.bak before modifying."))
 		case "disconnect":
 			lines = append(lines, a.styles.StateWarn.Render("Confirm Disconnect — "+a.connectConfirmTarget.Name))
-			lines = append(lines, "  Will remove acpx entry from: "+a.styles.Highlight.Render(truncate(a.connectConfirmTarget.ConfigPath, innerW-30)))
-			lines = append(lines, a.styles.Muted.Render("  All other settings stay untouched (.acpx.bak backup created)."))
+			lines = append(lines, "  Will remove apx entry from: "+a.styles.Highlight.Render(truncate(a.connectConfirmTarget.ConfigPath, innerW-30)))
+			lines = append(lines, a.styles.Muted.Render("  All other settings stay untouched (.apx.bak backup created)."))
 		case "disconnect_all":
 			lines = append(lines, a.styles.StateErr.Render(fmt.Sprintf("Confirm Disconnect All (%d connected)", connectedCount)))
-			lines = append(lines, a.styles.Muted.Render("  Will remove acpx from every connected IDE & CLI config file (.acpx.bak backups saved)."))
+			lines = append(lines, a.styles.Muted.Render("  Will remove apx from every connected IDE & CLI config file (.apx.bak backups saved)."))
 		}
 		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 		lines = append(lines, a.styles.JoinHints(

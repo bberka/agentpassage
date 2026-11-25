@@ -7,14 +7,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/router"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 func TestConnectMergesConfigsSafely(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
-	cfg.Server.LocalKey = "acpx_connect_test_key"
+	cfg.Server.LocalKey = "apx_connect_test_key"
 	models := []router.ModelEntry{
 		{ID: "gemini-4-neon"},
 		{ID: "a-gemini-4-neon"},
@@ -40,8 +40,8 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 	if _, ok := provs["existing"]; !ok {
 		t.Fatalf("expected existing provider preserved")
 	}
-	if _, ok := provs["acpx"]; !ok {
-		t.Fatalf("expected acpx provider added")
+	if _, ok := provs["apx"]; !ok {
+		t.Fatalf("expected apx provider added")
 	}
 
 	// 2. Codex TOML upsert is idempotent
@@ -57,13 +57,13 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexRaw, _ := os.ReadFile(codexPath)
-	if strings.Count(string(codexRaw), "[model_providers.acpx]") != 1 {
-		t.Fatalf("expected idempotent single acpx block, got:\n%s", codexRaw)
+	if strings.Count(string(codexRaw), "[model_providers.apx]") != 1 {
+		t.Fatalf("expected idempotent single apx block, got:\n%s", codexRaw)
 	}
 
 	// 3. T3 Code settings.json merge separates commandPath and commandArgs: ["acp"] and keeps snippet concise
 	t3Path := filepath.Join(dir, "t3-settings.json")
-	if err := os.WriteFile(t3Path, []byte(`{"favorites":[],"providerInstances":{"pi":{"driver":"pi","enabled":true},"acpx":{"driver":"acpRegistry","displayName":"My ACPX","config":{"commandPath":"/bad/acpx acp","commandArgs":[]}}}}`), 0o600); err != nil {
+	if err := os.WriteFile(t3Path, []byte(`{"favorites":[],"providerInstances":{"pi":{"driver":"pi","enabled":true},"apx":{"driver":"acpRegistry","displayName":"My AgentPassage","config":{"commandPath":"/bad/apx acp","commandArgs":[]}}}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	tT3, _ := FindTarget("t3code")
@@ -83,8 +83,8 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 	if _, ok := t3Provs["pi"]; !ok {
 		t.Fatalf("expected existing T3 Code provider pi preserved")
 	}
-	t3Acpx := t3Provs["acpx"].(map[string]any)
-	if t3Acpx["displayName"] != "My ACPX" {
+	t3Acpx := t3Provs["apx"].(map[string]any)
+	if t3Acpx["displayName"] != "My AgentPassage" {
 		t.Fatalf("expected custom displayName preserved, got %v", t3Acpx["displayName"])
 	}
 	t3Cfg := t3Acpx["config"].(map[string]any)
@@ -119,8 +119,8 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		t.Fatalf("expected existing context_servers preserved in zed settings")
 	}
 	zedServers := zedParsed["agent_servers"].(map[string]any)
-	if _, ok := zedServers["acpx"]; !ok {
-		t.Fatalf("expected agent_servers.acpx in zed settings, got %s", zedRaw)
+	if _, ok := zedServers["apx"]; !ok {
+		t.Fatalf("expected agent_servers.apx in zed settings, got %s", zedRaw)
 	}
 
 	// 4. Claude Code settings merge
@@ -134,7 +134,7 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		t.Fatalf("expected ANTHROPIC_BASE_URL in claude settings, got %s", clRaw)
 	}
 
-	// 5. Pi models.json merge excludes self 'pi' models (loop prevention) and sets X-Acpx-Client header
+	// 5. Pi models.json merge excludes self 'pi' models (loop prevention) and sets X-Apx-Client header
 	piModels := append([]router.ModelEntry(nil), models...)
 	piModels = append(piModels, router.ModelEntry{ID: "pi/default", Backend: "pi"})
 	piPath := filepath.Join(dir, "models.json")
@@ -150,8 +150,8 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 	if strings.Contains(string(piRaw), `"pi/default"`) {
 		t.Fatalf("loop guard failed: pi models.json must exclude self 'pi' backend models, got %s", piRaw)
 	}
-	if !strings.Contains(string(piRaw), `"X-Acpx-Client": "pi"`) || !strings.Contains(resPi.Message, "loop guard") {
-		t.Fatalf("expected X-Acpx-Client header and loop guard note, msg=%q raw=%s", resPi.Message, piRaw)
+	if !strings.Contains(string(piRaw), `"X-Apx-Client": "pi"`) || !strings.Contains(resPi.Message, "loop guard") {
+		t.Fatalf("expected X-Apx-Client header and loop guard note, msg=%q raw=%s", resPi.Message, piRaw)
 	}
 
 	// 6. VS Code chatLanguageModels.json merge + disconnect preserves existing entries
@@ -169,7 +169,7 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 	if !IsConnectedAtPath("vscode", vsPath) {
 		t.Fatalf("expected IsConnectedAtPath(vscode) == true")
 	}
-	// Disconnect VS Code -> removes acpx, keeps existing-local
+	// Disconnect VS Code -> removes apx, keeps existing-local
 	dVS, err := DisconnectAtPath(tVS, vsPath)
 	if err != nil || !dVS.Removed {
 		t.Fatalf("vscode disconnect failed: res=%+v err=%v", dVS, err)
@@ -178,7 +178,7 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		t.Fatalf("expected IsConnectedAtPath(vscode) == false after disconnect")
 	}
 	vsRaw, _ := os.ReadFile(vsPath)
-	if !strings.Contains(string(vsRaw), "existing-local") || strings.Contains(string(vsRaw), `"acpx"`) {
+	if !strings.Contains(string(vsRaw), "existing-local") || strings.Contains(string(vsRaw), `"apx"`) {
 		t.Fatalf("unexpected vscode file after disconnect: %s", vsRaw)
 	}
 

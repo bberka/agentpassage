@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/agentpassage/internal/config"
 )
 
 // Canonical effort/thinking levels ordered from lowest to highest.

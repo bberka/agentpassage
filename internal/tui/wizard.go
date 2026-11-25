@@ -7,8 +7,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
 )
 
 func (a *App) openWelcome() {
@@ -168,7 +168,7 @@ func (a *App) viewWelcomeModal() string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("◆ ACP Registry & CLI Installer (%d agents)", len(items))))
-	lines = append(lines, a.styles.Muted.Render("Install adapters right inside acpx without exiting, or press Space + Enter to add agents."))
+	lines = append(lines, a.styles.Muted.Render("Install adapters right inside apx without exiting, or press Space + Enter to add agents."))
 	if a.detectSearching {
 		lines = append(lines, a.styles.Highlight.Render("Search: ")+a.detectSearch.View()+" "+a.styles.Muted.Render("(enter/esc)"))
 	} else if q := strings.TrimSpace(a.detectSearch.Value()); q != "" {
@@ -281,7 +281,7 @@ func (a *App) updateLoginPromptModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a.loginTarget = nil
 		a.modal = modalNone
-		a.setStatus("Launching "+acct.Backend+" login (returns to acpx when finished)...", false)
+		a.setStatus("Launching "+acct.Backend+" login (returns to apx when finished)...", false)
 		return a, a.loginAccountCmd(acct)
 	case "i":
 		if acct.Kind != config.KindCLI {
@@ -356,14 +356,14 @@ func (a *App) viewLoginPromptModal() string {
 	if binMissing {
 		lines = append(lines, a.styles.StateWarn.Render(fmt.Sprintf("Binary %q is not installed yet.", binName)))
 		if canInstall {
-			lines = append(lines, "Press 'i' to install "+toolName+" inside acpx first.")
+			lines = append(lines, "Press 'i' to install "+toolName+" inside apx first.")
 		}
 	} else if loginCmd == "" {
 		lines = append(lines, a.styles.StateWarn.Render("No login command configured for "+acct.Backend+"."))
 		lines = append(lines, a.styles.Muted.Render("Set custom_login in config.toml or switch to Host CLI login (press 'H')."))
 	} else {
 		lines = append(lines, "The official CLI login will open in this terminal and automatically")
-		lines = append(lines, "return you right back to acpx once authentication finishes.")
+		lines = append(lines, "return you right back to apx once authentication finishes.")
 	}
 	lines = append(lines, "")
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))

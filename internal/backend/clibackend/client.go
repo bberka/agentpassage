@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/logbuf"
 )
 
 // Manager executes direct CLI proxy requests (claude -p, codex exec, agy --print, opencode run, etc.)
@@ -554,9 +554,9 @@ func sanitizeChildEnv(baseEnv, extraEnv []string, acct config.AccountConfig) []s
 			overrides[k] = v
 		}
 	}
-	overrides["ACPX_IN_CHILD"] = "1"
-	overrides["ACPX_CHILD_BACKEND"] = acct.Backend
-	overrides["ACPX_CHILD_ACCOUNT"] = acct.ID
+	overrides["APX_IN_CHILD"] = "1"
+	overrides["APX_CHILD_BACKEND"] = acct.Backend
+	overrides["APX_CHILD_ACCOUNT"] = acct.ID
 
 	out := make([]string, 0, len(baseEnv)+len(overrides))
 	for _, kv := range baseEnv {
@@ -573,8 +573,9 @@ func sanitizeChildEnv(baseEnv, extraEnv []string, acct config.AccountConfig) []s
 			if strings.Contains(lower, "127.0.0.1") || strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]") {
 				continue
 			}
-		case "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ACPX_API_KEY":
-			if strings.HasPrefix(strings.TrimSpace(v), "acpx_") {
+		case "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "APX_API_KEY", "ACPX_API_KEY":
+			trimmed := strings.TrimSpace(v)
+			if strings.HasPrefix(trimmed, "apx_") || strings.HasPrefix(trimmed, "acpx_") {
 				continue
 			}
 		}

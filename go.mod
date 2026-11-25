@@ -1,4 +1,4 @@
-module github.com/bberka/acpx
+module github.com/bberka/agentpassage
 
 go 1.24.2
 

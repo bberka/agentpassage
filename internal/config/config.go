@@ -296,8 +296,11 @@ type RoutingRule struct {
 	SubscriptionWarningAcked    bool     `toml:"subscription_warning_acked,omitempty"`
 }
 
-// DataDir resolves the acpx storage directory.
+// DataDir resolves the AgentPassage (apx) storage directory.
 func DataDir() (string, error) {
+	if env := strings.TrimSpace(os.Getenv("APX_HOME")); env != "" {
+		return filepath.Clean(env), nil
+	}
 	if env := strings.TrimSpace(os.Getenv("ACPX_HOME")); env != "" {
 		return filepath.Clean(env), nil
 	}
@@ -307,26 +310,26 @@ func DataDir() (string, error) {
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return filepath.Join(home, "Library", "Application Support", "acpx"), nil
+		return filepath.Join(home, "Library", "Application Support", "agentpassage"), nil
 	case "windows":
 		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
-			return filepath.Join(appData, "acpx"), nil
+			return filepath.Join(appData, "agentpassage"), nil
 		}
-		return filepath.Join(home, "AppData", "Roaming", "acpx"), nil
+		return filepath.Join(home, "AppData", "Roaming", "agentpassage"), nil
 	default:
 		if xdg := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); xdg != "" {
-			return filepath.Join(xdg, "acpx"), nil
+			return filepath.Join(xdg, "agentpassage"), nil
 		}
-		return filepath.Join(home, ".config", "acpx"), nil
+		return filepath.Join(home, ".config", "agentpassage"), nil
 	}
 }
 
 func GenerateLocalKey() string {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
-		return "acpx_fallback_local_key_change_me"
+		return "apx_fallback_local_key_change_me"
 	}
-	return "acpx_" + hex.EncodeToString(b)
+	return "apx_" + hex.EncodeToString(b)
 }
 
 func Default() *Config {

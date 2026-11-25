@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/logbuf"
 )
 
 func (a *App) filteredLogs() []logbuf.Entry {

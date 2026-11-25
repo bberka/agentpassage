@@ -3,9 +3,9 @@ package router
 import (
 	"testing"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/pool"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/pool"
 )
 
 func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {

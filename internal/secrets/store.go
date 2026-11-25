@@ -12,7 +12,10 @@ import (
 	"github.com/zalando/go-keyring"
 )
 
-const keyringService = "acpx"
+const (
+	keyringService       = "agentpassage"
+	legacyKeyringService = "acpx"
+)
 
 // Store stores API keys in the OS keychain when available, falling back to a 0600 file.
 type Store struct {
@@ -29,15 +32,15 @@ func New(dataDir string) *Store {
 		cache:    make(map[string]string),
 	}
 	// Probe keyring with a non-destructive read.
-	if os.Getenv("ACPX_NO_KEYRING") == "" {
-		_, err := keyring.Get(keyringService, "__acpx_probe__")
+	if os.Getenv("APX_NO_KEYRING") == "" && os.Getenv("ACPX_NO_KEYRING") == "" {
+		_, err := keyring.Get(keyringService, "__apx_probe__")
 		if err == nil || errors.Is(err, keyring.ErrNotFound) {
 			s.useKeyring = true
 		} else {
 			s.fallbackNote = err.Error()
 		}
 	} else {
-		s.fallbackNote = "disabled via ACPX_NO_KEYRING"
+		s.fallbackNote = "disabled via APX_NO_KEYRING"
 	}
 	// Load any existing file secrets so keys written before/during fallback remain readable.
 	_ = s.loadFileLocked()
@@ -112,7 +115,16 @@ func (s *Store) Get(accountID string) (string, error) {
 			s.mu.Unlock()
 			return v, nil
 		}
-		if !errors.Is(err, keyring.ErrNotFound) {
+		if errors.Is(err, keyring.ErrNotFound) {
+			// Seamless fallback to legacy "acpx" keychain entries.
+			if lv, lerr := keyring.Get(legacyKeyringService, accountID); lerr == nil && lv != "" {
+				_ = keyring.Set(keyringService, accountID, lv)
+				s.mu.Lock()
+				s.cache[accountID] = lv
+				s.mu.Unlock()
+				return lv, nil
+			}
+		} else {
 			s.mu.Lock()
 			s.useKeyring = false
 			s.fallbackNote = err.Error()

@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	systemdUnitName = "acpx.service"
-	launchdLabel    = "com.bberka.acpx"
-	winTaskName     = "acpx-gateway"
+	systemdUnitName = "apx.service"
+	launchdLabel    = "com.bberka.agentpassage"
+	winTaskName     = "agentpassage-gateway"
 )
 
 type StatusInfo struct {
@@ -25,7 +25,7 @@ type StatusInfo struct {
 }
 
 func binaryPath() (string, error) {
-	if p, err := exec.LookPath("acpx"); err == nil {
+	if p, err := exec.LookPath("apx"); err == nil {
 		if abs, err := filepath.Abs(p); err == nil {
 			return abs, nil
 		}
@@ -66,14 +66,14 @@ func RenderSystemdUnit(binPath, dataDir, pathEnv string) string {
 		envLines = append(envLines, fmt.Sprintf("Environment=\"PATH=%s\"", pathEnv))
 	}
 	if dataDir != "" {
-		envLines = append(envLines, fmt.Sprintf("Environment=\"ACPX_HOME=%s\"", dataDir))
+		envLines = append(envLines, fmt.Sprintf("Environment=\"APX_HOME=%s\"", dataDir))
 	}
 	envBlock := ""
 	if len(envLines) > 0 {
 		envBlock = strings.Join(envLines, "\n") + "\n"
 	}
 	return fmt.Sprintf(`[Unit]
-Description=acpx local ACP and API-key gateway
+Description=AgentPassage (apx) local ACP and API-key gateway
 After=network.target
 
 [Service]
@@ -110,7 +110,7 @@ func RenderLaunchdPlist(binPath, dataDir, pathEnv string, autoStart bool) string
   <dict>
     <key>PATH</key>
     <string>%s</string>
-    <key>ACPX_HOME</key>
+    <key>APX_HOME</key>
     <string>%s</string>
   </dict>
   <key>RunAtLoad</key>
@@ -129,7 +129,7 @@ func RenderLaunchdPlist(binPath, dataDir, pathEnv string, autoStart bool) string
 func Install(dataDir string, autoStart bool) (string, error) {
 	bin, err := binaryPath()
 	if err != nil {
-		return "", fmt.Errorf("resolve acpx binary: %w", err)
+		return "", fmt.Errorf("resolve apx binary: %w", err)
 	}
 	pathEnv := os.Getenv("PATH")
 
@@ -196,7 +196,7 @@ func Install(dataDir string, autoStart bool) (string, error) {
 	}
 }
 
-// SetAutoStart enables or disables starting the acpx service automatically on login/boot.
+// SetAutoStart enables or disables starting the apx service automatically on login/boot.
 func SetAutoStart(dataDir string, enable bool) error {
 	st := Status()
 	if !st.Installed {
@@ -422,7 +422,7 @@ func Logs(dataDir string, lines int) (string, error) {
 			}
 		}
 	}
-	logFile := filepath.Join(dataDir, "logs", "acpx.log")
+	logFile := filepath.Join(dataDir, "logs", "apx.log")
 	raw, err := os.ReadFile(logFile)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", logFile, err)

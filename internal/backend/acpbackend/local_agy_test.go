@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
 )
 
 // TestLocalAgyACPHandsakeOnHost runs a live integration check against the real `agy` CLI

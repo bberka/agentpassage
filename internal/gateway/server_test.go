@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/gateway"
-	"github.com/bberka/acpx/internal/logbuf"
-	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/secrets"
 )
 
 func TestGatewayOpenAIAndAnthropicEndpoints(t *testing.T) {
@@ -50,7 +50,7 @@ func TestGatewayOpenAIAndAnthropicEndpoints(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := config.Default()
-	cfg.Server.LocalKey = "acpx_test_local_key_1234"
+	cfg.Server.LocalKey = "apx_test_local_key_1234"
 	cfg.Accounts = []config.AccountConfig{
 		{
 			ID:             "deepseek-default",
@@ -309,7 +309,7 @@ func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := config.Default()
-	cfg.Server.LocalKey = "acpx_failover_key_1234"
+	cfg.Server.LocalKey = "apx_failover_key_1234"
 	cfg.Accounts = []config.AccountConfig{
 		{ID: "deepseek-p1", Name: "p1", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, BaseURL: primary.URL + "/v1", AuthStyle: config.AuthNone, Models: []string{"deepseek-chat"}, MaxConcurrency: 8},
 		{ID: "deepseek-p2", Name: "p2", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, BaseURL: secondary.URL + "/v1", AuthStyle: config.AuthNone, Models: []string{"deepseek-chat"}, MaxConcurrency: 8},
@@ -347,23 +347,23 @@ func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {
 	}
 	res.Body.Close()
 
-	// Loop guard: X-Acpx-Client matching target backend returns 508 Loop Detected
+	// Loop guard: X-Apx-Client matching target backend returns 508 Loop Detected
 	req, _ = http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewBufferString(payload))
 	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
-	req.Header.Set("X-Acpx-Client", "deepseek")
+	req.Header.Set("X-Apx-Client", "deepseek")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil || res.StatusCode != http.StatusLoopDetected {
-		t.Fatalf("expected 508 Loop Detected when X-Acpx-Client matches backend, got err=%v status=%d", err, res.StatusCode)
+		t.Fatalf("expected 508 Loop Detected when X-Apx-Client matches backend, got err=%v status=%d", err, res.StatusCode)
 	}
 	res.Body.Close()
 
-	// Loop guard: X-Acpx-Hop >= 2 returns 508 Loop Detected
+	// Loop guard: X-Apx-Hop >= 2 returns 508 Loop Detected
 	req, _ = http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewBufferString(payload))
 	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
-	req.Header.Set("X-Acpx-Hop", "2")
+	req.Header.Set("X-Apx-Hop", "2")
 	res, err = http.DefaultClient.Do(req)
 	if err != nil || res.StatusCode != http.StatusLoopDetected {
-		t.Fatalf("expected 508 Loop Detected on X-Acpx-Hop=2, got err=%v status=%d", err, res.StatusCode)
+		t.Fatalf("expected 508 Loop Detected on X-Apx-Hop=2, got err=%v status=%d", err, res.StatusCode)
 	}
 	res.Body.Close()
 }
@@ -373,7 +373,7 @@ func TestAttachToRunningDaemonAndHotReload(t *testing.T) {
 	cfg := config.Default()
 	cfg.Server.Bind = "127.0.0.1"
 	cfg.Server.Port = 18789
-	cfg.Server.LocalKey = "acpx_attach_test_key_1234"
+	cfg.Server.LocalKey = "apx_attach_test_key_1234"
 	if err := config.Save(dir, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +390,7 @@ func TestAttachToRunningDaemonAndHotReload(t *testing.T) {
 	}
 	defer daemon.Stop(t.Context())
 
-	// Extract bound port and attach a second Server instance (simulating opening `acpx` TUI while service runs)
+	// Extract bound port and attach a second Server instance (simulating opening `apx` TUI while service runs)
 	var boundPort int
 	_, portStr, okCut := strings.Cut(daemon.Addr(), ":")
 	if !okCut {

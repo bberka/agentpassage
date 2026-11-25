@@ -4,8 +4,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/router"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 func TestGroupEffortVariantsAndResolve(t *testing.T) {

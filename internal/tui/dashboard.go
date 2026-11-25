@@ -8,9 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/bberka/acpx/internal/health"
-	"github.com/bberka/acpx/internal/pool"
-	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/secrets"
 )
 
 func (a *App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -51,7 +51,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		heroW := clamp(a.width-12, 58, 78)
 		innerW := heroW - 6
 		hero := a.styles.CardAccent.Width(heroW).Render(strings.Join([]string{
-			a.styles.Title.Render("◆ acpx — Local ACP & API-Key Gateway"),
+			a.styles.Title.Render("◆ apx — Local ACP & API-Key Gateway"),
 			a.styles.Muted.Render("One local endpoint for 45+ ACP coding agents and OpenAI/Anthropic API keys."),
 			a.styles.Divider.Render(strings.Repeat("─", innerW)),
 			"",
@@ -59,7 +59,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 			fmt.Sprintf("  Service   %s   %s", a.renderServiceSummaryInline(), a.styles.Muted.Render("(S: manage)")),
 			fmt.Sprintf("  Endpoint  %s   %s", a.styles.Highlight.Render(cfg.BaseURL()), a.styles.Muted.Render("(c: copy)")),
 			fmt.Sprintf("  API Key   %s   %s", keyDisp, a.styles.Muted.Render("(k: copy, v: reveal)")),
-			fmt.Sprintf("  ACP Mode  %s", a.styles.Muted.Render("acpx acp  (connect directly in T3 Code / Zed)")),
+			fmt.Sprintf("  ACP Mode  %s", a.styles.Muted.Render("apx acp  (connect directly in T3 Code / Zed)")),
 			"",
 			a.styles.Divider.Render(strings.Repeat("─", innerW)),
 			"  " + a.styles.KeyHint("i", "Browse & install 45+ ACP tools (agy, codex, claude, cursor, opencode...)"),

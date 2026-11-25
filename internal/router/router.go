@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/agentpassage/internal/config"
 )
 
 type ModelEntry struct {

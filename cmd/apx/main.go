@@ -15,24 +15,24 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/acpbridge"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/connect"
-	"github.com/bberka/acpx/internal/descriptors"
-	"github.com/bberka/acpx/internal/doctor"
-	"github.com/bberka/acpx/internal/gateway"
-	"github.com/bberka/acpx/internal/health"
-	"github.com/bberka/acpx/internal/logbuf"
-	"github.com/bberka/acpx/internal/quota"
-	"github.com/bberka/acpx/internal/router"
-	"github.com/bberka/acpx/internal/secrets"
-	"github.com/bberka/acpx/internal/service"
-	"github.com/bberka/acpx/internal/tui"
+	"github.com/bberka/agentpassage/internal/acpbridge"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/connect"
+	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/doctor"
+	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/quota"
+	"github.com/bberka/agentpassage/internal/router"
+	"github.com/bberka/agentpassage/internal/secrets"
+	"github.com/bberka/agentpassage/internal/service"
+	"github.com/bberka/agentpassage/internal/tui"
 )
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "acpx: %v\n", err)
+		fmt.Fprintf(os.Stderr, "apx: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -75,17 +75,17 @@ func run(args []string) error {
 		case "export-env":
 			return cmdExportEnv(args[1:])
 		case "version":
-			fmt.Printf("acpx %s\n", gateway.Version)
+			fmt.Printf("apx %s\n", gateway.Version)
 			return nil
 		case "help", "-h", "--help":
 			printUsage()
 			return nil
 		default:
-			return fmt.Errorf("unknown command %q (run `acpx help`)", args[0])
+			return fmt.Errorf("unknown command %q (run `apx help`)", args[0])
 		}
 	}
 
-	fs := flag.NewFlagSet("acpx", flag.ContinueOnError)
+	fs := flag.NewFlagSet("apx", flag.ContinueOnError)
 	noTUI := fs.Bool("no-tui", false, "run the HTTP gateway only without opening the TUI")
 	port := fs.Int("port", 0, "override server port")
 	bind := fs.String("bind", "", "override bind address (default 127.0.0.1)")
@@ -96,7 +96,7 @@ func run(args []string) error {
 		return err
 	}
 	if *showVersion {
-		fmt.Printf("acpx %s\n", gateway.Version)
+		fmt.Printf("apx %s\n", gateway.Version)
 		return nil
 	}
 
@@ -107,29 +107,29 @@ func run(args []string) error {
 }
 
 func printUsage() {
-	fmt.Println(`acpx - ACP and API-key gateway with a TUI
+	fmt.Println(`apx - ACP and API-key gateway with a TUI
 
 Usage:
-  acpx [flags]                 Start gateway and open full-screen TUI
-  acpx --no-tui [flags]        Start gateway without TUI
-  acpx serve [flags]           Start headless HTTP gateway
-  acpx service <cmd>           Manage OS background service (install|uninstall|start|stop|restart|status|logs)
-  acpx acp                     Run acpx as an ACP stdio server (for T3 Code, Zed, etc.)
-  acpx add [flags]             Add an ACP or API-key account
-  acpx list [--json]           List configured accounts and models
-  acpx models [list|fetch|enable|disable]  Load, list, enable, or disable models per account
-  acpx usage [--json]          Print usage report & local Usage Hub web URL
-  acpx health [--json] [acct]  Run live health probes across configured accounts
-  acpx doctor                  Check CLIs, profiles, storage, and config
-  acpx install <tool|all>      Install any ACP tool from the 45+ agent registry
-  acpx connect [client...]     Connect T3 Code, Zed, VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude, Pi, Grok, Aider...
-  acpx disconnect <client|all> Cleanly remove acpx from one or all connected IDEs & CLIs
-  acpx uninstall [--yes]       Disconnect all IDEs/CLIs and uninstall the background service
-  acpx keys [list|create|enable|disable|revoke]  Manage multiple client/admin API keys
-  acpx remote                  Show Tailscale Serve & Cloudflare Tunnel remote access setup
-  acpx registry sync           Fetch latest official ACP Registry JSON
-  acpx export-env [--shell sh] Print shell exports for OpenAI/Anthropic clients
-  acpx version                 Print version
+  apx [flags]                 Start gateway and open full-screen TUI
+  apx --no-tui [flags]        Start gateway without TUI
+  apx serve [flags]           Start headless HTTP gateway
+  apx service <cmd>           Manage OS background service (install|uninstall|start|stop|restart|status|logs)
+  apx acp                     Run apx as an ACP stdio server (for T3 Code, Zed, etc.)
+  apx add [flags]             Add an ACP or API-key account
+  apx list [--json]           List configured accounts and models
+  apx models [list|fetch|enable|disable]  Load, list, enable, or disable models per account
+  apx usage [--json]          Print usage report & local Usage Hub web URL
+  apx health [--json] [acct]  Run live health probes across configured accounts
+  apx doctor                  Check CLIs, profiles, storage, and config
+  apx install <tool|all>      Install any ACP tool from the 45+ agent registry
+  apx connect [client...]     Connect T3 Code, Zed, VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude, Pi, Grok, Aider...
+  apx disconnect <client|all> Cleanly remove apx from one or all connected IDEs & CLIs
+  apx uninstall [--yes]       Disconnect all IDEs/CLIs and uninstall the background service
+  apx keys [list|create|enable|disable|revoke]  Manage multiple client/admin API keys
+  apx remote                  Show Tailscale Serve & Cloudflare Tunnel remote access setup
+  apx registry sync           Fetch latest official ACP Registry JSON
+  apx export-env [--shell sh] Print shell exports for OpenAI/Anthropic clients
+  apx version                 Print version
 
 Flags (root / serve):
   --port <int>                 Override listening port (default 8787)
@@ -173,10 +173,10 @@ func startTUI(port int, bind string, allowRemote bool) error {
 
 	srv := gateway.New(dataDir, cfg, sec, reg, logs)
 	if err := srv.Start(); err != nil {
-		// If another acpx daemon or background service is already listening on this port,
+		// If another apx daemon or background service is already listening on this port,
 		// attach the TUI to it seamlessly instead of failing with address-in-use!
 		if ok, attachErr := srv.AttachIfRunning(); !ok {
-			return fmt.Errorf("%w (hint: port is held by another process; try `acpx --port 8788` — attach check: %v)", err, attachErr)
+			return fmt.Errorf("%w (hint: port is held by another process; try `apx --port 8788` — attach check: %v)", err, attachErr)
 		}
 	}
 	defer func() {
@@ -213,7 +213,7 @@ func startHeadless(port int, bind string, allowRemote bool) error {
 	if err := srv.Start(); err != nil {
 		return err
 	}
-	fmt.Printf("acpx %s listening on http://%s/v1\n", gateway.Version, srv.Addr())
+	fmt.Printf("apx %s listening on http://%s/v1\n", gateway.Version, srv.Addr())
 	fmt.Printf("Local API key: %s (secrets backend: %s)\n", secrets.Mask(cfg.Server.LocalKey), sec.Backend())
 	if sec.UsingFileFallback() {
 		fmt.Fprintf(os.Stderr, "Notice: OS keychain unavailable; API keys are stored in a 0600 file in %s\n", dataDir)
@@ -263,18 +263,18 @@ func cmdService(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("Installed and started acpx background service (%s).\n", unit)
+		fmt.Printf("Installed and started apx background service (%s).\n", unit)
 		if autoStart {
-			fmt.Println("Auto-start on login: enabled (toggle anytime with `acpx service autostart off`).")
+			fmt.Println("Auto-start on login: enabled (toggle anytime with `apx service autostart off`).")
 		} else {
-			fmt.Println("Auto-start on login: disabled (enable anytime with `acpx service autostart on`).")
+			fmt.Println("Auto-start on login: disabled (enable anytime with `apx service autostart on`).")
 		}
-		fmt.Println("Run `acpx` anytime to open the TUI attached to the running service.")
+		fmt.Println("Run `apx` anytime to open the TUI attached to the running service.")
 		return nil
 	case "autostart":
 		if len(args) < 2 {
 			st := service.Status()
-			fmt.Printf("Auto-start: %v\nUsage: acpx service autostart <on|off>\n", st.Enabled)
+			fmt.Printf("Auto-start: %v\nUsage: apx service autostart <on|off>\n", st.Enabled)
 			return nil
 		}
 		switch strings.ToLower(args[1]) {
@@ -282,52 +282,52 @@ func cmdService(args []string) error {
 			if err := service.SetAutoStart(dataDir, true); err != nil {
 				return err
 			}
-			fmt.Println("Enabled auto-start on login for acpx service.")
+			fmt.Println("Enabled auto-start on login for apx service.")
 			return nil
 		case "off", "disable", "false", "0":
 			if err := service.SetAutoStart(dataDir, false); err != nil {
 				return err
 			}
-			fmt.Println("Disabled auto-start on login for acpx service.")
+			fmt.Println("Disabled auto-start on login for apx service.")
 			return nil
 		default:
-			return fmt.Errorf("usage: acpx service autostart <on|off>")
+			return fmt.Errorf("usage: apx service autostart <on|off>")
 		}
 	case "enable":
 		if err := service.SetAutoStart(dataDir, true); err != nil {
 			return err
 		}
-		fmt.Println("Enabled auto-start on login for acpx service.")
+		fmt.Println("Enabled auto-start on login for apx service.")
 		return nil
 	case "disable":
 		if err := service.SetAutoStart(dataDir, false); err != nil {
 			return err
 		}
-		fmt.Println("Disabled auto-start on login for acpx service.")
+		fmt.Println("Disabled auto-start on login for apx service.")
 		return nil
 	case "uninstall", "remove":
 		if err := service.Uninstall(); err != nil {
 			return err
 		}
-		fmt.Println("Stopped and uninstalled acpx background service.")
+		fmt.Println("Stopped and uninstalled apx background service.")
 		return nil
 	case "start":
 		if err := service.Start(); err != nil {
 			return err
 		}
-		fmt.Println("Started acpx service.")
+		fmt.Println("Started apx service.")
 		return nil
 	case "stop":
 		if err := service.Stop(); err != nil {
 			return err
 		}
-		fmt.Println("Stopped acpx service.")
+		fmt.Println("Stopped apx service.")
 		return nil
 	case "restart":
 		if err := service.Restart(); err != nil {
 			return err
 		}
-		fmt.Println("Restarted acpx service.")
+		fmt.Println("Restarted apx service.")
 		return nil
 	case "status":
 		st := service.Status()
@@ -347,7 +347,7 @@ func cmdService(args []string) error {
 		fmt.Println(out)
 		return nil
 	default:
-		return fmt.Errorf("usage: acpx service <install [--no-autostart]|uninstall|autostart <on|off>|start|stop|restart|status|logs>")
+		return fmt.Errorf("usage: apx service <install [--no-autostart]|uninstall|autostart <on|off>|start|stop|restart|status|logs>")
 	}
 }
 
@@ -518,7 +518,7 @@ func cmdAdd(args []string) error {
 	} else {
 		desc, ok := reg.GetACP(*backendID)
 		if !ok {
-			return fmt.Errorf("unknown ACP backend %q (run `acpx install` to list all 45+ tools)", *backendID)
+			return fmt.Errorf("unknown ACP backend %q (run `apx install` to list all 45+ tools)", *backendID)
 		}
 		if !*hostProfile {
 			if _, err := config.EnsureProfileDir(dataDir, desc.ID, *name); err != nil {
@@ -689,14 +689,14 @@ func cmdModels(args []string) error {
 				return err
 			}
 			if gateway.NotifyRunningDaemon(cfg) {
-				fmt.Println("Hot-reloaded running acpx service.")
+				fmt.Println("Hot-reloaded running apx service.")
 			}
 		}
 		return nil
 
 	case "enable", "disable":
 		if len(args) < 3 {
-			return fmt.Errorf("usage: acpx models %s <account> <model|all>", sub)
+			return fmt.Errorf("usage: apx models %s <account> <model|all>", sub)
 		}
 		acct := cfg.FindAccount(args[1])
 		if acct == nil {
@@ -721,7 +721,7 @@ func cmdModels(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("usage: acpx models [list | fetch [account] | enable <account> <model|all> | disable <account> <model|all>]")
+		return fmt.Errorf("usage: apx models [list | fetch [account] | enable <account> <model|all> | disable <account> <model|all>]")
 	}
 }
 
@@ -774,7 +774,7 @@ func cmdUsage(args []string) error {
 	}
 
 	hubURL := strings.TrimSuffix(cfg.BaseURL(), "/v1") + "/usage"
-	fmt.Printf("acpx Usage Report Hub — %s\n", hubURL)
+	fmt.Printf("apx Usage Report Hub — %s\n", hubURL)
 	fmt.Printf("Requests: %d total (24h: %d, 7d: %d) | Success: %.1f%% (%d errors)\n",
 		sum.TotalRequests, sum.Requests24h, sum.Requests7d, sum.SuccessRate, sum.ErrorRequests)
 	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Avg latency: %dms\n\n",
@@ -785,7 +785,7 @@ func cmdUsage(args []string) error {
 		fmt.Println("  (no accounts configured)")
 	} else {
 		now := time.Now()
-		fmt.Printf("  %-18s %-8s %-28s %-26s %s\n", "ACCOUNT", "PLAN", "PRIMARY / HOURLY", "WEEKLY / SECONDARY", "ACPX 5h/7d")
+		fmt.Printf("  %-18s %-8s %-28s %-26s %s\n", "ACCOUNT", "PLAN", "PRIMARY / HOURLY", "WEEKLY / SECONDARY", "AgentPassage 5h/7d")
 		fmtWin := func(w *quota.Window) string {
 			if w == nil {
 				return "—"
@@ -896,7 +896,7 @@ func cmdHealth(args []string) error {
 	if attached {
 		mode = "live service (" + srv.Addr() + ")"
 	}
-	fmt.Printf("acpx Health Check — overall: %s (%d/%d healthy) [%s]\n", rep.Overall, rep.HealthyCount, rep.TotalCount, mode)
+	fmt.Printf("apx Health Check — overall: %s (%d/%d healthy) [%s]\n", rep.Overall, rep.HealthyCount, rep.TotalCount, mode)
 	if len(rep.Accounts) == 0 {
 		fmt.Println("  (no accounts configured)")
 		return nil
@@ -967,7 +967,7 @@ func cmdInstall(args []string) error {
 			}
 			fmt.Printf("  %-20s %-22s %-34s %s\n", d.Descriptor.ID, d.Descriptor.Name, method, status)
 		}
-		fmt.Println("\nUsage: acpx install <id...>   (e.g. acpx install codex claude cursor opencode cline)")
+		fmt.Println("\nUsage: apx install <id...>   (e.g. apx install codex claude cursor opencode cline)")
 		return nil
 	}
 
@@ -987,7 +987,7 @@ func cmdInstall(args []string) error {
 		for _, id := range args {
 			d, ok := reg.GetACP(id)
 			if !ok {
-				return fmt.Errorf("unknown ACP tool %q (run `acpx install` to see all available IDs)", id)
+				return fmt.Errorf("unknown ACP tool %q (run `apx install` to see all available IDs)", id)
 			}
 			targets = append(targets, d)
 		}
@@ -1053,7 +1053,7 @@ func cmdConnect(args []string) error {
 	defer logs.Close()
 
 	if len(rest) == 0 {
-		fmt.Println("Connect IDEs, editors & coding CLIs to acpx:")
+		fmt.Println("Connect IDEs, editors & coding CLIs to apx:")
 		for _, t := range connect.ListTargets() {
 			state := "not found"
 			if t.Connected {
@@ -1064,8 +1064,8 @@ func cmdConnect(args []string) error {
 			fmt.Printf("  %-16s %-18s %-11s %s\n", t.ID, t.Name, state, t.Description)
 		}
 		fmt.Println("\nUsage:")
-		fmt.Println("  acpx connect <client...> [--yes] [--dry-run]  (asks before modifying files)")
-		fmt.Println("  acpx disconnect <client...|all> [--yes]       (cleanly remove acpx from connected IDEs & CLIs)")
+		fmt.Println("  apx connect <client...> [--yes] [--dry-run]  (asks before modifying files)")
+		fmt.Println("  apx disconnect <client...|all> [--yes]       (cleanly remove apx from connected IDEs & CLIs)")
 		return nil
 	}
 
@@ -1075,7 +1075,7 @@ func cmdConnect(args []string) error {
 	for _, id := range rest {
 		t, ok := connect.FindTarget(id)
 		if !ok {
-			return fmt.Errorf("unknown client %q (run `acpx connect` to list supported clients)", id)
+			return fmt.Errorf("unknown client %q (run `apx connect` to list supported clients)", id)
 		}
 		// Always preview first before touching any external IDE/CLI config file.
 		preview, err := connect.Apply(id, cfg, models, false)
@@ -1092,10 +1092,10 @@ func cmdConnect(args []string) error {
 
 		fmt.Printf("Target: %s (%s)\n", t.Name, t.ID)
 		fmt.Printf("File:   %s\n", t.ConfigPath)
-		fmt.Printf("Backup: %s.acpx.bak\n\n", t.ConfigPath)
+		fmt.Printf("Backup: %s.apx.bak\n\n", t.ConfigPath)
 		fmt.Println(preview.Snippet)
 
-		if !assumeYes && !confirmAction("Write acpx config to "+t.ConfigPath+"?") {
+		if !assumeYes && !confirmAction("Write apx config to "+t.ConfigPath+"?") {
 			fmt.Println("Cancelled — no files modified.")
 			continue
 		}
@@ -1137,7 +1137,7 @@ func cmdDisconnect(args []string) error {
 		if connected == 0 {
 			fmt.Println("  (none)")
 		}
-		fmt.Println("\nUsage: acpx disconnect <client...|all> [--yes]")
+		fmt.Println("\nUsage: apx disconnect <client...|all> [--yes]")
 		return nil
 	}
 
@@ -1152,11 +1152,11 @@ func cmdDisconnect(args []string) error {
 			fmt.Println("No connected IDEs or CLIs found.")
 			return nil
 		}
-		fmt.Println("Will remove acpx from:")
+		fmt.Println("Will remove apx from:")
 		for _, t := range toRemove {
 			fmt.Printf("  - %-18s %s\n", t.Name, t.ConfigPath)
 		}
-		if !assumeYes && !confirmAction(fmt.Sprintf("Disconnect acpx from all %d client(s)?", len(toRemove))) {
+		if !assumeYes && !confirmAction(fmt.Sprintf("Disconnect apx from all %d client(s)?", len(toRemove))) {
 			fmt.Println("Cancelled — no files modified.")
 			return nil
 		}
@@ -1176,13 +1176,13 @@ func cmdDisconnect(args []string) error {
 	for _, id := range rest {
 		t, ok := connect.FindTarget(id)
 		if !ok {
-			return fmt.Errorf("unknown client %q (run `acpx connect` to list supported clients)", id)
+			return fmt.Errorf("unknown client %q (run `apx connect` to list supported clients)", id)
 		}
 		if !t.AutoApply || t.ConfigPath == "" {
-			fmt.Printf("%s is configured manually in its GUI — remove the acpx Base URL there.\n", t.Name)
+			fmt.Printf("%s is configured manually in its GUI — remove the apx Base URL there.\n", t.Name)
 			continue
 		}
-		fmt.Printf("Will remove acpx from %s (%s)\n", t.Name, t.ConfigPath)
+		fmt.Printf("Will remove apx from %s (%s)\n", t.Name, t.ConfigPath)
 		if !assumeYes && !confirmAction("Proceed?") {
 			fmt.Println("Cancelled — no files modified.")
 			continue
@@ -1222,7 +1222,7 @@ func cmdUninstall(args []string) error {
 	}
 	st := service.Status()
 
-	fmt.Println("acpx uninstall plan:")
+	fmt.Println("apx uninstall plan:")
 	if len(connected) == 0 {
 		fmt.Println("  - Connections: none connected")
 	} else {
@@ -1378,7 +1378,7 @@ func cmdKeys(args []string) error {
 			}
 		}
 		if name == "" {
-			return fmt.Errorf("usage: acpx keys create <name> [--role client|admin] [--models a,b]")
+			return fmt.Errorf("usage: apx keys create <name> [--role client|admin] [--models a,b]")
 		}
 		ck, err := cfg.AddAPIKey(name, role, models)
 		if err != nil {
@@ -1400,7 +1400,7 @@ func cmdKeys(args []string) error {
 
 	case "enable", "disable":
 		if len(args) == 0 {
-			return fmt.Errorf("usage: acpx keys %s <name>", sub)
+			return fmt.Errorf("usage: apx keys %s <name>", sub)
 		}
 		ck := cfg.FindAPIKey(args[0])
 		if ck == nil {
@@ -1416,7 +1416,7 @@ func cmdKeys(args []string) error {
 
 	case "revoke", "delete", "rm":
 		if len(args) == 0 {
-			return fmt.Errorf("usage: acpx keys revoke <name>")
+			return fmt.Errorf("usage: apx keys revoke <name>")
 		}
 		if !cfg.DeleteAPIKey(args[0]) {
 			return fmt.Errorf("API key %q not found", args[0])
@@ -1429,7 +1429,7 @@ func cmdKeys(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("usage: acpx keys [list [--reveal|--json] | create <name> [--role client|admin] [--models a,b] | enable <name> | disable <name> | revoke <name>]")
+		return fmt.Errorf("usage: apx keys [list [--reveal|--json] | create <name> [--role client|admin] [--models a,b] | enable <name> | disable <name> | revoke <name>]")
 	}
 }
 
@@ -1441,12 +1441,12 @@ func cmdRemote(_ []string) error {
 	defer logs.Close()
 
 	port := cfg.Server.Port
-	fmt.Printf(`acpx Remote Access Guide (listening locally on 127.0.0.1:%d)
+	fmt.Printf(`apx Remote Access Guide (listening locally on 127.0.0.1:%d)
 
-Keep acpx bound to 127.0.0.1 — let Tailscale or Cloudflare terminate HTTPS safely.
+Keep apx bound to 127.0.0.1 — let Tailscale or Cloudflare terminate HTTPS safely.
 
 1. Create a dedicated client-role key per remote device (blocks /admin/* & /usage):
-   acpx keys create laptop --role client
+   apx keys create laptop --role client
 
 2. Option A — Tailscale Serve (Private Tailnet HTTPS — Recommended):
    tailscale serve --bg --https=443 http://127.0.0.1:%d
@@ -1460,8 +1460,8 @@ Keep acpx bound to 127.0.0.1 — let Tailscale or Cloudflare terminate HTTPS saf
 
    # Permanent custom domain (e.g. https://ai.yourdomain.com/v1):
    cloudflared tunnel login
-   cloudflared tunnel create acpx
-   cloudflared tunnel route dns acpx ai.yourdomain.com
+   cloudflared tunnel create apx
+   cloudflared tunnel route dns apx ai.yourdomain.com
    # Add ingress in ~/.cloudflared/config.yml -> service: http://127.0.0.1:%d
    # Run as service: sudo cloudflared service install
 
@@ -1486,7 +1486,7 @@ func cmdRegistry(args []string) error {
 		fmt.Printf("Synced %d agents from %s\n", n, descriptors.OfficialRegistryURL)
 		return nil
 	}
-	fmt.Println("Usage: acpx registry sync")
+	fmt.Println("Usage: apx registry sync")
 	return nil
 }
 

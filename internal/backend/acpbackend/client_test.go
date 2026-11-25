@@ -9,17 +9,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bberka/acpx/internal/backend"
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/descriptors"
 )
 
 // TestHelperACPProcess acts as a realistic ACP JSON-RPC stdio server subprocess during tests.
 func TestHelperACPProcess(t *testing.T) {
-	if os.Getenv("ACPX_TEST_ACP_HELPER") != "1" {
+	if os.Getenv("APX_TEST_ACP_HELPER") != "1" {
 		return
 	}
-	profile := os.Getenv("ACPX_TEST_PROFILE")
+	profile := os.Getenv("APX_TEST_PROFILE")
 	scanner := bufio.NewScanner(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
 	writeMsg := func(v any) {
@@ -140,8 +140,8 @@ func TestACPStreamingSessionReuseAndPermissions(t *testing.T) {
 		PermissionMode: config.PermDeny,
 		CustomCommand:  []string{os.Args[0], "-test.run=TestHelperACPProcess"},
 		CustomEnv: map[string]string{
-			"ACPX_TEST_ACP_HELPER": "1",
-			"ACPX_TEST_PROFILE":    "{profile}",
+			"APX_TEST_ACP_HELPER": "1",
+			"APX_TEST_PROFILE":    "{profile}",
 		},
 	}
 
@@ -228,26 +228,26 @@ func TestGroupedConfigOptionsAndLoopEnvSanitization(t *testing.T) {
 		}
 	}
 
-	// Verify sanitizeChildEnv strips local acpx loopback URLs & keys so pi-acp/opencode cannot loop
+	// Verify sanitizeChildEnv strips local apx loopback URLs & keys so pi-acp/opencode cannot loop
 	env := sanitizeChildEnv(
 		[]string{
 			"PATH=/usr/bin",
 			"OPENAI_BASE_URL=http://127.0.0.1:8787/v1",
-			"OPENAI_API_KEY=acpx_local_secret",
+			"OPENAI_API_KEY=apx_local_secret",
 			"ANTHROPIC_BASE_URL=http://localhost:8787",
-			"ANTHROPIC_AUTH_TOKEN=acpx_local_secret",
+			"ANTHROPIC_AUTH_TOKEN=apx_local_secret",
 			"SAFE_VAR=keep",
 		},
 		[]string{"PI_CODING_AGENT_DIR=/tmp/profile"},
 		config.AccountConfig{ID: "pi-default", Backend: "pi"},
 	)
 	joined := strings.Join(env, "\n")
-	for _, forbidden := range []string{"127.0.0.1:8787", "localhost:8787", "acpx_local_secret"} {
+	for _, forbidden := range []string{"127.0.0.1:8787", "localhost:8787", "apx_local_secret"} {
 		if strings.Contains(joined, forbidden) {
 			t.Fatalf("sanitizeChildEnv leaked loopback gateway env %q: %s", forbidden, joined)
 		}
 	}
-	if !strings.Contains(joined, "ACPX_IN_CHILD=1") || !strings.Contains(joined, "PI_CODING_AGENT_DIR=/tmp/profile") || !strings.Contains(joined, "SAFE_VAR=keep") {
+	if !strings.Contains(joined, "APX_IN_CHILD=1") || !strings.Contains(joined, "PI_CODING_AGENT_DIR=/tmp/profile") || !strings.Contains(joined, "SAFE_VAR=keep") {
 		t.Fatalf("sanitizeChildEnv missing expected entries: %s", joined)
 	}
 }

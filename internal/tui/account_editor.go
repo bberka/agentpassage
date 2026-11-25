@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/agentpassage/internal/config"
 )
 
 type accountEditorState struct {

@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/bberka/acpx/internal/service"
+	"github.com/bberka/agentpassage/internal/service"
 )
 
 type serviceStatusMsg service.StatusInfo
@@ -152,7 +152,7 @@ func (a *App) viewServiceModal() string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render("◆ Background Service & Auto-Start"))
-	lines = append(lines, a.styles.Muted.Render("Keep acpx running silently in the background; open `acpx` anytime to configure live."))
+	lines = append(lines, a.styles.Muted.Render("Keep apx running silently in the background; open `apx` anytime to configure live."))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
 	lines = append(lines, fmt.Sprintf("  %-14s %s", "Manager", mgr))

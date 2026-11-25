@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/logbuf"
 )
 
 type Status string

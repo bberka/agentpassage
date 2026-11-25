@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/bberka/acpx/internal/config"
-	"github.com/bberka/acpx/internal/router"
+	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 type Target struct {
@@ -18,9 +18,9 @@ type Target struct {
 	Name        string
 	Description string
 	ConfigPath  string
-	AutoApply   bool // true if acpx can safely write/merge its config file directly
+	AutoApply   bool // true if apx can safely write/merge its config file directly
 	Detected    bool
-	Connected   bool // true if acpx is currently registered in ConfigPath
+	Connected   bool // true if apx is currently registered in ConfigPath
 }
 
 type Result struct {
@@ -38,14 +38,14 @@ func homeDir() string {
 	return h
 }
 
-func acpxBinaryPath() string {
-	if p, err := exec.LookPath("acpx"); err == nil {
+func apxBinaryPath() string {
+	if p, err := exec.LookPath("apx"); err == nil {
 		return p
 	}
 	if exe, err := os.Executable(); err == nil {
 		return exe
 	}
-	return "acpx"
+	return "apx"
 }
 
 func vscodeUserDir(appName string) string {
@@ -102,7 +102,7 @@ func detectJetBrains(home string) bool {
 	return false
 }
 
-// ListTargets returns all supported IDEs, editors, and coding CLIs that acpx can connect/disconnect.
+// ListTargets returns all supported IDEs, editors, and coding CLIs that apx can connect/disconnect.
 func ListTargets() []Target {
 	home := homeDir()
 	exists := func(p string) bool {
@@ -126,7 +126,7 @@ func ListTargets() []Target {
 		{
 			ID:          "t3code",
 			Name:        "T3 Code",
-			Description: "Native ACP agent (`acpx acp`) in ~/.t3/userdata/settings.json",
+			Description: "Native ACP agent (`apx acp`) in ~/.t3/userdata/settings.json",
 			ConfigPath:  filepath.Join(home, ".t3", "userdata", "settings.json"),
 			AutoApply:   true,
 			Detected:    exists(filepath.Join(home, ".t3")),
@@ -134,7 +134,7 @@ func ListTargets() []Target {
 		{
 			ID:          "zed",
 			Name:        "Zed",
-			Description: "Native ACP agent_server (`acpx acp`) in Zed settings.json",
+			Description: "Native ACP agent_server (`apx acp`) in Zed settings.json",
 			ConfigPath:  zedPath,
 			AutoApply:   true,
 			Detected:    hasBin("zed") || hasBin("zeditor") || exists(filepath.Dir(zedPath)),
@@ -166,7 +166,7 @@ func ListTargets() []Target {
 		{
 			ID:          "jetbrains",
 			Name:        "JetBrains IDEs",
-			Description: "Native ACP agent (`acpx acp`) in ~/.jetbrains/acp.json (IntelliJ, Rider, PyCharm, GoLand...)",
+			Description: "Native ACP agent (`apx acp`) in ~/.jetbrains/acp.json (IntelliJ, Rider, PyCharm, GoLand...)",
 			ConfigPath:  filepath.Join(home, ".jetbrains", "acp.json"),
 			AutoApply:   true,
 			Detected:    detectJetBrains(home),
@@ -182,15 +182,15 @@ func ListTargets() []Target {
 		{
 			ID:          "neovim",
 			Name:        "Neovim",
-			Description: "ACP + OpenAI Lua helper module at ~/.config/nvim/acpx.lua (codecompanion/avante)",
-			ConfigPath:  filepath.Join(home, ".config", "nvim", "acpx.lua"),
+			Description: "ACP + OpenAI Lua helper module at ~/.config/nvim/apx.lua (codecompanion/avante)",
+			ConfigPath:  filepath.Join(home, ".config", "nvim", "apx.lua"),
 			AutoApply:   true,
 			Detected:    hasBin("nvim") || exists(filepath.Join(home, ".config", "nvim")),
 		},
 		{
 			ID:          "opencode",
 			Name:        "OpenCode",
-			Description: "OpenAI-compatible `acpx` provider in ~/.config/opencode/opencode.json",
+			Description: "OpenAI-compatible `apx` provider in ~/.config/opencode/opencode.json",
 			ConfigPath:  filepath.Join(home, ".config", "opencode", "opencode.json"),
 			AutoApply:   true,
 			Detected:    hasBin("opencode") || exists(filepath.Join(home, ".config", "opencode")),
@@ -198,7 +198,7 @@ func ListTargets() []Target {
 		{
 			ID:          "codex",
 			Name:        "Codex CLI",
-			Description: "`[model_providers.acpx]` block in ~/.codex/config.toml",
+			Description: "`[model_providers.apx]` block in ~/.codex/config.toml",
 			ConfigPath:  filepath.Join(home, ".codex", "config.toml"),
 			AutoApply:   true,
 			Detected:    hasBin("codex") || exists(filepath.Join(home, ".codex")),
@@ -214,7 +214,7 @@ func ListTargets() []Target {
 		{
 			ID:          "pi",
 			Name:        "Pi Coding Agent",
-			Description: "`acpx` provider in ~/.pi/agent/models.json",
+			Description: "`apx` provider in ~/.pi/agent/models.json",
 			ConfigPath:  filepath.Join(home, ".pi", "agent", "models.json"),
 			AutoApply:   true,
 			Detected:    hasBin("pi") || exists(filepath.Join(home, ".pi")),
@@ -262,7 +262,7 @@ func ListTargets() []Target {
 		{
 			ID:          "agy",
 			Name:        "Shell / Env",
-			Description: "Shell exports (OPENAI_BASE_URL / ANTHROPIC_BASE_URL) & `acpx acp`",
+			Description: "Shell exports (OPENAI_BASE_URL / ANTHROPIC_BASE_URL) & `apx acp`",
 			ConfigPath:  "",
 			AutoApply:   false,
 			Detected:    true,
@@ -313,7 +313,7 @@ func FindTarget(id string) (Target, bool) {
 	return Target{}, false
 }
 
-// IsConnectedAtPath reports whether acpx is currently registered in the given target config file.
+// IsConnectedAtPath reports whether apx is currently registered in the given target config file.
 func IsConnectedAtPath(targetID, path string) bool {
 	raw, err := os.ReadFile(path)
 	if err != nil || len(strings.TrimSpace(string(raw))) == 0 {
@@ -324,7 +324,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
 			if provs, ok := root["providerInstances"].(map[string]any); ok {
-				_, exists := provs["acpx"]
+				_, exists := provs["apx"]
 				return exists
 			}
 		}
@@ -332,7 +332,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
 			if servers, ok := root["agent_servers"].(map[string]any); ok {
-				_, exists := servers["acpx"]
+				_, exists := servers["apx"]
 				return exists
 			}
 		}
@@ -340,7 +340,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 		var arr []map[string]any
 		if json.Unmarshal(stripJSONC(raw), &arr) == nil {
 			for _, item := range arr {
-				if name, _ := item["name"].(string); strings.EqualFold(name, "acpx") {
+				if name, _ := item["name"].(string); strings.EqualFold(name, "apx") {
 					return true
 				}
 			}
@@ -349,7 +349,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
 			if prov, ok := root["provider"].(map[string]any); ok {
-				_, exists := prov["acpx"]
+				_, exists := prov["apx"]
 				return exists
 			}
 		}
@@ -357,7 +357,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
 			if provs, ok := root["providers"].(map[string]any); ok {
-				_, exists := provs["acpx"]
+				_, exists := provs["apx"]
 				return exists
 			}
 		}
@@ -367,24 +367,24 @@ func IsConnectedAtPath(targetID, path string) bool {
 			if env, ok := root["env"].(map[string]any); ok {
 				tok, _ := env["ANTHROPIC_AUTH_TOKEN"].(string)
 				key, _ := env["ANTHROPIC_API_KEY"].(string)
-				return strings.HasPrefix(tok, "acpx_") || strings.HasPrefix(key, "acpx_")
+				return strings.HasPrefix(tok, "apx_") || strings.HasPrefix(key, "apx_")
 			}
 		}
 	case "grok":
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
 			key, _ := root["apiKey"].(string)
-			return strings.HasPrefix(key, "acpx_")
+			return strings.HasPrefix(key, "apx_")
 		}
 	case "codex", "continue", "aider":
-		return strings.Contains(string(raw), "# --- acpx begin ---")
+		return strings.Contains(string(raw), "# --- apx begin ---")
 	case "neovim":
-		return strings.Contains(string(raw), "acpx")
+		return strings.Contains(string(raw), "apx")
 	}
 	return false
 }
 
-// Apply registers acpx into the target client's config file (if apply==true and supported)
+// Apply registers apx into the target client's config file (if apply==true and supported)
 // and always returns a clean, concise human-readable snippet.
 func Apply(targetID string, cfg *config.Config, models []router.ModelEntry, apply bool) (*Result, error) {
 	t, ok := FindTarget(targetID)
@@ -399,7 +399,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 	baseURL := cfg.BaseURL()
 	anthURL := strings.TrimSuffix(baseURL, "/v1")
 	key := cfg.Server.LocalKey
-	acpxBin := acpxBinaryPath()
+	apxBin := apxBinaryPath()
 
 	modelIDs := make([]string, 0, len(models))
 	excludedSelf := 0
@@ -430,14 +430,14 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 	case "t3code":
 		res.Snippet = fmt.Sprintf(
 			"T3 Code — Native ACP Agent (Settings -> Providers -> Custom ACP Agent):\n"+
-				"    Name:         ACPX\n"+
+				"    Name:         AgentPassage\n"+
 				"    Command Path: %s\n"+
 				"    Command Args: acp\n"+
 				"    Models:       %d enabled (auto-discovered via ACP)\n\n"+
 				"OpenAI-compatible endpoint (optional):\n"+
 				"    Base URL: %s\n"+
 				"    API Key:  %s\n",
-			acpxBin, enabledCount, baseURL, key,
+			apxBin, enabledCount, baseURL, key,
 		)
 		if apply && path != "" {
 			bak, err := mergeJSONFile(path, func(root map[string]any) {
@@ -445,8 +445,9 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				if provs == nil {
 					provs = make(map[string]any)
 				}
-				existing, _ := provs["acpx"].(map[string]any)
-				displayName := "ACPX"
+				delete(provs, "acpx")
+				existing, _ := provs["apx"].(map[string]any)
+				displayName := "AgentPassage"
 				accentColor := "#0050ff"
 				if existing != nil {
 					if dn, ok := existing["displayName"].(string); ok && dn != "" {
@@ -456,15 +457,15 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 						accentColor = ac
 					}
 				}
-				provs["acpx"] = map[string]any{
+				provs["apx"] = map[string]any{
 					"driver":      "acpRegistry",
 					"displayName": displayName,
 					"accentColor": accentColor,
 					"enabled":     true,
 					"config": map[string]any{
-						"agentId":     "acpx",
+						"agentId":     "apx",
 						"source":      "local",
-						"commandPath": acpxBin,
+						"commandPath": apxBin,
 						"commandArgs": []string{"acp"},
 					},
 				}
@@ -475,17 +476,17 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered ACPX (%d models) in %s — reload T3 Code to activate", enabledCount, path)
+			res.Message = fmt.Sprintf("Registered AgentPassage (%d models) in %s — reload T3 Code to activate", enabledCount, path)
 		}
 
 	case "zed":
 		agentEntry := map[string]any{
-			"command": acpxBin,
+			"command": apxBin,
 			"args":    []string{"acp"},
 		}
 		snipRaw, _ := json.MarshalIndent(map[string]any{
 			"agent_servers": map[string]any{
-				"acpx": agentEntry,
+				"apx": agentEntry,
 			},
 		}, "", "  ")
 		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# %d models auto-discovered via ACP\n", enabledCount)
@@ -496,7 +497,8 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				if servers == nil {
 					servers = make(map[string]any)
 				}
-				servers["acpx"] = agentEntry
+				delete(servers, "acpx")
+				servers["apx"] = agentEntry
 				root["agent_servers"] = servers
 			})
 			if err != nil {
@@ -504,18 +506,18 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx ACP agent_server (%d models) in %s", enabledCount, path)
+			res.Message = fmt.Sprintf("Registered apx ACP agent_server (%d models) in %s", enabledCount, path)
 		}
 
 	case "jetbrains":
 		agentEntry := map[string]any{
 			"type":    "custom",
-			"command": acpxBin,
+			"command": apxBin,
 			"args":    []string{"acp"},
 		}
 		snipRaw, _ := json.MarshalIndent(map[string]any{
 			"agent_servers": map[string]any{
-				"acpx": agentEntry,
+				"apx": agentEntry,
 			},
 		}, "", "  ")
 		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# JetBrains AI Chat -> %d models auto-discovered via ACP\n", enabledCount)
@@ -526,7 +528,8 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				if servers == nil {
 					servers = make(map[string]any)
 				}
-				servers["acpx"] = agentEntry
+				delete(servers, "acpx")
+				servers["apx"] = agentEntry
 				root["agent_servers"] = servers
 			})
 			if err != nil {
@@ -534,7 +537,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx in JetBrains %s (%d models) — reopen AI Chat to reload", path, enabledCount)
+			res.Message = fmt.Sprintf("Registered apx in JetBrains %s (%d models) — reopen AI Chat to reload", path, enabledCount)
 		}
 
 	case "vscode", "vscode-insiders", "vscodium":
@@ -552,7 +555,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			})
 		}
 		vsEntry := map[string]any{
-			"name":    "acpx",
+			"name":    "apx",
 			"vendor":  "customendpoint",
 			"apiKey":  key,
 			"apiType": "chat-completions",
@@ -562,14 +565,14 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			"%s — Copilot BYOK (chatLanguageModels.json):\n"+
 				"  Endpoint: %s/chat/completions\n"+
 				"  API Key:  %s\n"+
-				"  Models:   %d enabled (open Chat -> Manage Language Models -> acpx)\n",
+				"  Models:   %d enabled (open Chat -> Manage Language Models -> apx)\n",
 			t.Name, baseURL, key, enabledCount,
 		)
 
 		if apply && path != "" {
 			bak, err := mergeJSONArrayFile(path, func(items []map[string]any) []map[string]any {
 				for i, item := range items {
-					if name, _ := item["name"].(string); strings.EqualFold(name, "acpx") {
+					if name, _ := item["name"].(string); strings.EqualFold(name, "apx") {
 						items[i] = vsEntry
 						return items
 					}
@@ -581,22 +584,22 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s", enabledCount, path)
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s", enabledCount, path)
 		}
 
 	case "continue":
 		var sb strings.Builder
-		sb.WriteString("# --- acpx begin ---\n")
+		sb.WriteString("# --- apx begin ---\n")
 		sb.WriteString("models:\n")
 		for _, id := range effectiveModels {
-			sb.WriteString(fmt.Sprintf("  - name: acpx / %s\n", id))
+			sb.WriteString(fmt.Sprintf("  - name: apx / %s\n", id))
 			sb.WriteString("    provider: openai\n")
 			sb.WriteString(fmt.Sprintf("    model: %s\n", id))
 			sb.WriteString(fmt.Sprintf("    apiBase: %s\n", baseURL))
 			sb.WriteString(fmt.Sprintf("    apiKey: %s\n", key))
 			sb.WriteString("    roles:\n      - chat\n      - edit\n      - apply\n")
 		}
-		sb.WriteString("# --- acpx end ---\n")
+		sb.WriteString("# --- apx end ---\n")
 		res.Snippet = fmt.Sprintf(
 			"Continue.dev (~/.continue/config.yaml):\n"+
 				"  Provider: openai\n"+
@@ -606,17 +609,17 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			baseURL, key, enabledCount,
 		)
 		if apply && path != "" {
-			bak, err := upsertTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---", sb.String())
+			bak, err := upsertTextBlock(path, "# --- apx begin ---", "# --- apx end ---", sb.String())
 			if err != nil {
 				return nil, err
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s", enabledCount, path)
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s", enabledCount, path)
 		}
 
 	case "neovim":
-		lua := fmt.Sprintf(`-- Generated by acpx (disconnect anytime with: acpx disconnect neovim)
+		lua := fmt.Sprintf(`-- Generated by apx (disconnect anytime with: apx disconnect neovim)
 -- Works with codecompanion.nvim (native ACP or OpenAI) and avante.nvim
 return {
   acp = {
@@ -629,8 +632,8 @@ return {
     model = %q,
   },
 }
-`, acpxBin, baseURL, key, effectiveModels[0])
-		res.Snippet = lua + fmt.Sprintf("-- %d models available via acpx\n", enabledCount)
+`, apxBin, baseURL, key, effectiveModels[0])
+		res.Snippet = lua + fmt.Sprintf("-- %d models available via apx\n", enabledCount)
 		if apply && path != "" {
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				return nil, err
@@ -649,21 +652,21 @@ return {
 		}
 		providerObj := map[string]any{
 			"npm":  "@ai-sdk/openai-compatible",
-			"name": "acpx",
+			"name": "apx",
 			"options": map[string]any{
 				"baseURL": baseURL,
 				"apiKey":  key,
 				"headers": map[string]string{
-					"X-Acpx-Client": "opencode",
+					"X-Apx-Client": "opencode",
 				},
 			},
 			"models": modelMap,
 		}
 		res.Snippet = fmt.Sprintf(
-			"OpenCode provider `acpx`:\n"+
+			"OpenCode provider `apx`:\n"+
 				"  Base URL: %s\n"+
 				"  API Key:  %s\n"+
-				"  Header:   X-Acpx-Client: opencode\n"+
+				"  Header:   X-Apx-Client: opencode\n"+
 				"  Models:   %d enabled%s\n",
 			baseURL, key, enabledCount, loopNote,
 		)
@@ -677,7 +680,7 @@ return {
 				if prov == nil {
 					prov = make(map[string]any)
 				}
-				prov["acpx"] = providerObj
+				prov["apx"] = providerObj
 				root["provider"] = prov
 			})
 			if err != nil {
@@ -685,30 +688,30 @@ return {
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", enabledCount, path, loopNote)
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s%s", enabledCount, path, loopNote)
 		}
 
 	case "codex":
 		block := fmt.Sprintf(
-			"# --- acpx begin ---\n"+
-				"[model_providers.acpx]\n"+
-				"name = \"acpx\"\n"+
+			"# --- apx begin ---\n"+
+				"[model_providers.apx]\n"+
+				"name = \"apx\"\n"+
 				"base_url = %q\n"+
-				"env_key = \"ACPX_API_KEY\"\n"+
+				"env_key = \"APX_API_KEY\"\n"+
 				"wire_api = \"chat\"\n"+
-				"# --- acpx end ---\n",
+				"# --- apx end ---\n",
 			baseURL,
 		)
-		res.Snippet = block + fmt.Sprintf("\n# Run Codex with acpx (%d models):\nexport ACPX_API_KEY=%q\ncodex -c model_provider=acpx -m %s\n", enabledCount, key, effectiveModels[0])
+		res.Snippet = block + fmt.Sprintf("\n# Run Codex with apx (%d models):\nexport APX_API_KEY=%q\ncodex -c model_provider=apx -m %s\n", enabledCount, key, effectiveModels[0])
 
 		if apply && path != "" {
-			bak, err := upsertTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---", block)
+			bak, err := upsertTextBlock(path, "# --- apx begin ---", "# --- apx end ---", block)
 			if err != nil {
 				return nil, err
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = "Registered [model_providers.acpx] in " + path
+			res.Message = "Registered [model_providers.apx] in " + path
 		}
 
 	case "claude":
@@ -752,15 +755,15 @@ return {
 			"apiKey":  key,
 			"api":     "openai-completions",
 			"headers": map[string]string{
-				"X-Acpx-Client": "pi",
+				"X-Apx-Client": "pi",
 			},
 			"models": piModels,
 		}
 		res.Snippet = fmt.Sprintf(
-			"Pi Coding Agent provider `acpx`:\n"+
+			"Pi Coding Agent provider `apx`:\n"+
 				"  Base URL: %s\n"+
 				"  API Key:  %s\n"+
-				"  Header:   X-Acpx-Client: pi\n"+
+				"  Header:   X-Apx-Client: pi\n"+
 				"  Models:   %d enabled%s\n",
 			baseURL, key, enabledCount, loopNote,
 		)
@@ -771,7 +774,7 @@ return {
 				if provs == nil {
 					provs = make(map[string]any)
 				}
-				provs["acpx"] = piProv
+				provs["apx"] = piProv
 				root["providers"] = provs
 			})
 			if err != nil {
@@ -779,7 +782,7 @@ return {
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", enabledCount, path, loopNote)
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s%s", enabledCount, path, loopNote)
 		}
 
 	case "grok":
@@ -808,16 +811,16 @@ return {
 
 	case "aider":
 		block := fmt.Sprintf(
-			"# --- acpx begin ---\n"+
+			"# --- apx begin ---\n"+
 				"openai-api-base: %s\n"+
 				"openai-api-key: %s\n"+
 				"model: openai/%s\n"+
-				"# --- acpx end ---\n",
+				"# --- apx end ---\n",
 			baseURL, key, effectiveModels[0],
 		)
 		res.Snippet = block + fmt.Sprintf("# %d models available\n", enabledCount)
 		if apply && path != "" {
-			bak, err := upsertTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---", block)
+			bak, err := upsertTextBlock(path, "# --- apx begin ---", "# --- apx end ---", block)
 			if err != nil {
 				return nil, err
 			}
@@ -864,7 +867,7 @@ return {
 				"export ANTHROPIC_API_KEY=%q\n"+
 				"# Native ACP stdio server (%d models):\n"+
 				"# %s acp\n",
-			baseURL, key, anthURL, key, enabledCount, acpxBin,
+			baseURL, key, anthURL, key, enabledCount, apxBin,
 		)
 		res.Message = "Shell exports ready."
 	}
@@ -872,7 +875,7 @@ return {
 	return res, nil
 }
 
-// Disconnect cleanly removes acpx's registration from a target client without touching other settings.
+// Disconnect cleanly removes apx's registration from a target client without touching other settings.
 func Disconnect(targetID string) (*Result, error) {
 	t, ok := FindTarget(targetID)
 	if !ok {
@@ -881,7 +884,7 @@ func Disconnect(targetID string) (*Result, error) {
 	return DisconnectAtPath(t, t.ConfigPath)
 }
 
-// DisconnectAll cleanly removes acpx from every auto-configured IDE & CLI where it is currently registered.
+// DisconnectAll cleanly removes apx from every auto-configured IDE & CLI where it is currently registered.
 func DisconnectAll() ([]Result, []error) {
 	var results []Result
 	var errs []error
@@ -901,11 +904,11 @@ func DisconnectAll() ([]Result, []error) {
 	return results, errs
 }
 
-// DisconnectAtPath removes acpx's registration from the specified config path (useful for tests).
+// DisconnectAtPath removes apx's registration from the specified config path (useful for tests).
 func DisconnectAtPath(t Target, path string) (*Result, error) {
 	res := &Result{Target: t, Path: path}
 	if !t.AutoApply || path == "" {
-		res.Message = fmt.Sprintf("%s is configured manually in its GUI — remove the acpx Base URL there.", t.Name)
+		res.Message = fmt.Sprintf("%s is configured manually in its GUI — remove the apx Base URL there.", t.Name)
 		return res, nil
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -918,8 +921,8 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		removed := false
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
 			if provs, ok := root["providerInstances"].(map[string]any); ok {
-				if _, exists := provs["acpx"]; exists {
-					delete(provs, "acpx")
+				if _, exists := provs["apx"]; exists {
+					delete(provs, "apx")
 					removed = true
 				}
 			}
@@ -934,8 +937,8 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		removed := false
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
 			if servers, ok := root["agent_servers"].(map[string]any); ok {
-				if _, exists := servers["acpx"]; exists {
-					delete(servers, "acpx")
+				if _, exists := servers["apx"]; exists {
+					delete(servers, "apx")
 					removed = true
 				}
 			}
@@ -951,7 +954,7 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		bak, err := mergeJSONArrayFile(path, func(items []map[string]any) []map[string]any {
 			kept := make([]map[string]any, 0, len(items))
 			for _, item := range items {
-				if name, _ := item["name"].(string); strings.EqualFold(name, "acpx") {
+				if name, _ := item["name"].(string); strings.EqualFold(name, "apx") {
 					removed = true
 					continue
 				}
@@ -969,8 +972,8 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		removed := false
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
 			if prov, ok := root["provider"].(map[string]any); ok {
-				if _, exists := prov["acpx"]; exists {
-					delete(prov, "acpx")
+				if _, exists := prov["apx"]; exists {
+					delete(prov, "apx")
 					removed = true
 				}
 			}
@@ -985,8 +988,8 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		removed := false
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
 			if provs, ok := root["providers"].(map[string]any); ok {
-				if _, exists := provs["acpx"]; exists {
-					delete(provs, "acpx")
+				if _, exists := provs["apx"]; exists {
+					delete(provs, "apx")
 					removed = true
 				}
 			}
@@ -1004,12 +1007,12 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 				tok, _ := env["ANTHROPIC_AUTH_TOKEN"].(string)
 				key, _ := env["ANTHROPIC_API_KEY"].(string)
 				base, _ := env["ANTHROPIC_BASE_URL"].(string)
-				if strings.HasPrefix(tok, "acpx_") || strings.HasPrefix(key, "acpx_") || strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") {
-					if strings.HasPrefix(tok, "acpx_") {
+				if strings.HasPrefix(tok, "apx_") || strings.HasPrefix(key, "apx_") || strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") {
+					if strings.HasPrefix(tok, "apx_") {
 						delete(env, "ANTHROPIC_AUTH_TOKEN")
 						removed = true
 					}
-					if strings.HasPrefix(key, "acpx_") {
+					if strings.HasPrefix(key, "apx_") {
 						delete(env, "ANTHROPIC_API_KEY")
 						removed = true
 					}
@@ -1029,7 +1032,7 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 	case "grok":
 		removed := false
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if key, _ := root["apiKey"].(string); strings.HasPrefix(key, "acpx_") {
+			if key, _ := root["apiKey"].(string); strings.HasPrefix(key, "apx_") {
 				delete(root, "apiKey")
 				delete(root, "baseURL")
 				removed = true
@@ -1042,7 +1045,7 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		res.Backup = bak
 
 	case "codex", "continue", "aider":
-		removed, bak, err := removeTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---")
+		removed, bak, err := removeTextBlock(path, "# --- apx begin ---", "# --- apx end ---")
 		if err != nil {
 			return nil, err
 		}
@@ -1056,9 +1059,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 	}
 
 	if res.Removed {
-		res.Message = fmt.Sprintf("Disconnected acpx from %s (%s)", t.Name, path)
+		res.Message = fmt.Sprintf("Disconnected apx from %s (%s)", t.Name, path)
 	} else {
-		res.Message = fmt.Sprintf("No acpx entry found in %s (%s)", t.Name, path)
+		res.Message = fmt.Sprintf("No apx entry found in %s (%s)", t.Name, path)
 	}
 	return res, nil
 }
@@ -1074,7 +1077,7 @@ func mergeJSONFile(path string, mutate func(map[string]any)) (string, error) {
 		if err := json.Unmarshal(clean, &root); err != nil {
 			return "", fmt.Errorf("existing %s is not valid JSON: %w", path, err)
 		}
-		backupPath = path + ".acpx.bak"
+		backupPath = path + ".apx.bak"
 		_ = os.WriteFile(backupPath, existing, 0o600)
 	}
 	mutate(root)
@@ -1105,7 +1108,7 @@ func mergeJSONArrayFile(path string, mutate func([]map[string]any) []map[string]
 		if err := json.Unmarshal(clean, &items); err != nil {
 			return "", fmt.Errorf("existing %s is not a valid JSON array: %w", path, err)
 		}
-		backupPath = path + ".acpx.bak"
+		backupPath = path + ".apx.bak"
 		_ = os.WriteFile(backupPath, existing, 0o600)
 	}
 	items = mutate(items)
@@ -1215,7 +1218,7 @@ func upsertTextBlock(path, startMarker, endMarker, block string) (string, error)
 	var backupPath string
 	if raw, err := os.ReadFile(path); err == nil {
 		existing = string(raw)
-		backupPath = path + ".acpx.bak"
+		backupPath = path + ".apx.bak"
 		_ = os.WriteFile(backupPath, raw, 0o600)
 	}
 
@@ -1264,7 +1267,7 @@ func removeTextBlock(path, startMarker, endMarker string) (bool, string, error) 
 	if eIdx < 0 {
 		return false, "", nil
 	}
-	backupPath := path + ".acpx.bak"
+	backupPath := path + ".apx.bak"
 	_ = os.WriteFile(backupPath, raw, 0o600)
 
 	endPos := sIdx + eIdx + len(endMarker)

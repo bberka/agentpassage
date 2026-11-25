@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="${ACPX_REPO:-bberka/acpx}"
-INSTALL_DIR="${ACPX_INSTALL_DIR:-$HOME/.local/bin}"
+REPO="${APX_REPO:-bberka/agentpassage}"
+INSTALL_DIR="${APX_INSTALL_DIR:-$HOME/.local/bin}"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
@@ -18,25 +18,25 @@ case "$OS" in
   *) echo "Unsupported OS: $OS (download Windows binary from Releases)" >&2; exit 1 ;;
 esac
 
-VERSION="${ACPX_VERSION:-latest}"
+VERSION="${APX_VERSION:-latest}"
 if [ "$VERSION" = "latest" ]; then
-  URL="https://github.com/${REPO}/releases/latest/download/acpx_${OS}_${ARCH}.tar.gz"
+  URL="https://github.com/${REPO}/releases/latest/download/apx_${OS}_${ARCH}.tar.gz"
 else
-  URL="https://github.com/${REPO}/releases/download/${VERSION}/acpx_${OS}_${ARCH}.tar.gz"
+  URL="https://github.com/${REPO}/releases/download/${VERSION}/apx_${OS}_${ARCH}.tar.gz"
 fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-echo "Downloading acpx (${OS}/${ARCH}) from ${URL}..."
-curl -fsSL "$URL" -o "$TMP/acpx.tar.gz"
-tar -xzf "$TMP/acpx.tar.gz" -C "$TMP"
+echo "Downloading AgentPassage (apx ${OS}/${ARCH}) from ${URL}..."
+curl -fsSL "$URL" -o "$TMP/apx.tar.gz"
+tar -xzf "$TMP/apx.tar.gz" -C "$TMP"
 
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$TMP/acpx" "$INSTALL_DIR/acpx"
+install -m 0755 "$TMP/apx" "$INSTALL_DIR/apx"
 
-echo "Installed acpx to $INSTALL_DIR/acpx"
+echo "Installed apx to $INSTALL_DIR/apx"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
-  *) echo "Add $INSTALL_DIR to your PATH to run 'acpx' directly." ;;
+  *) echo "Add $INSTALL_DIR to your PATH to run 'apx' directly." ;;
 esac
