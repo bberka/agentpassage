@@ -46,6 +46,7 @@ const (
 	modalHelp
 	modalWelcome
 	modalAddAccount
+	modalAccountModels
 	modalInstalling
 	modalLoginPrompt
 	modalConnect
@@ -130,6 +131,9 @@ type App struct {
 	addAuthStyle string
 	addTesting   bool
 
+	// Interactive Model Picker (used both in Add Account Step 4 and Accounts -> M)
+	modelPicker *modelPickerState
+
 	// Generic single-line text edit modal
 	editTitle    string
 	editHint     string
@@ -155,14 +159,17 @@ type App struct {
 func New(srv *gateway.Server) *App {
 	cfg := srv.Config()
 	fi := textinput.New()
+	fi.Prompt = ""
 	fi.Placeholder = "type to filter..."
 	fi.CharLimit = 64
 
 	ds := textinput.New()
+	ds.Prompt = ""
 	ds.Placeholder = "search 45+ ACP agents (codex, claude, cursor, opencode, cline, muse...)"
 	ds.CharLimit = 64
 
 	ei := textinput.New()
+	ei.Prompt = ""
 	ei.CharLimit = 256
 
 	subID, subCh := srv.Logs().Subscribe()
@@ -293,6 +300,28 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.modal = modalPermission
 		return a, waitPermCmd(a.permCh)
 
+	case fetchModelsMsg:
+		if a.modelPicker != nil {
+			a.modelPicker.loading = false
+			if msg.err != nil {
+				a.modelPicker.fetchErr = msg.err.Error()
+				a.setStatus("Model fetch failed: "+msg.err.Error(), true)
+			} else {
+				a.modelPicker.fetchErr = ""
+				a.modelPicker.mergeFetched(msg.models, true)
+				a.setStatus(fmt.Sprintf("Loaded %d models (%d enabled)", len(a.modelPicker.models), a.modelPicker.enabledCount()), false)
+			}
+		}
+		return a, nil
+
+	case fetchAllModelsMsg:
+		if len(msg.errors) > 0 && msg.updatedAccounts == 0 {
+			a.setStatus("Model fetch failed: "+strings.Join(msg.errors, "; "), true)
+		} else {
+			a.setStatus(fmt.Sprintf("Loaded %d models across %d account(s)", msg.totalModels, msg.updatedAccounts), false)
+		}
+		return a, nil
+
 	case testResultMsg:
 		a.addTesting = false
 		if msg.err != nil {
@@ -302,11 +331,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cfg := a.srv.Config()
 		if acct := cfg.FindAccount(msg.accountID); acct != nil {
 			if len(msg.models) > 0 {
-				acct.Models = msg.models
+				acct.MergeDiscoveredModels(msg.models)
 			}
 			a.srv.Pool().ClearHealth(acct.ID)
 			_ = a.srv.ReloadConfig(cfg)
-			a.setStatus(fmt.Sprintf("Account %s OK (%d models)", acct.Name, len(acct.Models)), false)
+			a.setStatus(fmt.Sprintf("Account %s OK (%d enabled / %d total models)", acct.Name, len(acct.Models), len(acct.AvailableModels)), false)
 		} else {
 			a.setStatus(fmt.Sprintf("Connection OK (%d models)", len(msg.models)), false)
 		}
@@ -443,6 +472,9 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case modalAddAccount:
 		return a.updateAddAccountModal(msg)
+
+	case modalAccountModels:
+		return a.updateAccountModelsModal(msg)
 
 	case modalLoginPrompt:
 		return a.updateLoginPromptModal(msg)
@@ -603,6 +635,7 @@ func (a *App) renderFooter() string {
 		case ScreenAccounts:
 			hints = []string{
 				a.styles.KeyHint("a", "add"),
+				a.styles.KeyHint("M", "models"),
 				a.styles.KeyHint("i", "install ACP"),
 				a.styles.KeyHint("m", "pool/prefix"),
 				a.styles.KeyHint("P", "prefix"),
@@ -612,10 +645,11 @@ func (a *App) renderFooter() string {
 			}
 		case ScreenModels:
 			hints = []string{
+				a.styles.KeyHint("space", "enable/disable"),
+				a.styles.KeyHint("f", "fetch all"),
 				a.styles.KeyHint("a", "alias"),
 				a.styles.KeyHint("r", "rename"),
-				a.styles.KeyHint("h", "hide"),
-				a.styles.KeyHint("H", "show hidden"),
+				a.styles.KeyHint("H", "show disabled"),
 				a.styles.KeyHint("/", "filter"),
 			}
 		case ScreenRouting:
@@ -726,6 +760,9 @@ func (a *App) viewModal() string {
 
 	case modalAddAccount:
 		return a.viewAddAccountModal()
+
+	case modalAccountModels:
+		return a.viewAccountModelsModal()
 
 	case modalLoginPrompt:
 		return a.viewLoginPromptModal()

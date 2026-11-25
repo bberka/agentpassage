@@ -45,6 +45,8 @@ func run(args []string) error {
 			return cmdAdd(args[1:])
 		case "list", "ls":
 			return cmdList(args[1:])
+		case "models":
+			return cmdModels(args[1:])
 		case "doctor":
 			return cmdDoctor(args[1:])
 		case "install":
@@ -97,6 +99,7 @@ Usage:
   acpx acp                     Run acpx as an ACP stdio server (for T3 Code, Zed, etc.)
   acpx add [flags]             Add an ACP or API-key account
   acpx list [--json]           List configured accounts and models
+  acpx models [list|fetch|enable|disable]  Load, list, enable, or disable models per account
   acpx doctor                  Check CLIs, profiles, storage, and config
   acpx install <tool|all>      Install any ACP tool from the 45+ agent registry
   acpx connect [client]        Register acpx into T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline
@@ -376,9 +379,9 @@ func cmdAdd(args []string) error {
 			return fmt.Errorf("connection test failed: %w (re-run with --no-test to add anyway)", err)
 		}
 		if len(discovered) > 0 {
-			acct.Models = discovered
+			acct.MergeDiscoveredModels(discovered)
 		}
-		fmt.Printf("Connection OK (%d models).\n", len(acct.Models))
+		fmt.Printf("Connection OK (%d enabled / %d total models).\n", len(acct.Models), len(acct.AvailableModels))
 	}
 
 	cfg.Accounts = append(cfg.Accounts, acct)
@@ -432,6 +435,101 @@ func cmdList(args []string) error {
 		fmt.Printf("  %-36s (%s)\n", m.ID, m.Kind)
 	}
 	return nil
+}
+
+func cmdModels(args []string) error {
+	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	sub := "list"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+
+	switch sub {
+	case "list", "ls":
+		if len(cfg.Accounts) == 0 {
+			fmt.Println("No accounts configured.")
+			return nil
+		}
+		for _, a := range cfg.Accounts {
+			disabled := make(map[string]bool, len(a.DisabledModels))
+			for _, m := range a.DisabledModels {
+				disabled[m] = true
+			}
+			catalog := a.AvailableModels
+			if len(catalog) == 0 {
+				catalog = a.Models
+			}
+			fmt.Printf("%s/%s (%d enabled / %d total):\n", a.Backend, a.Name, len(a.Models), len(catalog))
+			for _, m := range catalog {
+				st := "enabled "
+				if disabled[m] {
+					st = "disabled"
+				}
+				fmt.Printf("  [%s] %s\n", st, m)
+			}
+		}
+		return nil
+
+	case "fetch", "refresh":
+		srv := gateway.New(dataDir, cfg, sec, reg, logs)
+		defer srv.ACP().Close()
+		filter := ""
+		if len(args) > 1 {
+			filter = args[1]
+		}
+		updated := 0
+		for i := range cfg.Accounts {
+			a := &cfg.Accounts[i]
+			if filter != "" && a.ID != filter && a.Name != filter && a.Backend+"/"+a.Name != filter {
+				continue
+			}
+			fmt.Printf("Fetching models for %s/%s...\n", a.Backend, a.Name)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			discovered, err := srv.TestAccount(ctx, *a)
+			cancel()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  failed: %v\n", err)
+				continue
+			}
+			a.MergeDiscoveredModels(discovered)
+			updated++
+			fmt.Printf("  loaded %d models (%d enabled / %d total)\n", len(discovered), len(a.Models), len(a.AvailableModels))
+		}
+		if updated > 0 {
+			return config.Save(dataDir, cfg)
+		}
+		return nil
+
+	case "enable", "disable":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: acpx models %s <account> <model|all>", sub)
+		}
+		acct := cfg.FindAccount(args[1])
+		if acct == nil {
+			return fmt.Errorf("account %q not found", args[1])
+		}
+		enable := sub == "enable"
+		if args[2] == "all" {
+			acct.SetAllModelsEnabled(enable)
+		} else {
+			for _, m := range args[2:] {
+				acct.SetModelEnabled(m, enable)
+			}
+		}
+		if err := config.Save(dataDir, cfg); err != nil {
+			return err
+		}
+		fmt.Printf("Updated %s/%s: %d enabled / %d total models.\n", acct.Backend, acct.Name, len(acct.Models), len(acct.AvailableModels))
+		return nil
+
+	default:
+		return fmt.Errorf("usage: acpx models [list | fetch [account] | enable <account> <model|all> | disable <account> <model|all>]")
+	}
 }
 
 func cmdDoctor(_ []string) error {

@@ -61,6 +61,9 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "H":
 		a.showHidden = !a.showHidden
 		return a, nil
+	case "f":
+		a.setStatus("Fetching all models across enabled accounts...", false)
+		return a, a.fetchAllAccountsModelsCmd()
 	}
 
 	if len(models) == 0 {
@@ -69,11 +72,15 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	sel := models[a.modelCursor]
 
 	switch msg.String() {
-	case "h":
+	case " ", "h":
 		a.upsertModelOverride(sel.ID, func(ov *config.ModelOverride) {
 			ov.Hidden = !ov.Hidden
 		})
-		a.setStatus("Toggled visibility for "+sel.ID, false)
+		if sel.Hidden {
+			a.setStatus("Enabled "+sel.ID, false)
+		} else {
+			a.setStatus("Disabled (hidden) "+sel.ID, false)
+		}
 
 	case "r":
 		return a, a.openEditModal("Rename Model", "Display name for "+sel.ID+" (blank to clear)", sel.DisplayName, func(val string) error {
@@ -103,16 +110,16 @@ func (a *App) viewModels(bodyHeight int) string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Models (%d)", len(models)))+"   "+
-		a.styles.Muted.Render("r:rename  a:alias  h:hide  H:show-hidden  /:filter"))
+		a.styles.Muted.Render("space:enable/disable  f:fetch all  r:rename  a:alias  H:show-disabled  /:filter"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(models) == 0 {
 		lines = append(lines, "")
-		lines = append(lines, a.styles.Muted.Render("  No models exposed yet. Add an account on tab 2."))
+		lines = append(lines, a.styles.Muted.Render("  No models exposed yet. Add an account on tab 2 or press 'f' to fetch all models."))
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-34s %-12s %-7s %s", "MODEL ID", "MODE", "KIND", "NOTES")))
+	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-10s %-32s %-10s %-7s %s", "STATUS", "MODEL ID", "MODE", "KIND", "NOTES")))
 
 	maxRows := max(bodyHeight-6, 4)
 	start := 0
@@ -122,6 +129,10 @@ func (a *App) viewModels(bodyHeight int) string {
 
 	for i := start; i < len(models) && i < start+maxRows; i++ {
 		m := models[i]
+		status := a.styles.StateReady.Render("● enabled ")
+		if m.Hidden {
+			status = a.styles.Muted.Render("○ disabled")
+		}
 		mode := fmt.Sprintf("pool(%d)", len(m.AccountIDs))
 		if m.Prefixed {
 			mode = "prefix"
@@ -129,9 +140,6 @@ func (a *App) viewModels(bodyHeight int) string {
 			mode = "direct"
 		}
 		var flags []string
-		if m.Hidden {
-			flags = append(flags, "[hidden]")
-		}
 		if m.Alias != "" {
 			flags = append(flags, "alias:"+m.Alias)
 		}
@@ -141,11 +149,12 @@ func (a *App) viewModels(bodyHeight int) string {
 		if m.AccountName != "" {
 			flags = append(flags, "acct:"+m.AccountName)
 		}
-		row := fmt.Sprintf("%-34s %-12s %-7s %s",
-			truncate(m.ID, 34),
+		row := fmt.Sprintf("%-10s %-32s %-10s %-7s %s",
+			status,
+			truncate(m.ID, 32),
 			mode,
 			m.Kind,
-			truncate(strings.Join(flags, " "), max(innerW-58, 10)),
+			truncate(strings.Join(flags, " "), max(innerW-66, 10)),
 		)
 		if i == a.modelCursor {
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))

@@ -54,6 +54,10 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	selected := accts[a.acctCursor]
 
 	switch msg.String() {
+	case "M", "enter": // open interactive Model Picker (load all, enable/disable, search, add)
+		a.openAccountModelsModal(selected)
+		return a, nil
+
 	case "d":
 		cfg := a.srv.Config()
 		if acct := cfg.FindAccount(selected.ID); acct != nil {
@@ -223,7 +227,7 @@ func (a *App) viewAccounts(bodyHeight int) string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts)))+"   "+
-		a.styles.Muted.Render("m:pool/prefix  P:prefix  l:login  t:test  p:perm  d:toggle  r:rename  e:edit  x:del"))
+		a.styles.Muted.Render("M/enter:models  m:pool/prefix  P:prefix  l:login  t:test  p:perm  d:toggle  r:rename  e:edit  x:del"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(accts) == 0 {
@@ -254,13 +258,15 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		if acct.Kind == config.KindACP {
 			extra = fmt.Sprintf("perm=%s cap=%d", acct.PermissionMode, acct.MaxConcurrency)
 		}
-		row := fmt.Sprintf("%-18s %-7s %-11s %-14s %-6s %s",
+		totalModels := max(len(acct.AvailableModels), len(acct.Models))
+		modelCol := fmt.Sprintf("%d/%d", len(acct.Models), totalModels)
+		row := fmt.Sprintf("%-18s %-7s %-11s %-14s %-7s %s",
 			truncate(acct.Backend+"/"+acct.Name, 18),
 			acct.Kind,
 			a.renderState(snap),
 			truncate(expose, 14),
-			fmt.Sprintf("%d", len(acct.Models)),
-			truncate(extra, max(innerW-64, 10)),
+			modelCol,
+			truncate(extra, max(innerW-65, 10)),
 		)
 		if i == a.acctCursor {
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))

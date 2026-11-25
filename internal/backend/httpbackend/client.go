@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -117,7 +118,7 @@ func (c *Client) FetchModels(ctx context.Context, acct config.AccountConfig, api
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, makeHTTPError(resp, body)
 	}
@@ -126,16 +127,33 @@ func (c *Client) FetchModels(ctx context.Context, acct config.AccountConfig, api
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
+		Models []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return nil, fmt.Errorf("decode /models response: %w", err)
 	}
-	models := make([]string, 0, len(parsed.Data))
+	seen := make(map[string]bool)
+	models := make([]string, 0, len(parsed.Data)+len(parsed.Models))
 	for _, m := range parsed.Data {
-		if m.ID != "" {
+		if m.ID != "" && !seen[m.ID] {
+			seen[m.ID] = true
 			models = append(models, m.ID)
 		}
 	}
+	for _, m := range parsed.Models {
+		id := m.ID
+		if id == "" {
+			id = m.Name
+		}
+		if id != "" && !seen[id] {
+			seen[id] = true
+			models = append(models, id)
+		}
+	}
+	sort.Strings(models)
 	return models, nil
 }
 

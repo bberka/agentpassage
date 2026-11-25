@@ -83,13 +83,15 @@ type AccountConfig struct {
 	PermissionMode string            `toml:"permission_mode,omitempty"` // deny, auto-approve, ask
 	CustomCommand  []string          `toml:"custom_command,omitempty"`
 	CustomLogin    []string          `toml:"custom_login,omitempty"`
-	CustomEnv      map[string]string `toml:"custom_env,omitempty"`
-	Models         []string          `toml:"models,omitempty"`
-	ExposeMode     string            `toml:"expose_mode,omitempty"`  // "pool" (default), "prefix", "both"
-	ModelPrefix    string            `toml:"model_prefix,omitempty"` // e.g. "a-", "b-" (defaults to "<name>-")
-	MaxConcurrency int               `toml:"max_concurrency"`
-	HourlyLimit    int               `toml:"hourly_limit,omitempty"`
-	DailyLimit     int               `toml:"daily_limit,omitempty"`
+	CustomEnv       map[string]string `toml:"custom_env,omitempty"`
+	Models          []string          `toml:"models,omitempty"`           // enabled models served by this account
+	AvailableModels []string          `toml:"available_models,omitempty"` // full discovered catalog for enable/disable toggling
+	DisabledModels  []string          `toml:"disabled_models,omitempty"`  // explicitly disabled models from the catalog
+	ExposeMode      string            `toml:"expose_mode,omitempty"`      // "pool" (default), "prefix", "both"
+	ModelPrefix     string            `toml:"model_prefix,omitempty"`     // e.g. "a-", "b-" (defaults to "<name>-")
+	MaxConcurrency  int               `toml:"max_concurrency"`
+	HourlyLimit     int               `toml:"hourly_limit,omitempty"`
+	DailyLimit      int               `toml:"daily_limit,omitempty"`
 }
 
 // EffectivePrefix returns the model prefix used when ExposeMode is "prefix" or "both".
@@ -98,6 +100,99 @@ func (a AccountConfig) EffectivePrefix() string {
 		return a.ModelPrefix
 	}
 	return a.Name + "-"
+}
+
+// MergeDiscoveredModels updates AvailableModels with newly fetched models and enables
+// any model that has not been explicitly disabled.
+func (a *AccountConfig) MergeDiscoveredModels(fetched []string) {
+	disabled := make(map[string]bool, len(a.DisabledModels))
+	for _, m := range a.DisabledModels {
+		disabled[m] = true
+	}
+	seen := make(map[string]bool)
+	var catalog []string
+	addCatalog := func(list []string) {
+		for _, m := range list {
+			m = strings.TrimSpace(m)
+			if m == "" || seen[m] {
+				continue
+			}
+			seen[m] = true
+			catalog = append(catalog, m)
+		}
+	}
+	addCatalog(fetched)
+	addCatalog(a.AvailableModels)
+	addCatalog(a.Models)
+
+	var enabled []string
+	for _, m := range catalog {
+		if !disabled[m] {
+			enabled = append(enabled, m)
+		}
+	}
+	a.AvailableModels = catalog
+	a.Models = enabled
+}
+
+// SetModelEnabled enables or disables one model ID on this account.
+func (a *AccountConfig) SetModelEnabled(modelID string, enabled bool) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return
+	}
+	// Ensure present in AvailableModels
+	inCatalog := false
+	for _, m := range a.AvailableModels {
+		if m == modelID {
+			inCatalog = true
+			break
+		}
+	}
+	if !inCatalog {
+		a.AvailableModels = append(a.AvailableModels, modelID)
+	}
+
+	disabled := make(map[string]bool, len(a.DisabledModels))
+	for _, m := range a.DisabledModels {
+		disabled[m] = true
+	}
+	if enabled {
+		delete(disabled, modelID)
+	} else {
+		disabled[modelID] = true
+	}
+
+	var newDisabled []string
+	var newEnabled []string
+	seen := make(map[string]bool)
+	for _, m := range a.AvailableModels {
+		if seen[m] {
+			continue
+		}
+		seen[m] = true
+		if disabled[m] {
+			newDisabled = append(newDisabled, m)
+		} else {
+			newEnabled = append(newEnabled, m)
+		}
+	}
+	a.DisabledModels = newDisabled
+	a.Models = newEnabled
+}
+
+// SetAllModelsEnabled enables or disables every model in AvailableModels.
+func (a *AccountConfig) SetAllModelsEnabled(enabled bool) {
+	if len(a.AvailableModels) == 0 {
+		a.AvailableModels = append([]string(nil), a.Models...)
+	}
+	if enabled {
+		a.DisabledModels = nil
+		a.Models = append([]string(nil), a.AvailableModels...)
+	} else {
+		a.DisabledModels = append([]string(nil), a.AvailableModels...)
+		a.Models = nil
+	}
 }
 
 type ModelOverride struct {
@@ -252,6 +347,9 @@ func (c *Config) Normalize() {
 		}
 		if a.ExposeMode != ExposePool && a.ExposeMode != ExposePrefix && a.ExposeMode != ExposeBoth {
 			a.ExposeMode = ExposePool
+		}
+		if len(a.AvailableModels) == 0 && len(a.Models) > 0 {
+			a.AvailableModels = append([]string(nil), a.Models...)
 		}
 		if a.Kind == KindACP {
 			if a.MaxConcurrency <= 0 {

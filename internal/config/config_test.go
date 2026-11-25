@@ -64,3 +64,38 @@ func TestLoadSaveAndProfileIsolation(t *testing.T) {
 		t.Fatalf("expected profile dir deleted")
 	}
 }
+
+func TestAccountModelCatalogEnableDisableAndMerge(t *testing.T) {
+	acct := AccountConfig{
+		ID:      "deepseek-default",
+		Name:    "default",
+		Kind:    KindAPIKey,
+		Backend: "deepseek",
+		Models:  []string{"deepseek-chat"},
+	}
+
+	acct.MergeDiscoveredModels([]string{"deepseek-chat", "deepseek-reasoner", "deepseek-coder"})
+	if len(acct.AvailableModels) != 3 || len(acct.Models) != 3 {
+		t.Fatalf("expected 3 catalog & 3 enabled, got avail=%v enabled=%v", acct.AvailableModels, acct.Models)
+	}
+
+	// Disable one model and verify re-fetching does NOT re-enable it
+	acct.SetModelEnabled("deepseek-coder", false)
+	if len(acct.Models) != 2 || len(acct.DisabledModels) != 1 {
+		t.Fatalf("expected 2 enabled / 1 disabled, got enabled=%v disabled=%v", acct.Models, acct.DisabledModels)
+	}
+
+	acct.MergeDiscoveredModels([]string{"deepseek-chat", "deepseek-reasoner", "deepseek-coder", "deepseek-v4"})
+	if len(acct.AvailableModels) != 4 || len(acct.Models) != 3 {
+		t.Fatalf("expected disabled model preserved and new model enabled, got avail=%v enabled=%v", acct.AvailableModels, acct.Models)
+	}
+
+	acct.SetAllModelsEnabled(false)
+	if len(acct.Models) != 0 || len(acct.DisabledModels) != 4 {
+		t.Fatalf("expected all disabled, got enabled=%v disabled=%v", acct.Models, acct.DisabledModels)
+	}
+	acct.SetAllModelsEnabled(true)
+	if len(acct.Models) != 4 || len(acct.DisabledModels) != 0 {
+		t.Fatalf("expected all enabled, got enabled=%v disabled=%v", acct.Models, acct.DisabledModels)
+	}
+}

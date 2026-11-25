@@ -349,13 +349,15 @@ func (a *App) openAddAccount() {
 }
 
 func (a *App) initAddInputs() {
-	a.addInputs = make([]textinput.Model, 4)
+	a.addInputs = make([]textinput.Model, 3)
 	for i := range a.addInputs {
 		ti := textinput.New()
+		ti.Prompt = ""
 		ti.CharLimit = 256
 		a.addInputs[i] = ti
 	}
 	a.addFocus = 0
+	a.modelPicker = nil
 
 	if a.addKind == config.KindAPIKey {
 		preset, _ := a.srv.Registry().GetPreset(a.addBackend)
@@ -366,10 +368,7 @@ func (a *App) initAddInputs() {
 		a.addInputs[1].EchoMode = textinput.EchoPassword
 		a.addInputs[2].Placeholder = "Base URL"
 		a.addInputs[2].SetValue(preset.BaseURL)
-		a.addInputs[3].Placeholder = "Models (comma-separated, optional)"
-		a.addInputs[3].SetValue(strings.Join(preset.DefaultModels, ","))
 	} else {
-		desc, _ := a.srv.Registry().GetACP(a.addBackend)
 		a.addInputs[0].Placeholder = "account name (e.g. a, b, work, personal)"
 		a.addInputs[0].SetValue("default")
 		a.addInputs[1].Placeholder = "Custom command (optional)"
@@ -377,10 +376,88 @@ func (a *App) initAddInputs() {
 			a.addInputs[1].Placeholder = "ACP command (e.g. my-agent --acp)"
 		}
 		a.addInputs[2].Placeholder = "Model prefix (optional, e.g. a- -> a-gemini-4-neon)"
-		a.addInputs[3].Placeholder = "Models (comma-separated)"
-		a.addInputs[3].SetValue(strings.Join(desc.DefaultModels, ","))
 	}
 	a.addInputs[0].Focus()
+}
+
+func (a *App) buildDraftAccount() (config.AccountConfig, string, error) {
+	name := strings.TrimSpace(a.addInputs[0].Value())
+	if err := config.ValidateName(name); err != nil {
+		return config.AccountConfig{}, "", err
+	}
+	cfg := a.srv.Config()
+	id := config.SanitizeSlug(a.addBackend + "-" + name)
+	if cfg.FindAccount(id) != nil {
+		return config.AccountConfig{}, "", fmt.Errorf("account %q already exists", id)
+	}
+
+	if a.addKind == config.KindAPIKey {
+		apiKey := strings.TrimSpace(a.addInputs[1].Value())
+		baseURL := strings.TrimSpace(a.addInputs[2].Value())
+		if baseURL == "" {
+			return config.AccountConfig{}, "", fmt.Errorf("base URL is required")
+		}
+		preset, _ := a.srv.Registry().GetPreset(a.addBackend)
+		if !preset.KeyOptional && apiKey == "" {
+			return config.AccountConfig{}, "", fmt.Errorf("API key is required for %s", preset.Name)
+		}
+		return config.AccountConfig{
+			ID:             id,
+			Name:           name,
+			Kind:           config.KindAPIKey,
+			Backend:        a.addBackend,
+			Enabled:        true,
+			BaseURL:        baseURL,
+			AuthStyle:      a.addAuthStyle,
+			ExposeMode:     config.ExposePool,
+			Models:         append([]string(nil), preset.DefaultModels...),
+			MaxConcurrency: 8,
+		}, apiKey, nil
+	}
+
+	var customCmd []string
+	if raw := strings.TrimSpace(a.addInputs[1].Value()); raw != "" {
+		customCmd = strings.Fields(raw)
+	}
+	if a.addBackend == "custom-acp" && len(customCmd) == 0 {
+		return config.AccountConfig{}, "", fmt.Errorf("custom ACP command is required")
+	}
+	desc, _ := a.srv.Registry().GetACP(a.addBackend)
+	prefix := strings.TrimSpace(a.addInputs[2].Value())
+	expose := config.ExposePool
+	if prefix != "" {
+		expose = config.ExposePrefix
+	}
+	return config.AccountConfig{
+		ID:             id,
+		Name:           name,
+		Kind:           config.KindACP,
+		Backend:        a.addBackend,
+		Enabled:        true,
+		PermissionMode: config.PermDeny,
+		CustomCommand:  customCmd,
+		ExposeMode:     expose,
+		ModelPrefix:    prefix,
+		Models:         append([]string(nil), desc.DefaultModels...),
+		MaxConcurrency: 1,
+	}, "", nil
+}
+
+func (a *App) enterAddStep4Models() (tea.Model, tea.Cmd) {
+	acct, apiKey, err := a.buildDraftAccount()
+	if err != nil {
+		a.setStatus(err.Error(), true)
+		return a, nil
+	}
+	a.modelPicker = newModelPicker("", "Select Models — "+acct.Backend+"/"+acct.Name, acct.Models, acct.Models)
+	a.addStep = 3
+	// For API-key accounts, immediately load ALL available models from /v1/models!
+	if acct.Kind == config.KindAPIKey {
+		a.modelPicker.loading = true
+		a.setStatus("Loading all models from "+acct.BaseURL+"...", false)
+		return a, a.fetchModelsCmd("", acct, apiKey)
+	}
+	return a, nil
 }
 
 func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -491,115 +568,158 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.addInputs[a.addFocus].Focus()
 				return a, textinput.Blink
 			}
-			return a.submitAddAccount()
+			return a.enterAddStep4Models()
 		case "ctrl+s":
-			return a.submitAddAccount()
+			return a.enterAddStep4Models()
 		default:
 			var cmd tea.Cmd
 			a.addInputs[a.addFocus], cmd = a.addInputs[a.addFocus].Update(msg)
 			return a, cmd
+		}
+
+	case 3: // Step 4: Interactive Model Picker (load all, search, enable/disable, add custom)
+		p := a.modelPicker
+		if p == nil {
+			a.addStep = 2
+			return a, nil
+		}
+		if p.addingModel {
+			switch msg.String() {
+			case "esc":
+				p.addingModel = false
+				p.addInput.Blur()
+				return a, nil
+			case "enter":
+				if val := strings.TrimSpace(p.addInput.Value()); val != "" {
+					p.mergeFetched([]string{val}, true)
+					p.enabled[val] = true
+				}
+				p.addingModel = false
+				p.addInput.SetValue("")
+				p.addInput.Blur()
+				return a, nil
+			default:
+				var cmd tea.Cmd
+				p.addInput, cmd = p.addInput.Update(msg)
+				return a, cmd
+			}
+		}
+		if p.searching {
+			switch msg.String() {
+			case "esc", "enter":
+				p.searching = false
+				p.searchInput.Blur()
+				p.cursor = 0
+				return a, nil
+			default:
+				var cmd tea.Cmd
+				p.searchInput, cmd = p.searchInput.Update(msg)
+				p.cursor = 0
+				return a, cmd
+			}
+		}
+
+		items := p.filtered()
+		if p.cursor >= len(items) && len(items) > 0 {
+			p.cursor = len(items) - 1
+		}
+		switch msg.String() {
+		case "/":
+			p.searching = true
+			p.searchInput.Focus()
+			return a, textinput.Blink
+		case "+":
+			p.addingModel = true
+			p.addInput.SetValue("")
+			p.addInput.Focus()
+			return a, textinput.Blink
+		case "up", "k":
+			if p.cursor > 0 {
+				p.cursor--
+			}
+		case "down", "j":
+			if p.cursor < len(items)-1 {
+				p.cursor++
+			}
+		case "pgup":
+			p.cursor = max(p.cursor-10, 0)
+		case "pgdown":
+			if len(items) > 0 {
+				p.cursor = min(p.cursor+10, len(items)-1)
+			}
+		case " ":
+			if p.cursor >= 0 && p.cursor < len(items) {
+				id := items[p.cursor]
+				p.enabled[id] = !p.enabled[id]
+			}
+		case "a":
+			for _, id := range items {
+				p.enabled[id] = true
+			}
+		case "n":
+			for _, id := range items {
+				p.enabled[id] = false
+			}
+		case "f":
+			acct, apiKey, err := a.buildDraftAccount()
+			if err != nil {
+				a.setStatus(err.Error(), true)
+				return a, nil
+			}
+			p.loading = true
+			p.fetchErr = ""
+			return a, a.fetchModelsCmd("", acct, apiKey)
+		case "enter", "ctrl+s":
+			return a.submitAddAccount()
 		}
 	}
 	return a, nil
 }
 
 func (a *App) submitAddAccount() (tea.Model, tea.Cmd) {
-	name := strings.TrimSpace(a.addInputs[0].Value())
-	if err := config.ValidateName(name); err != nil {
+	acct, apiKey, err := a.buildDraftAccount()
+	if err != nil {
 		a.setStatus(err.Error(), true)
 		return a, nil
 	}
 
+	if a.modelPicker != nil {
+		catalog, enabled, disabled := a.modelPicker.toLists()
+		acct.AvailableModels = catalog
+		acct.Models = enabled
+		acct.DisabledModels = disabled
+	}
+
 	cfg := a.srv.Config()
-	id := config.SanitizeSlug(a.addBackend + "-" + name)
-	if cfg.FindAccount(id) != nil {
-		a.setStatus(fmt.Sprintf("Account %q already exists", id), true)
-		return a, nil
-	}
-
-	var models []string
-	for _, m := range strings.Split(a.addInputs[3].Value(), ",") {
-		if m = strings.TrimSpace(m); m != "" {
-			models = append(models, m)
-		}
-	}
-
-	if a.addKind == config.KindAPIKey {
-		apiKey := strings.TrimSpace(a.addInputs[1].Value())
-		baseURL := strings.TrimSpace(a.addInputs[2].Value())
-		if baseURL == "" {
-			a.setStatus("Base URL is required", true)
-			return a, nil
-		}
-		preset, _ := a.srv.Registry().GetPreset(a.addBackend)
-		if !preset.KeyOptional && apiKey == "" {
-			a.setStatus("API key is required for "+preset.Name, true)
-			return a, nil
-		}
+	if acct.Kind == config.KindAPIKey {
 		if apiKey != "" {
-			if err := a.srv.Secrets().Set(id, apiKey); err != nil {
+			if err := a.srv.Secrets().Set(acct.ID, apiKey); err != nil {
 				a.setStatus("Failed to store API key: "+err.Error(), true)
 				return a, nil
 			}
 		}
-		acct := config.AccountConfig{
-			ID:             id,
-			Name:           name,
-			Kind:           config.KindAPIKey,
-			Backend:        a.addBackend,
-			Enabled:        true,
-			BaseURL:        baseURL,
-			AuthStyle:      a.addAuthStyle,
-			ExposeMode:     config.ExposePool,
-			Models:         models,
-			MaxConcurrency: 8,
-		}
 		cfg.Accounts = append(cfg.Accounts, acct)
 		cfg.UI.OnboardingComplete = true
 		_ = a.srv.ReloadConfig(cfg)
+		a.modelPicker = nil
 		a.modal = modalNone
-		a.addTesting = true
-		a.setStatus(fmt.Sprintf("Added %s/%s — testing connection...", acct.Backend, acct.Name), false)
-		return a, a.testAccountCmd(acct)
+		a.setStatus(fmt.Sprintf("Added %s/%s (%d enabled / %d total models)", acct.Backend, acct.Name, len(acct.Models), len(acct.AvailableModels)), false)
+		return a, nil
 	}
 
-	if _, err := config.EnsureProfileDir(a.srv.DataDir(), a.addBackend, name); err != nil {
+	if _, err := config.EnsureProfileDir(a.srv.DataDir(), acct.Backend, acct.Name); err != nil {
 		a.setStatus("Failed to create profile dir: "+err.Error(), true)
 		return a, nil
 	}
-	var customCmd []string
-	if raw := strings.TrimSpace(a.addInputs[1].Value()); raw != "" {
-		customCmd = strings.Fields(raw)
-	}
-	if a.addBackend == "custom-acp" && len(customCmd) == 0 {
-		a.setStatus("Custom ACP command is required", true)
-		return a, nil
-	}
-	if len(models) == 0 {
-		models = []string{"default"}
-	}
-	prefix := strings.TrimSpace(a.addInputs[2].Value())
-	expose := config.ExposePool
-	if prefix != "" {
-		expose = config.ExposePrefix
-	}
-	acct := config.AccountConfig{
-		ID:             id,
-		Name:           name,
-		Kind:           config.KindACP,
-		Backend:        a.addBackend,
-		Enabled:        true,
-		PermissionMode: config.PermDeny,
-		CustomCommand:  customCmd,
-		ExposeMode:     expose,
-		ModelPrefix:    prefix,
-		Models:         models,
-		MaxConcurrency: 1,
+	if len(acct.Models) == 0 && len(acct.AvailableModels) == 0 {
+		acct.Models = []string{"default"}
+		acct.AvailableModels = []string{"default"}
 	}
 	cfg.Accounts = append(cfg.Accounts, acct)
 	cfg.UI.OnboardingComplete = true
 	_ = a.srv.ReloadConfig(cfg)
-	a.setStatus(fmt.Sprintf("Added ACP account %s/%s", acct.Backend, acct.Name), false)
+	a.modelPicker = nil
+	a.setStatus(fmt.Sprintf("Added ACP account %s/%s (%d models)", acct.Backend, acct.Name, len(acct.Models)), false)
 
 	if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && len(desc.Login) > 0 {
 		a.openLoginPrompt(acct)
@@ -622,9 +742,10 @@ func (a *App) viewAddAccountModal() string {
 		}
 		return a.styles.Muted.Render("○ " + text)
 	}
-	stepper := stepLabel(0, "1 Type") + "  " + a.styles.Muted.Render("─") + "  " +
-		stepLabel(1, "2 Provider") + "  " + a.styles.Muted.Render("─") + "  " +
-		stepLabel(2, "3 Configure")
+	stepper := stepLabel(0, "1 Type") + " " + a.styles.Muted.Render("─") + " " +
+		stepLabel(1, "2 Provider") + " " + a.styles.Muted.Render("─") + " " +
+		stepLabel(2, "3 Configure") + " " + a.styles.Muted.Render("─") + " " +
+		stepLabel(3, "4 Models")
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render("Add Account")+"    "+stepper)
@@ -701,26 +822,48 @@ func (a *App) viewAddAccountModal() string {
 		}
 
 	case 2:
-		labels := []string{"Name", "API Key", "Base URL", "Models"}
+		labels := []string{"Name", "API Key", "Base URL"}
 		if a.addKind == config.KindACP {
-			labels = []string{"Name", "Custom Cmd", "Model Prefix", "Models"}
+			labels = []string{"Name", "Custom Cmd", "Model Prefix"}
 		}
 		for i, lbl := range labels {
 			prefix := "  "
 			lStyle := a.styles.Muted
 			if i == a.addFocus {
-				prefix = a.styles.Highlight.Render("> ")
+				prefix = a.styles.Highlight.Render("› ")
 				lStyle = a.styles.Highlight
 			}
 			lines = append(lines, fmt.Sprintf("%s%-14s %s", prefix, lStyle.Render(lbl+":"), a.addInputs[i].View()))
 		}
-		if a.addKind == config.KindACP {
-			lines = append(lines, "")
+		lines = append(lines, "")
+		if a.addKind == config.KindAPIKey {
+			lines = append(lines, a.styles.Muted.Render("Next step automatically fetches ALL available models so you can enable/disable them."))
+		} else {
 			lines = append(lines, a.styles.Muted.Render("Leave Model Prefix empty to pool/rotate across accounts, or set e.g. 'a-' to register 'a-<model>'."))
 		}
 		lines = append(lines, "")
 		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-		lines = append(lines, a.styles.KeyHint("tab", "next field")+"   "+a.styles.KeyHint("enter/ctrl+s", "save")+"   "+a.styles.KeyHint("esc", "back"))
+		lines = append(lines, a.styles.KeyHint("tab", "next field")+"   "+a.styles.KeyHint("enter/ctrl+s", "load models →")+"   "+a.styles.KeyHint("esc", "back"))
+
+	case 3:
+		p := a.modelPicker
+		if p != nil {
+			summary := fmt.Sprintf("%d enabled / %d loaded", p.enabledCount(), len(p.models))
+			lines = append(lines, a.styles.Subtitle.Render("Select Models to Enable")+"   "+a.styles.Muted.Render(summary))
+			maxRows := clamp(a.height-18, 6, 13)
+			lines = append(lines, a.renderModelPickerBody(p, innerW, maxRows)...)
+		}
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		lines = append(lines, strings.Join([]string{
+			a.styles.KeyHint("space", "toggle"),
+			a.styles.KeyHint("a", "all"),
+			a.styles.KeyHint("n", "none"),
+			a.styles.KeyHint("f", "refetch"),
+			a.styles.KeyHint("/", "search"),
+			a.styles.KeyHint("+", "add"),
+			a.styles.KeyHint("enter", "save account"),
+			a.styles.KeyHint("esc", "back"),
+		}, "  "))
 	}
 
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))

@@ -202,6 +202,18 @@ func (s *Server) TestAccount(ctx context.Context, acct config.AccountConfig) ([]
 	return s.httpBE.TestAccount(ctx, acct, key)
 }
 
+// FetchModelsWithKey fetches all available models from an API-key provider using an explicit key
+// (used during Add Account before the account is saved) or from an ACP backend.
+func (s *Server) FetchModelsWithKey(ctx context.Context, acct config.AccountConfig, apiKey string) ([]string, error) {
+	if acct.Kind == config.KindACP {
+		return s.acpBE.TestAccount(ctx, acct)
+	}
+	if apiKey == "" {
+		apiKey, _ = s.secrets.Get(acct.ID)
+	}
+	return s.httpBE.TestAccount(ctx, acct, apiKey)
+}
+
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.mu.RLock()

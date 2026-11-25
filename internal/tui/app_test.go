@@ -70,4 +70,17 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	if !strings.Contains(app.View(), "Subscription Pool Warning") {
 		t.Fatalf("expected subscription warning text in view")
 	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Open Accounts (2) -> M opens interactive Account Models Picker; Space toggles, Enter saves
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("M")})
+	if app.modal != modalAccountModels || !strings.Contains(app.View(), "Models —") {
+		t.Fatalf("expected Account Models Picker modal on 'M', got modal=%v", app.modal)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(" ")})
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.modal != modalNone {
+		t.Fatalf("expected modal closed after Enter")
+	}
 }
