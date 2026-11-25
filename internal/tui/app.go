@@ -135,6 +135,8 @@ type App struct {
 	// Connect CLI / T3 Code modal
 	connectTargets       []connect.Target
 	connectCursor        int
+	connectSearch        textinput.Model
+	connectSearching     bool
 	connectConfirmAction string // "", "connect", "disconnect", "disconnect_all"
 	connectConfirmTarget connect.Target
 
@@ -155,6 +157,8 @@ type App struct {
 	addKind      string
 	addBackend   string
 	addListCur   int
+	addSearch    textinput.Model
+	addSearching bool
 	addFocus     int
 	addInputs    []textinput.Model
 	addAuthStyle string
@@ -200,6 +204,16 @@ func New(srv *gateway.Server) *App {
 	ds.Placeholder = "search 45+ ACP agents (codex, claude, cursor, opencode, cline, muse...)"
 	ds.CharLimit = 64
 
+	as := textinput.New()
+	as.Prompt = ""
+	as.Placeholder = "search providers (openai, openrouter, claude, codex, custom...)"
+	as.CharLimit = 64
+
+	cs := textinput.New()
+	cs.Prompt = ""
+	cs.Placeholder = "search IDEs & CLIs (t3, cursor, zed, vscode, claude, codex...)"
+	cs.CharLimit = 64
+
 	ei := textinput.New()
 	ei.Prompt = ""
 	ei.CharLimit = 256
@@ -214,6 +228,8 @@ func New(srv *gateway.Server) *App {
 		screen:         ScreenDashboard,
 		filterInput:    fi,
 		detectSearch:   ds,
+		addSearch:      as,
+		connectSearch:  cs,
 		editInput:      ei,
 		detectSelected: make(map[string]bool),
 		permCh:         make(chan backend.PermissionRequest, 8),

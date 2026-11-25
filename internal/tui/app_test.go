@@ -262,4 +262,43 @@ func TestAPISetupAndModelsPickerAutoFetch(t *testing.T) {
 	if !app.modelPicker.enabled["custom-model-alpha"] {
 		t.Fatalf("expected enabled model to stay enabled")
 	}
+
+	// 4. Add Account Step 2 provider search (API Key, ACP, CLI) + Connect modal search
+	app.openAddAccount()
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")}) // API Key -> Step 1
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for _, r := range "openrouter" {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // exit search
+	if got := app.filteredAddPresets(); len(got) != 1 || got[0].ID != "openrouter" {
+		t.Fatalf("expected openrouter from provider search, got %+v", got)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // select filtered provider -> step 2
+	if app.addStep != 2 || app.addBackend != "openrouter" {
+		t.Fatalf("expected step 2 with backend openrouter, got step=%d backend=%q", app.addStep, app.addBackend)
+	}
+
+	// ACP agent search
+	app.openAddAccount()
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")}) // ACP -> Step 1
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for _, r := range "muse" {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := app.filteredAddACPs(); len(got) == 0 || got[0].ID != "muse-code" {
+		t.Fatalf("expected muse-code from ACP search, got %+v", got)
+	}
+
+	// Connect modal search
+	app.openConnectModal()
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	for _, r := range "zed" {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := app.filteredConnectTargets(); len(got) != 1 || got[0].ID != "zed" {
+		t.Fatalf("expected zed from connect search, got %+v", got)
+	}
 }

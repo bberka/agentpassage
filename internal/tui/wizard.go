@@ -404,9 +404,64 @@ func (a *App) openAddAccount() {
 	a.addKind = config.KindAPIKey
 	a.addBackend = ""
 	a.addListCur = 0
+	a.resetAddSearch()
 	a.addFocus = 0
 	a.addTesting = false
 	a.modal = modalAddAccount
+}
+
+func (a *App) resetAddSearch() {
+	a.addSearching = false
+	a.addSearch.SetValue("")
+	a.addSearch.Blur()
+}
+
+func (a *App) filteredAddPresets() []descriptors.ProviderPreset {
+	all := a.srv.Registry().ListPresets()
+	q := strings.ToLower(strings.TrimSpace(a.addSearch.Value()))
+	if q == "" {
+		return all
+	}
+	var out []descriptors.ProviderPreset
+	for _, p := range all {
+		hay := strings.ToLower(p.ID + " " + p.Name + " " + p.BaseURL)
+		if strings.Contains(hay, q) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func (a *App) filteredAddCLIs() []descriptors.CLIDescriptor {
+	all := a.srv.Registry().ListCLI()
+	q := strings.ToLower(strings.TrimSpace(a.addSearch.Value()))
+	if q == "" {
+		return all
+	}
+	var out []descriptors.CLIDescriptor
+	for _, c := range all {
+		hay := strings.ToLower(c.ID + " " + c.Name + " " + c.Binary + " " + c.Description)
+		if strings.Contains(hay, q) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (a *App) filteredAddACPs() []descriptors.ACPDescriptor {
+	all := a.srv.Registry().ListACP()
+	q := strings.ToLower(strings.TrimSpace(a.addSearch.Value()))
+	if q == "" {
+		return all
+	}
+	var out []descriptors.ACPDescriptor
+	for _, d := range all {
+		hay := strings.ToLower(d.ID + " " + d.Name + " " + d.Detect + " " + d.Description)
+		if strings.Contains(hay, q) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func (a *App) initAddInputs() {
@@ -559,7 +614,27 @@ func (a *App) enterAddStep4Models() (tea.Model, tea.Cmd) {
 }
 
 func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.addStep == 1 && a.addSearching {
+		switch msg.String() {
+		case "esc", "enter":
+			a.addSearching = false
+			a.addSearch.Blur()
+			a.addListCur = 0
+			return a, nil
+		default:
+			var cmd tea.Cmd
+			a.addSearch, cmd = a.addSearch.Update(msg)
+			a.addListCur = 0
+			return a, cmd
+		}
+	}
+
 	if msg.String() == "esc" {
+		if a.addStep == 1 && strings.TrimSpace(a.addSearch.Value()) != "" {
+			a.resetAddSearch()
+			a.addListCur = 0
+			return a, nil
+		}
 		if a.addStep > 0 {
 			a.addStep--
 			return a, nil
@@ -589,25 +664,37 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.addKind = config.KindAPIKey
 			a.addStep = 1
 			a.addListCur = 0
+			a.resetAddSearch()
 		case "2":
 			a.addKind = config.KindACP
 			a.addStep = 1
 			a.addListCur = 0
+			a.resetAddSearch()
 		case "3":
 			a.addKind = config.KindCLI
 			a.addStep = 1
 			a.addListCur = 0
+			a.resetAddSearch()
 		case "enter":
 			a.addStep = 1
 			a.addListCur = 0
+			a.resetAddSearch()
 		case "q":
 			a.modal = modalNone
 		}
 		return a, nil
 
 	case 1:
+		if msg.String() == "/" {
+			a.addSearching = true
+			a.addSearch.Focus()
+			return a, textinput.Blink
+		}
 		if a.addKind == config.KindAPIKey {
-			presets := a.srv.Registry().ListPresets()
+			presets := a.filteredAddPresets()
+			if a.addListCur >= len(presets) && len(presets) > 0 {
+				a.addListCur = len(presets) - 1
+			}
 			switch msg.String() {
 			case "up", "k":
 				if a.addListCur > 0 {
@@ -616,6 +703,12 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "down", "j":
 				if a.addListCur < len(presets)-1 {
 					a.addListCur++
+				}
+			case "pgup":
+				a.addListCur = max(a.addListCur-8, 0)
+			case "pgdown":
+				if len(presets) > 0 {
+					a.addListCur = min(a.addListCur+8, len(presets)-1)
 				}
 			case "enter":
 				if a.addListCur >= 0 && a.addListCur < len(presets) {
@@ -626,7 +719,10 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		} else if a.addKind == config.KindCLI {
-			clis := a.srv.Registry().ListCLI()
+			clis := a.filteredAddCLIs()
+			if a.addListCur >= len(clis) && len(clis) > 0 {
+				a.addListCur = len(clis) - 1
+			}
 			switch msg.String() {
 			case "up", "k":
 				if a.addListCur > 0 {
@@ -635,6 +731,12 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "down", "j":
 				if a.addListCur < len(clis)-1 {
 					a.addListCur++
+				}
+			case "pgup":
+				a.addListCur = max(a.addListCur-8, 0)
+			case "pgdown":
+				if len(clis) > 0 {
+					a.addListCur = min(a.addListCur+8, len(clis)-1)
 				}
 			case "enter":
 				if a.addListCur >= 0 && a.addListCur < len(clis) {
@@ -645,7 +747,10 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		} else {
-			descs := a.srv.Registry().ListACP()
+			descs := a.filteredAddACPs()
+			if a.addListCur >= len(descs) && len(descs) > 0 {
+				a.addListCur = len(descs) - 1
+			}
 			switch msg.String() {
 			case "up", "k":
 				if a.addListCur > 0 {
@@ -658,7 +763,9 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "pgup":
 				a.addListCur = max(a.addListCur-8, 0)
 			case "pgdown":
-				a.addListCur = min(a.addListCur+8, len(descs)-1)
+				if len(descs) > 0 {
+					a.addListCur = min(a.addListCur+8, len(descs)-1)
+				}
 			case "i":
 				if a.addListCur >= 0 && a.addListCur < len(descs) {
 					d := descs[a.addListCur]
@@ -916,9 +1023,17 @@ func (a *App) viewAddAccountModal() string {
 		lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("esc", "cancel"))
 
 	case 1:
-		maxRows := clamp(a.height-16, 6, 13)
+		if a.addSearching {
+			lines = append(lines, a.styles.Highlight.Render("Search: ")+a.addSearch.View()+" "+a.styles.Muted.Render("(enter/esc)"))
+		} else if q := strings.TrimSpace(a.addSearch.Value()); q != "" {
+			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Search: %q  (/ edit, esc clear)", q)))
+		}
+		maxRows := clamp(a.height-17, 6, 13)
 		if a.addKind == config.KindAPIKey {
-			presets := a.srv.Registry().ListPresets()
+			presets := a.filteredAddPresets()
+			if len(presets) == 0 {
+				lines = append(lines, a.styles.Muted.Render("  No matching API providers. Press '/' to edit or 'esc' to clear."))
+			}
 			start := 0
 			if a.addListCur >= maxRows {
 				start = a.addListCur - maxRows + 1
@@ -941,13 +1056,21 @@ func (a *App) viewAddAccountModal() string {
 			}
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-			lines = append(lines, a.styles.JoinHints(a.styles.KeyHint("enter", "next"), a.styles.KeyHint("esc", "back")))
+			lines = append(lines, a.styles.JoinHints(a.styles.KeyHint("/", "search"), a.styles.KeyHint("enter", "next"), a.styles.KeyHint("esc", "back")))
 		} else if a.addKind == config.KindCLI {
-			clis := a.srv.Registry().ListCLI()
+			clis := a.filteredAddCLIs()
+			if len(clis) == 0 {
+				lines = append(lines, a.styles.Muted.Render("  No matching CLI tools. Press '/' to edit or 'esc' to clear."))
+			}
+			start := 0
+			if a.addListCur >= maxRows {
+				start = a.addListCur - maxRows + 1
+			}
 			nameW := 22
 			badgeW := 10
 			descW := max(innerW-2-nameW-2-badgeW-2, 10)
-			for i, c := range clis {
+			for i := start; i < min(start+maxRows, len(clis)); i++ {
+				c := clis[i]
 				badgePlain := "custom"
 				badgeStyle := a.styles.Muted
 				if c.Binary != "" {
@@ -974,9 +1097,12 @@ func (a *App) viewAddAccountModal() string {
 			}
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-			lines = append(lines, a.styles.JoinHints(a.styles.KeyHint("enter", "next"), a.styles.KeyHint("esc", "back")))
+			lines = append(lines, a.styles.JoinHints(a.styles.KeyHint("/", "search"), a.styles.KeyHint("enter", "next"), a.styles.KeyHint("esc", "back")))
 		} else {
-			descs := a.srv.Registry().ListACP()
+			descs := a.filteredAddACPs()
+			if len(descs) == 0 {
+				lines = append(lines, a.styles.Muted.Render("  No matching ACP agents. Press '/' to edit or 'esc' to clear."))
+			}
 			start := 0
 			if a.addListCur >= maxRows {
 				start = a.addListCur - maxRows + 1
@@ -1015,6 +1141,7 @@ func (a *App) viewAddAccountModal() string {
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 			lines = append(lines, a.styles.JoinHints(
+				a.styles.KeyHint("/", "search"),
 				a.styles.KeyHint("enter", "next"),
 				a.styles.KeyHint("i", "install CLI"),
 				a.styles.KeyHint("pgup/dn", "scroll"),
