@@ -165,10 +165,11 @@ type App struct {
 	acctEditor  *accountEditorState
 
 	// Generic single-line text edit modal
-	editTitle    string
-	editHint     string
-	editInput    textinput.Model
-	editOnSubmit func(val string) error
+	editTitle       string
+	editHint        string
+	editInput       textinput.Model
+	editOnSubmit    func(val string) error
+	editOnSubmitCmd func(val string) (tea.Cmd, error)
 
 	// Delete confirmation target
 	deleteTarget *config.AccountConfig
@@ -345,7 +346,7 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, waitPermCmd(a.permCh)
 
 	case fetchModelsMsg:
-		if a.modelPicker != nil {
+		if a.modelPicker != nil && (a.modelPicker.accountID == "" || a.modelPicker.accountID == msg.accountID) {
 			a.modelPicker.loading = false
 			if msg.err != nil {
 				a.modelPicker.fetchErr = msg.err.Error()
@@ -354,6 +355,16 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.modelPicker.fetchErr = ""
 				a.modelPicker.mergeFetched(msg.models, true)
 				a.setStatus(fmt.Sprintf("Loaded %d models (%d enabled)", len(a.modelPicker.models), a.modelPicker.enabledCount()), false)
+			}
+			return a, nil
+		}
+		// If the user saved & closed the wizard/picker before the fetch returned, still merge discovered models!
+		if msg.err == nil && msg.accountID != "" && len(msg.models) > 0 {
+			cfg := a.srv.Config()
+			if acct := cfg.FindAccount(msg.accountID); acct != nil {
+				acct.MergeDiscoveredModels(msg.models)
+				_ = a.srv.ReloadConfig(cfg)
+				a.setStatus(fmt.Sprintf("Loaded %d models for %s/%s (%d enabled)", len(acct.AvailableModels), acct.Backend, acct.Name, len(acct.Models)), false)
 			}
 		}
 		return a, nil
@@ -642,7 +653,18 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			val := strings.TrimSpace(a.editInput.Value())
 			fn := a.editOnSubmit
+			fnCmd := a.editOnSubmitCmd
+			a.editOnSubmit = nil
+			a.editOnSubmitCmd = nil
 			a.modal = modalNone
+			if fnCmd != nil {
+				cmd, err := fnCmd(val)
+				if err != nil {
+					a.setStatus(err.Error(), true)
+					return a, nil
+				}
+				return a, cmd
+			}
 			if fn != nil {
 				if err := fn(val); err != nil {
 					a.setStatus(err.Error(), true)
@@ -684,6 +706,19 @@ func (a *App) openEditModal(title, hint, initial string, onSubmit func(string) e
 	a.editInput.CursorEnd()
 	a.editInput.Focus()
 	a.editOnSubmit = onSubmit
+	a.editOnSubmitCmd = nil
+	a.modal = modalEditText
+	return textinput.Blink
+}
+
+func (a *App) openEditModalCmd(title, hint, initial string, onSubmit func(string) (tea.Cmd, error)) tea.Cmd {
+	a.editTitle = title
+	a.editHint = hint
+	a.editInput.SetValue(initial)
+	a.editInput.CursorEnd()
+	a.editInput.Focus()
+	a.editOnSubmit = nil
+	a.editOnSubmitCmd = onSubmit
 	a.modal = modalEditText
 	return textinput.Blink
 }

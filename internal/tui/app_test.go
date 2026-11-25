@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -133,5 +136,130 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if app.modal != modalNone {
 		t.Fatalf("expected modal closed after Enter")
+	}
+}
+
+func TestAPISetupAndModelsPickerAutoFetch(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-test-live" {
+			http.Error(w, `{"error":{"message":"bad key"}}`, http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{
+				{"id": "custom-model-alpha"},
+				{"id": "custom-model-beta"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.UI.OnboardingComplete = true
+	sec := secrets.NewFileOnly(dir)
+	reg, _ := descriptors.LoadRegistry(dir)
+	logs := logbuf.New(50, dir, sec.KnownSecrets)
+	defer logs.Close()
+
+	srv := gateway.New(dir, cfg, sec, reg, logs)
+	app := New(srv)
+	defer app.Close()
+	app.Update(tea.WindowSizeMsg{Width: 110, Height: 34})
+
+	// 1. Add Account wizard: API Key -> Custom -> fill name/key/url -> ctrl+s must auto-fetch!
+	app.openAddAccount()
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")}) // API Key -> step 1
+	presets := srv.Registry().ListPresets()
+	customIdx := -1
+	for i, p := range presets {
+		if p.ID == "custom" {
+			customIdx = i
+			break
+		}
+	}
+	if customIdx < 0 {
+		t.Fatalf("custom preset missing")
+	}
+	app.addListCur = customIdx
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // step 1 -> step 2
+	app.addInputs[0].SetValue("demo")
+	app.addInputs[1].SetValue("sk-test-live")
+	app.addInputs[2].SetValue(ts.URL + "/v1")
+
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if app.addStep != 3 || app.modelPicker == nil || !app.modelPicker.loading {
+		t.Fatalf("expected step 3 with loading=true, got step=%d picker=%v", app.addStep, app.modelPicker)
+	}
+	if cmd == nil {
+		t.Fatalf("expected non-nil auto-fetch tea.Cmd on entering step 4")
+	}
+	// While loading with empty list, should NOT tell user to press 'f' yet
+	if strings.Contains(app.viewAddAccountModal(), "Press 'f' to fetch") {
+		t.Fatalf("unexpected 'Press f' prompt while loading")
+	}
+
+	// Execute auto-fetch command without pressing 'f'
+	msg := cmd()
+	app.Update(msg)
+	if app.modelPicker.loading {
+		t.Fatalf("expected loading=false after fetchModelsMsg")
+	}
+	if len(app.modelPicker.models) != 2 || app.modelPicker.enabledCount() != 2 {
+		t.Fatalf("expected 2 auto-fetched models, got models=%v enabled=%d", app.modelPicker.models, app.modelPicker.enabledCount())
+	}
+
+	// Save account
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if app.modal != modalNone {
+		t.Fatalf("expected wizard closed after save")
+	}
+
+	// 2. Fast-save before fetch returns: simulate saving another account before fetchModelsMsg arrives
+	app.openAddAccount()
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	app.addListCur = customIdx
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app.addInputs[0].SetValue("fast")
+	app.addInputs[1].SetValue("sk-test-live")
+	app.addInputs[2].SetValue(ts.URL + "/v1")
+	_, fastCmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if fastCmd == nil {
+		t.Fatalf("expected non-nil auto-fetch cmd")
+	}
+	// User hits Enter immediately before fastCmd completes
+	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// Now fastCmd finishes in the background
+	app.Update(fastCmd())
+	fastAcct := srv.Config().FindAccount("custom-fast")
+	if fastAcct == nil || len(fastAcct.Models) != 2 {
+		t.Fatalf("expected background fetchModelsMsg to populate fast-saved account, got %+v", fastAcct)
+	}
+
+	// 3. Opening existing API account Models Picker (Enter/M on Accounts) must auto-fetch too
+	// Disable one model first to verify auto-fetch preserves user's disabled selection
+	fastAcct.Models = []string{"custom-model-alpha"}
+	fastAcct.DisabledModels = []string{"custom-model-beta"}
+	fastAcct.AvailableModels = []string{"custom-model-alpha"}
+	_ = srv.ReloadConfig(srv.Config())
+
+	openCmd := app.openAccountModelsModal(*fastAcct)
+	if openCmd == nil || app.modelPicker == nil || !app.modelPicker.loading {
+		t.Fatalf("expected openAccountModelsModal to auto-fetch for API account")
+	}
+	app.Update(openCmd())
+	if app.modelPicker.loading {
+		t.Fatalf("expected loading=false after openAccountModelsModal fetch")
+	}
+	if app.modelPicker.enabled["custom-model-beta"] {
+		t.Fatalf("expected disabled model to stay disabled after auto-fetch")
+	}
+	if !app.modelPicker.enabled["custom-model-alpha"] {
+		t.Fatalf("expected enabled model to stay enabled")
 	}
 }

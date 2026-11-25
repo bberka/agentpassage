@@ -118,8 +118,7 @@ func (a *App) updateAccountEditorModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cfg := a.srv.Config()
 			if acct := cfg.FindAccount(ed.accountID); acct != nil {
 				a.acctEditor = nil
-				a.openAccountModelsModal(*acct)
-				return a, nil
+				return a, a.openAccountModelsModal(*acct)
 			}
 		}
 
@@ -199,9 +198,12 @@ func (a *App) saveAccountEditor() (tea.Model, tea.Cmd) {
 		ed.accountID = config.SanitizeSlug(ed.backend + "-" + newName)
 	}
 
+	var postCmd tea.Cmd
 	cfg := a.srv.Config()
 	if acct := cfg.FindAccount(ed.accountID); acct != nil {
+		urlChanged := false
 		if acct.Kind == config.KindAPIKey {
+			urlChanged = acct.BaseURL != urlOrCwd
 			acct.BaseURL = urlOrCwd
 		} else {
 			acct.DefaultCwd = urlOrCwd
@@ -215,12 +217,17 @@ func (a *App) saveAccountEditor() (tea.Model, tea.Cmd) {
 		acct.ExposeMode = ed.exposeMode
 		acct.MaxConcurrency = maxConc
 		_ = a.srv.ReloadConfig(cfg)
-		a.setStatus(fmt.Sprintf("Saved account %s/%s", acct.Backend, acct.Name), false)
+		if urlChanged {
+			a.setStatus(fmt.Sprintf("Saved %s/%s — fetching models from updated URL...", acct.Backend, acct.Name), false)
+			postCmd = a.testAccountCmd(*acct)
+		} else {
+			a.setStatus(fmt.Sprintf("Saved account %s/%s", acct.Backend, acct.Name), false)
+		}
 	}
 
 	a.acctEditor = nil
 	a.modal = modalNone
-	return a, nil
+	return a, postCmd
 }
 
 // renameAccount safely renames an account, moves its isolated profile dir on disk,

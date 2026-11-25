@@ -183,7 +183,14 @@ func (c *Client) FetchModels(ctx context.Context, acct config.AccountConfig, api
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil, fmt.Errorf("decode /models response: %w", err)
+		var bare []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		if err2 := json.Unmarshal(body, &bare); err2 != nil {
+			return nil, fmt.Errorf("decode /models response: %w", err)
+		}
+		parsed.Models = bare
 	}
 	seen := make(map[string]bool)
 	models := make([]string, 0, len(parsed.Data)+len(parsed.Models))

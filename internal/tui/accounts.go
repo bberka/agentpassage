@@ -56,9 +56,8 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	selected := accts[a.acctCursor]
 
 	switch msg.String() {
-	case "M", "enter": // open interactive Model Picker (load all, enable/disable, search, add)
-		a.openAccountModelsModal(selected)
-		return a, nil
+	case "M", "enter": // open interactive Model Picker (auto-fetches live models for API-key accounts)
+		return a, a.openAccountModelsModal(selected)
 
 	case "d":
 		cfg := a.srv.Config()
@@ -155,17 +154,17 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.openLoginPrompt(selected)
 			return a, nil
 		}
-		return a, a.openEditModal("Update API Key", "Paste new API key for "+selected.Backend+"/"+selected.Name, "", func(val string) error {
+		return a, a.openEditModalCmd("Update API Key", "Paste new API key for "+selected.Backend+"/"+selected.Name, "", func(val string) (tea.Cmd, error) {
 			if val == "" {
-				return fmt.Errorf("API key cannot be empty")
+				return nil, fmt.Errorf("API key cannot be empty")
 			}
 			if err := a.srv.Secrets().Set(selected.ID, val); err != nil {
-				return err
+				return nil, err
 			}
 			a.srv.Pool().ClearHealth(selected.ID)
 			_ = a.srv.ReloadConfig(a.srv.Config())
-			a.setStatus("Updated API key for "+selected.Name, false)
-			return nil
+			a.setStatus("Updated API key for "+selected.Name+" — fetching models...", false)
+			return a.testAccountCmd(selected), nil
 		})
 
 	case "t":

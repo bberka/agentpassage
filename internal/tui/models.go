@@ -163,7 +163,7 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return a, nil
-	case "f":
+	case "f", "F":
 		a.setStatus("Fetching all models across enabled accounts...", false)
 		return a, a.fetchAllAccountsModelsCmd()
 	}

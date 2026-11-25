@@ -546,13 +546,13 @@ func (a *App) enterAddStep4Models() (tea.Model, tea.Cmd) {
 	if acct.Kind == config.KindAPIKey {
 		a.modelPicker.loading = true
 		a.setStatus("Loading all models from "+acct.BaseURL+"...", false)
-		return a, a.fetchModelsCmd("", acct, apiKey)
+		return a, a.fetchModelsCmd(acct.ID, acct, apiKey)
 	}
 	if acct.Kind == config.KindCLI {
 		if desc, ok := a.srv.Registry().GetCLI(acct.Backend); ok && len(desc.ModelsCmd) > 0 {
 			a.modelPicker.loading = true
 			a.setStatus("Loading live models from "+desc.Binary+"...", false)
-			return a, a.fetchModelsCmd("", acct, "")
+			return a, a.fetchModelsCmd(acct.ID, acct, "")
 		}
 	}
 	return a, nil
@@ -789,7 +789,7 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			for _, id := range items {
 				p.enabled[id] = false
 			}
-		case "f":
+		case "f", "F":
 			acct, apiKey, err := a.buildDraftAccount()
 			if err != nil {
 				a.setStatus(err.Error(), true)
@@ -797,7 +797,7 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			p.loading = true
 			p.fetchErr = ""
-			return a, a.fetchModelsCmd("", acct, apiKey)
+			return a, a.fetchModelsCmd(acct.ID, acct, apiKey)
 		case "enter", "ctrl+s":
 			return a.submitAddAccount()
 		}

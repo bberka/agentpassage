@@ -177,13 +177,27 @@ func (a *App) fetchAllAccountsModelsCmd() tea.Cmd {
 	}
 }
 
-func (a *App) openAccountModelsModal(acct config.AccountConfig) {
-	catalog := acct.AvailableModels
+func (a *App) openAccountModelsModal(acct config.AccountConfig) tea.Cmd {
+	catalog := append([]string(nil), acct.AvailableModels...)
+	catalog = append(catalog, acct.DisabledModels...)
 	if len(catalog) == 0 {
 		catalog = acct.Models
 	}
 	a.modelPicker = newModelPicker(acct.ID, "Models — "+acct.Backend+"/"+acct.Name, catalog, acct.Models)
 	a.modal = modalAccountModels
+	if acct.Kind == config.KindAPIKey {
+		a.modelPicker.loading = true
+		a.setStatus("Fetching models from "+acct.Backend+"/"+acct.Name+"...", false)
+		return a.fetchModelsCmd(acct.ID, acct, "")
+	}
+	if acct.Kind == config.KindCLI {
+		if desc, ok := a.srv.Registry().GetCLI(acct.Backend); ok && len(desc.ModelsCmd) > 0 {
+			a.modelPicker.loading = true
+			a.setStatus("Fetching live models from "+desc.Binary+"...", false)
+			return a.fetchModelsCmd(acct.ID, acct, "")
+		}
+	}
+	return nil
 }
 
 func (a *App) updateAccountModelsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -301,7 +315,7 @@ func (a *App) updateAccountModelsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.models = kept
 			a.setStatus("Removed model "+target, false)
 		}
-	case "f":
+	case "f", "F":
 		cfg := a.srv.Config()
 		if acct := cfg.FindAccount(p.accountID); acct != nil {
 			p.loading = true
@@ -351,7 +365,11 @@ func (a *App) renderModelPickerBody(p *modelPickerState, innerW, maxRows int) []
 	items := p.filtered()
 	if len(items) == 0 {
 		lines = append(lines, "")
-		lines = append(lines, a.styles.Muted.Render("  No models listed yet. Press 'f' to fetch from provider or '+' to add one manually."))
+		if p.loading {
+			lines = append(lines, a.styles.Muted.Render("  Fetching models from provider..."))
+		} else {
+			lines = append(lines, a.styles.Muted.Render("  No models listed yet. Press 'f' to fetch from provider or '+' to add one manually."))
+		}
 		for i := 2; i < maxRows; i++ {
 			lines = append(lines, "")
 		}
@@ -364,19 +382,32 @@ func (a *App) renderModelPickerBody(p *modelPickerState, innerW, maxRows int) []
 	}
 	end := min(start+maxRows, len(items))
 
+	stateW := 8
+	idW := max(innerW-2-3-2-2-stateW, 18)
+
 	for i := start; i < end; i++ {
 		id := items[i]
-		mark := a.styles.Muted.Render("[ ]")
-		state := a.styles.Muted.Render("disabled")
+		markPlain := "[ ]"
+		statePlain := "disabled"
+		markStyle := a.styles.Muted
+		stateStyle := a.styles.Muted
 		if p.enabled[id] {
-			mark = a.styles.StateReady.Render("[x]")
-			state = a.styles.StateReady.Render("enabled")
+			markPlain = "[x]"
+			statePlain = "enabled"
+			markStyle = a.styles.StateReady
+			stateStyle = a.styles.StateReady
 		}
-		row := fmt.Sprintf("%s  %-44s %s", mark, truncate(id, max(innerW-20, 20)), state)
+		idStr := truncate(id, idW)
 		if i == p.cursor {
-			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+			plain := fmt.Sprintf("> %s  %-*s  %s", markPlain, idW, idStr, statePlain)
+			lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
 		} else {
-			lines = append(lines, "  "+row)
+			row := a.styles.JoinRow(2,
+				a.surfaceText("  ")+markStyle.Render(markPlain),
+				a.styles.PadCell(a.surfaceText(idStr), idW),
+				stateStyle.Render(statePlain),
+			)
+			lines = append(lines, row)
 		}
 	}
 	for i := end - start; i < maxRows; i++ {
