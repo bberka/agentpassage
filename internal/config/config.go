@@ -16,6 +16,7 @@ import (
 
 const (
 	KindACP    = "acp"
+	KindCLI    = "cli"
 	KindAPIKey = "api_key"
 
 	AuthBearer    = "bearer"
@@ -79,9 +80,10 @@ type AccountConfig struct {
 	DisabledReason string            `toml:"disabled_reason,omitempty"`
 	BaseURL        string            `toml:"base_url,omitempty"`
 	AuthStyle      string            `toml:"auth_style,omitempty"` // bearer, anthropic, none
-	DefaultCwd     string            `toml:"default_cwd,omitempty"`
-	PermissionMode string            `toml:"permission_mode,omitempty"` // deny, auto-approve, ask
-	CustomCommand  []string          `toml:"custom_command,omitempty"`
+	DefaultCwd      string            `toml:"default_cwd,omitempty"`
+	PermissionMode  string            `toml:"permission_mode,omitempty"` // deny, auto-approve, ask
+	UseHostProfile  bool              `toml:"use_host_profile,omitempty"`
+	CustomCommand   []string          `toml:"custom_command,omitempty"`
 	CustomLogin    []string          `toml:"custom_login,omitempty"`
 	CustomEnv       map[string]string `toml:"custom_env,omitempty"`
 	Models          []string          `toml:"models,omitempty"`           // enabled models served by this account
@@ -377,7 +379,7 @@ func (c *Config) Normalize() {
 		if len(a.AvailableModels) == 0 && len(a.Models) > 0 {
 			a.AvailableModels = append([]string(nil), a.Models...)
 		}
-		if a.Kind == KindACP {
+		if a.Kind == KindACP || a.Kind == KindCLI {
 			if a.MaxConcurrency <= 0 {
 				a.MaxConcurrency = 1
 			}

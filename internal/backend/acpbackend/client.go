@@ -258,20 +258,36 @@ func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfi
 		return nil, fmt.Errorf("unknown ACP backend %q", acct.Backend)
 	}
 
-	profileDir, err := config.EnsureProfileDir(m.dataDir, acct.Backend, acct.Name)
-	if err != nil {
-		return nil, err
-	}
-	// Ensure standard subdirs used by profile flags/env exist.
-	_ = os.MkdirAll(filepath.Join(profileDir, ".gemini"), 0o700)
-	_ = os.MkdirAll(filepath.Join(profileDir, ".config"), 0o700)
+	var profileDir string
+	var argv []string
+	var extraEnv []string
+	if acct.UseHostProfile {
+		if len(acct.CustomCommand) > 0 {
+			argv = append([]string(nil), acct.CustomCommand...)
+		} else {
+			argv = append([]string(nil), desc.Command...)
+		}
+		for k, v := range acct.CustomEnv {
+			extraEnv = append(extraEnv, k+"="+v)
+		}
+	} else {
+		var err error
+		profileDir, err = config.EnsureProfileDir(m.dataDir, acct.Backend, acct.Name)
+		if err != nil {
+			return nil, err
+		}
+		// Ensure standard subdirs used by profile flags/env exist.
+		_ = os.MkdirAll(filepath.Join(profileDir, ".gemini"), 0o700)
+		_ = os.MkdirAll(filepath.Join(profileDir, ".config"), 0o700)
 
-	argv := desc.ExpandCommand(profileDir, acct.CustomCommand)
+		argv = desc.ExpandCommand(profileDir, acct.CustomCommand)
+		extraEnv = desc.ExpandEnv(profileDir, acct.CustomEnv)
+	}
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("ACP backend %q has no command configured", acct.Backend)
 	}
 
-	w, err := startWorker(ctx, acct, argv, desc.ExpandEnv(profileDir, acct.CustomEnv), m)
+	w, err := startWorker(ctx, acct, argv, extraEnv, m)
 	if err != nil {
 		return nil, err
 	}

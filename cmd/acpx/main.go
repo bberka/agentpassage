@@ -228,14 +228,15 @@ func cmdACPBridge(_ []string) error {
 
 func cmdAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	kind := fs.String("kind", "", "account kind: api_key or acp")
-	backendID := fs.String("backend", "", "provider preset (e.g. deepseek, openai) or ACP tool (e.g. agy, codex, claude, cursor, opencode)")
+	kind := fs.String("kind", "", "account kind: api_key, acp, or cli (direct CLI proxy)")
+	backendID := fs.String("backend", "", "provider preset, ACP tool, or direct CLI (claude, codex, agy, opencode, gemini, grok, cursor)")
 	name := fs.String("name", "default", "account name")
 	apiKey := fs.String("key", "", "API key (for api_key accounts)")
 	baseURL := fs.String("base-url", "", "base URL override (for api_key accounts)")
-	cwd := fs.String("cwd", "", "default working directory (for acp accounts)")
-	perm := fs.String("permission", config.PermDeny, "ACP permission mode: deny, auto-approve, ask")
-	customCmd := fs.String("command", "", "custom ACP command (space-separated)")
+	cwd := fs.String("cwd", "", "default working directory (for acp/cli accounts)")
+	perm := fs.String("permission", config.PermDeny, "ACP/CLI permission mode: deny, auto-approve, ask")
+	hostProfile := fs.Bool("host-profile", false, "reuse existing host CLI login (~/.claude, ~/.codex, ~/.gemini) instead of isolated profile")
+	customCmd := fs.String("command", "", "custom ACP/CLI command (space-separated)")
 	modelsCSV := fs.String("models", "", "comma-separated model IDs")
 	expose := fs.String("expose", config.ExposePool, "model exposure mode: pool, prefix, or both")
 	prefix := fs.String("prefix", "", "model prefix when expose=prefix|both (e.g. a-, b-)")
@@ -266,15 +267,17 @@ func cmdAdd(args []string) error {
 	}
 
 	if *kind == "" {
-		*kind = prompt("Account kind (api_key / acp)", config.KindAPIKey)
+		*kind = prompt("Account kind (api_key / acp / cli)", config.KindAPIKey)
 	}
-	if *kind != config.KindAPIKey && *kind != config.KindACP {
-		return fmt.Errorf("invalid kind %q (expected api_key or acp)", *kind)
+	if *kind != config.KindAPIKey && *kind != config.KindACP && *kind != config.KindCLI {
+		return fmt.Errorf("invalid kind %q (expected api_key, acp, or cli)", *kind)
 	}
 
 	if *backendID == "" {
 		if *kind == config.KindAPIKey {
 			*backendID = prompt("Provider preset (deepseek, openrouter, openai, anthropic, google, groq, ollama, custom)", "deepseek")
+		} else if *kind == config.KindCLI {
+			*backendID = prompt("Direct CLI (claude, codex, agy, opencode, gemini, grok, cursor, custom-cli)", "claude")
 		} else {
 			*backendID = prompt("ACP tool (agy, codex, claude, cursor, grok, opencode, muse-code, pi, cline, gemini...)", "agy")
 		}
@@ -338,13 +341,47 @@ func cmdAdd(args []string) error {
 			Models:         models,
 			MaxConcurrency: 8,
 		}
+	} else if *kind == config.KindCLI {
+		desc, ok := reg.GetCLI(*backendID)
+		if !ok {
+			return fmt.Errorf("unknown direct CLI backend %q (available: agy, claude, codex, opencode, gemini, grok, cursor, custom-cli)", *backendID)
+		}
+		if !*hostProfile {
+			if _, err := config.EnsureProfileDir(dataDir, desc.ID, *name); err != nil {
+				return err
+			}
+		}
+		if len(models) == 0 {
+			models = append([]string(nil), desc.DefaultModels...)
+		}
+		var cmdSlice []string
+		if *customCmd != "" {
+			cmdSlice = strings.Fields(*customCmd)
+		}
+		acct = config.AccountConfig{
+			ID:             id,
+			Name:           *name,
+			Kind:           config.KindCLI,
+			Backend:        desc.ID,
+			Enabled:        true,
+			DefaultCwd:     *cwd,
+			PermissionMode: *perm,
+			UseHostProfile: *hostProfile,
+			CustomCommand:  cmdSlice,
+			ExposeMode:     exposeMode,
+			ModelPrefix:    *prefix,
+			Models:         models,
+			MaxConcurrency: 1,
+		}
 	} else {
 		desc, ok := reg.GetACP(*backendID)
 		if !ok {
 			return fmt.Errorf("unknown ACP backend %q (run `acpx install` to list all 45+ tools)", *backendID)
 		}
-		if _, err := config.EnsureProfileDir(dataDir, desc.ID, *name); err != nil {
-			return err
+		if !*hostProfile {
+			if _, err := config.EnsureProfileDir(dataDir, desc.ID, *name); err != nil {
+				return err
+			}
 		}
 		if len(models) == 0 {
 			models = append([]string(nil), desc.DefaultModels...)
@@ -361,6 +398,7 @@ func cmdAdd(args []string) error {
 			Enabled:        true,
 			DefaultCwd:     *cwd,
 			PermissionMode: *perm,
+			UseHostProfile: *hostProfile,
 			CustomCommand:  cmdSlice,
 			ExposeMode:     exposeMode,
 			ModelPrefix:    *prefix,

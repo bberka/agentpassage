@@ -228,16 +228,16 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		strategy = config.StrategySticky
 	}
 
-	// Enforce opt-in guard for round-robin and least-busy on subscription (ACP) accounts.
+	// Enforce opt-in guard for round-robin and least-busy on subscription (ACP / CLI) accounts.
 	if strategy == config.StrategyRoundRobin || strategy == config.StrategyLeastBusy {
-		hasACP := false
+		hasSub := false
 		for _, id := range req.CandidateIDs {
-			if a, ok := m.accounts[id]; ok && a.Kind == config.KindACP {
-				hasACP = true
+			if a, ok := m.accounts[id]; ok && (a.Kind == config.KindACP || a.Kind == config.KindCLI) {
+				hasSub = true
 				break
 			}
 		}
-		if hasACP && !req.SubscriptionWarningAcked {
+		if hasSub && !req.SubscriptionWarningAcked {
 			return nil, ErrStrategyOptInNeeded
 		}
 	}
@@ -409,7 +409,7 @@ func (m *Manager) RecordError(accountID string, err error, rule config.RoutingRu
 		}
 		st.cooldownUntil = now.Add(cooldown)
 		// Never retry a 429 on another subscription account unless explicitly allowed.
-		if a.Kind == config.KindACP {
+		if a.Kind == config.KindACP || a.Kind == config.KindCLI {
 			allowFailover = rule.AllowCrossAccountRetryOn429
 		} else {
 			allowFailover = rule.AllowCrossAccountRetryOn429 && rule.Strategy == config.StrategyFailover

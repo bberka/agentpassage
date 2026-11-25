@@ -228,9 +228,12 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 		}
 
 		var streamErr error
-		if acct.Kind == config.KindACP {
+		switch acct.Kind {
+		case config.KindACP:
 			streamErr = s.acpBE.Stream(r.Context(), acct, req, cb)
-		} else {
+		case config.KindCLI:
+			streamErr = s.cliBE.Stream(r.Context(), acct, req, cb)
+		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
 			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, req, cb)
 		}

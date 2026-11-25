@@ -152,6 +152,29 @@ func Run(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 					Status: StatusOK,
 					Detail: fmt.Sprintf("ACP (%s), profile %s, perm=%s", argv[0], pdir, a.PermissionMode),
 				})
+			} else if a.Kind == config.KindCLI {
+				desc, ok := reg.GetCLI(a.Backend)
+				if !ok {
+					checks = append(checks, Check{Name: name, Status: StatusFail, Detail: "unknown CLI backend"})
+					continue
+				}
+				bin := desc.Binary
+				if len(a.CustomCommand) > 0 {
+					bin = a.CustomCommand[0]
+				}
+				if _, err := exec.LookPath(bin); err != nil {
+					checks = append(checks, Check{Name: name, Status: StatusFail, Detail: fmt.Sprintf("binary %q not on PATH", bin)})
+					continue
+				}
+				profNote := "isolated"
+				if a.UseHostProfile {
+					profNote = "host-profile"
+				}
+				checks = append(checks, Check{
+					Name:   name,
+					Status: StatusOK,
+					Detail: fmt.Sprintf("Direct CLI (%s), %s, perm=%s", bin, profNote, a.PermissionMode),
+				})
 			} else {
 				if a.AuthStyle != config.AuthNone {
 					if key, err := sec.Get(a.ID); err != nil || key == "" {

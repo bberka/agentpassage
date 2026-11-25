@@ -150,8 +150,25 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return nil
 		})
 
+	case "H": // toggle UseHostProfile (isolated profile vs host ~/.claude / ~/.codex / ~/.gemini)
+		if selected.Kind == config.KindACP || selected.Kind == config.KindCLI {
+			cfg := a.srv.Config()
+			if acct := cfg.FindAccount(selected.ID); acct != nil {
+				acct.UseHostProfile = !acct.UseHostProfile
+				if acct.Kind == config.KindACP {
+					a.srv.ACP().StopAccount(acct.ID)
+				}
+				_ = a.srv.ReloadConfig(cfg)
+				mode := "isolated profile"
+				if acct.UseHostProfile {
+					mode = "host CLI login"
+				}
+				a.setStatus(fmt.Sprintf("%s switched to %s", acct.Name, mode), false)
+			}
+		}
+
 	case "p":
-		if selected.Kind == config.KindACP {
+		if selected.Kind == config.KindACP || selected.Kind == config.KindCLI {
 			cfg := a.srv.Config()
 			if acct := cfg.FindAccount(selected.ID); acct != nil {
 				switch acct.PermissionMode {
@@ -168,7 +185,7 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "l":
-		if selected.Kind == config.KindACP {
+		if selected.Kind == config.KindACP || selected.Kind == config.KindCLI {
 			a.openLoginPrompt(selected)
 			return a, nil
 		}
@@ -227,7 +244,7 @@ func (a *App) viewAccounts(bodyHeight int) string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts)))+"   "+
-		a.styles.Muted.Render("M/enter:models  m:pool/prefix  P:prefix  l:login  t:test  p:perm  d:toggle  r:rename  e:edit  x:del"))
+		a.styles.Muted.Render("M:models  m:pool/prefix  P:prefix  H:host/iso  l:login  t:test  p:perm  d:toggle  x:del"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(accts) == 0 {
@@ -255,8 +272,12 @@ func (a *App) viewAccounts(bodyHeight int) string {
 			expose = fmt.Sprintf("%s:%s", expose, acct.EffectivePrefix())
 		}
 		extra := acct.BaseURL
-		if acct.Kind == config.KindACP {
-			extra = fmt.Sprintf("perm=%s cap=%d", acct.PermissionMode, acct.MaxConcurrency)
+		if acct.Kind == config.KindACP || acct.Kind == config.KindCLI {
+			prof := "iso"
+			if acct.UseHostProfile {
+				prof = "host"
+			}
+			extra = fmt.Sprintf("perm=%s %s cap=%d", acct.PermissionMode, prof, acct.MaxConcurrency)
 		}
 		totalModels := max(len(acct.AvailableModels), len(acct.Models))
 		modelCol := fmt.Sprintf("%d/%d", len(acct.Models), totalModels)

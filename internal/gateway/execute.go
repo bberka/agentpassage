@@ -51,9 +51,12 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 		}
 
 		var streamErr error
-		if acct.Kind == config.KindACP {
+		switch acct.Kind {
+		case config.KindACP:
 			streamErr = s.acpBE.Stream(ctx, acct, req, wrapped)
-		} else {
+		case config.KindCLI:
+			streamErr = s.cliBE.Stream(ctx, acct, req, wrapped)
+		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
 			streamErr = s.httpBE.Stream(ctx, acct, apiKey, req, wrapped)
 		}

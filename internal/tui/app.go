@@ -869,6 +869,15 @@ func (a *App) testAccountCmd(acct config.AccountConfig) tea.Cmd {
 }
 
 func (a *App) loginAccountCmd(acct config.AccountConfig) tea.Cmd {
+	if acct.Kind == config.KindCLI {
+		cmd, _, err := a.srv.CLI().LoginCommand(acct)
+		if err != nil {
+			return func() tea.Msg { return loginDoneMsg{accountID: acct.ID, err: err} }
+		}
+		return tea.ExecProcess(cmd, func(err error) tea.Msg {
+			return loginDoneMsg{accountID: acct.ID, err: err}
+		})
+	}
 	cmd, _, err := a.srv.ACP().LoginCommand(acct)
 	if err != nil {
 		return func() tea.Msg { return loginDoneMsg{accountID: acct.ID, err: err} }

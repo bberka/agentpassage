@@ -368,6 +368,14 @@ func (a *App) initAddInputs() {
 		a.addInputs[1].EchoMode = textinput.EchoPassword
 		a.addInputs[2].Placeholder = "Base URL"
 		a.addInputs[2].SetValue(preset.BaseURL)
+	} else if a.addKind == config.KindCLI {
+		a.addInputs[0].Placeholder = "account name (e.g. host, work, personal)"
+		a.addInputs[0].SetValue("default")
+		a.addInputs[1].Placeholder = "Custom command (optional; e.g. claude -p {prompt})"
+		if a.addBackend == "custom-cli" {
+			a.addInputs[1].Placeholder = "CLI command (supports {prompt} {model} {session})"
+		}
+		a.addInputs[2].Placeholder = "Model prefix (optional, e.g. a- -> a-sonnet)"
 	} else {
 		a.addInputs[0].Placeholder = "account name (e.g. a, b, work, personal)"
 		a.addInputs[0].SetValue("default")
@@ -419,15 +427,37 @@ func (a *App) buildDraftAccount() (config.AccountConfig, string, error) {
 	if raw := strings.TrimSpace(a.addInputs[1].Value()); raw != "" {
 		customCmd = strings.Fields(raw)
 	}
-	if a.addBackend == "custom-acp" && len(customCmd) == 0 {
-		return config.AccountConfig{}, "", fmt.Errorf("custom ACP command is required")
-	}
-	desc, _ := a.srv.Registry().GetACP(a.addBackend)
 	prefix := strings.TrimSpace(a.addInputs[2].Value())
 	expose := config.ExposePool
 	if prefix != "" {
 		expose = config.ExposePrefix
 	}
+
+	if a.addKind == config.KindCLI {
+		if a.addBackend == "custom-cli" && len(customCmd) == 0 {
+			return config.AccountConfig{}, "", fmt.Errorf("custom CLI command is required")
+		}
+		desc, _ := a.srv.Registry().GetCLI(a.addBackend)
+		return config.AccountConfig{
+			ID:             id,
+			Name:           name,
+			Kind:           config.KindCLI,
+			Backend:        a.addBackend,
+			Enabled:        true,
+			PermissionMode: config.PermDeny,
+			UseHostProfile: true, // Direct CLI proxy reuses existing host CLI sign-in by default; press 'H' for isolated profile!
+			CustomCommand:  customCmd,
+			ExposeMode:     expose,
+			ModelPrefix:    prefix,
+			Models:         append([]string(nil), desc.DefaultModels...),
+			MaxConcurrency: 1,
+		}, "", nil
+	}
+
+	if a.addBackend == "custom-acp" && len(customCmd) == 0 {
+		return config.AccountConfig{}, "", fmt.Errorf("custom ACP command is required")
+	}
+	desc, _ := a.srv.Registry().GetACP(a.addBackend)
 	return config.AccountConfig{
 		ID:             id,
 		Name:           name,
@@ -451,11 +481,18 @@ func (a *App) enterAddStep4Models() (tea.Model, tea.Cmd) {
 	}
 	a.modelPicker = newModelPicker("", "Select Models — "+acct.Backend+"/"+acct.Name, acct.Models, acct.Models)
 	a.addStep = 3
-	// For API-key accounts, immediately load ALL available models from /v1/models!
+	// For API-key accounts (or Direct CLI accounts with a models command), immediately load models!
 	if acct.Kind == config.KindAPIKey {
 		a.modelPicker.loading = true
 		a.setStatus("Loading all models from "+acct.BaseURL+"...", false)
 		return a, a.fetchModelsCmd("", acct, apiKey)
+	}
+	if acct.Kind == config.KindCLI {
+		if desc, ok := a.srv.Registry().GetCLI(acct.Backend); ok && len(desc.ModelsCmd) > 0 {
+			a.modelPicker.loading = true
+			a.setStatus("Loading live models from "+desc.Binary+"...", false)
+			return a, a.fetchModelsCmd("", acct, "")
+		}
 	}
 	return a, nil
 }
@@ -472,19 +509,31 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch a.addStep {
 	case 0:
-		switch msg.String() {
-		case "up", "k", "down", "j", "tab":
-			if a.addKind == config.KindAPIKey {
-				a.addKind = config.KindACP
-			} else {
-				a.addKind = config.KindAPIKey
+		kinds := []string{config.KindAPIKey, config.KindACP, config.KindCLI}
+		idx := 0
+		for i, k := range kinds {
+			if k == a.addKind {
+				idx = i
+				break
 			}
+		}
+		switch msg.String() {
+		case "up", "k":
+			idx = (idx + len(kinds) - 1) % len(kinds)
+			a.addKind = kinds[idx]
+		case "down", "j", "tab":
+			idx = (idx + 1) % len(kinds)
+			a.addKind = kinds[idx]
 		case "1":
 			a.addKind = config.KindAPIKey
 			a.addStep = 1
 			a.addListCur = 0
 		case "2":
 			a.addKind = config.KindACP
+			a.addStep = 1
+			a.addListCur = 0
+		case "3":
+			a.addKind = config.KindCLI
 			a.addStep = 1
 			a.addListCur = 0
 		case "enter":
@@ -510,6 +559,25 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case "enter":
 				if a.addListCur >= 0 && a.addListCur < len(presets) {
 					a.addBackend = presets[a.addListCur].ID
+					a.initAddInputs()
+					a.addStep = 2
+					return a, textinput.Blink
+				}
+			}
+		} else if a.addKind == config.KindCLI {
+			clis := a.srv.Registry().ListCLI()
+			switch msg.String() {
+			case "up", "k":
+				if a.addListCur > 0 {
+					a.addListCur--
+				}
+			case "down", "j":
+				if a.addListCur < len(clis)-1 {
+					a.addListCur++
+				}
+			case "enter":
+				if a.addListCur >= 0 && a.addListCur < len(clis) {
+					a.addBackend = clis[a.addListCur].ID
 					a.initAddInputs()
 					a.addStep = 2
 					return a, textinput.Blink
@@ -707,9 +775,11 @@ func (a *App) submitAddAccount() (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
-	if _, err := config.EnsureProfileDir(a.srv.DataDir(), acct.Backend, acct.Name); err != nil {
-		a.setStatus("Failed to create profile dir: "+err.Error(), true)
-		return a, nil
+	if !acct.UseHostProfile {
+		if _, err := config.EnsureProfileDir(a.srv.DataDir(), acct.Backend, acct.Name); err != nil {
+			a.setStatus("Failed to create profile dir: "+err.Error(), true)
+			return a, nil
+		}
 	}
 	if len(acct.Models) == 0 && len(acct.AvailableModels) == 0 {
 		acct.Models = []string{"default"}
@@ -719,11 +789,19 @@ func (a *App) submitAddAccount() (tea.Model, tea.Cmd) {
 	cfg.UI.OnboardingComplete = true
 	_ = a.srv.ReloadConfig(cfg)
 	a.modelPicker = nil
-	a.setStatus(fmt.Sprintf("Added ACP account %s/%s (%d models)", acct.Backend, acct.Name, len(acct.Models)), false)
 
-	if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && len(desc.Login) > 0 {
-		a.openLoginPrompt(acct)
+	if acct.Kind == config.KindCLI {
+		a.modal = modalNone
+		a.setStatus(fmt.Sprintf("Added Direct CLI proxy %s/%s (%d models, host login=%v)", acct.Backend, acct.Name, len(acct.Models), acct.UseHostProfile), false)
 		return a, nil
+	}
+
+	a.setStatus(fmt.Sprintf("Added ACP account %s/%s (%d models)", acct.Backend, acct.Name, len(acct.Models)), false)
+	if !acct.UseHostProfile {
+		if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && len(desc.Login) > 0 {
+			a.openLoginPrompt(acct)
+			return a, nil
+		}
 	}
 	a.modal = modalNone
 	return a, nil
@@ -754,14 +832,20 @@ func (a *App) viewAddAccountModal() string {
 
 	switch a.addStep {
 	case 0:
-		opt1 := "1. API Key Provider   DeepSeek, OpenRouter, OpenAI, Anthropic, Ollama, Custom"
-		opt2 := "2. ACP Agent (45+)    Antigravity, Codex, Claude, Cursor, Grok, OpenCode, Muse, Pi, Cline..."
-		if a.addKind == config.KindAPIKey {
-			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+opt1))
-			lines = append(lines, "  "+opt2)
-		} else {
-			lines = append(lines, "  "+opt1)
-			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+opt2))
+		opts := []struct {
+			kind string
+			text string
+		}{
+			{config.KindAPIKey, "1. API Key Provider   DeepSeek, OpenRouter, OpenAI, Anthropic, Ollama, Custom"},
+			{config.KindACP, "2. ACP Agent (45+)    Persistent JSON-RPC: agy, Codex, Claude, Cursor, OpenCode, Pi..."},
+			{config.KindCLI, "3. Direct CLI Proxy   No adapter needed: claude -p, codex exec, agy --print, opencode run"},
+		}
+		for _, o := range opts {
+			if a.addKind == o.kind {
+				lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+o.text))
+			} else {
+				lines = append(lines, "  "+o.text)
+			}
 		}
 		lines = append(lines, "")
 		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
@@ -778,6 +862,31 @@ func (a *App) viewAddAccountModal() string {
 			for i := start; i < min(start+maxRows, len(presets)); i++ {
 				p := presets[i]
 				row := fmt.Sprintf("%-24s %s", p.Name, a.styles.Muted.Render(truncate(p.BaseURL, max(innerW-28, 12))))
+				if i == a.addListCur {
+					lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+				} else {
+					lines = append(lines, "  "+row)
+				}
+			}
+			lines = append(lines, "")
+			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+			lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("esc", "back"))
+		} else if a.addKind == config.KindCLI {
+			clis := a.srv.Registry().ListCLI()
+			for i, c := range clis {
+				badge := a.styles.Muted.Render("custom")
+				if c.Binary != "" {
+					if _, found := c.FoundOnPath(); found {
+						badge = a.styles.StateReady.Render("● found")
+					} else {
+						badge = a.styles.StateWarn.Render("○ missing")
+					}
+				}
+				row := fmt.Sprintf("%-25s %-11s %s",
+					truncate(c.Name, 25),
+					badge,
+					a.styles.Muted.Render(truncate(c.Description, max(innerW-40, 10))),
+				)
 				if i == a.addListCur {
 					lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 				} else {
@@ -823,7 +932,7 @@ func (a *App) viewAddAccountModal() string {
 
 	case 2:
 		labels := []string{"Name", "API Key", "Base URL"}
-		if a.addKind == config.KindACP {
+		if a.addKind == config.KindACP || a.addKind == config.KindCLI {
 			labels = []string{"Name", "Custom Cmd", "Model Prefix"}
 		}
 		for i, lbl := range labels {

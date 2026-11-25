@@ -16,6 +16,7 @@ import (
 
 	"github.com/bberka/acpx/internal/backend"
 	"github.com/bberka/acpx/internal/backend/acpbackend"
+	"github.com/bberka/acpx/internal/backend/clibackend"
 	"github.com/bberka/acpx/internal/backend/httpbackend"
 	"github.com/bberka/acpx/internal/config"
 	"github.com/bberka/acpx/internal/descriptors"
@@ -38,6 +39,7 @@ type Server struct {
 	pool     *pool.Manager
 	httpBE   *httpbackend.Client
 	acpBE    *acpbackend.Manager
+	cliBE    *clibackend.Manager
 	logs     *logbuf.Buffer
 
 	srv      *http.Server
@@ -50,6 +52,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 	rtr := router.New(cfg)
 	pm := pool.NewManager(cfg.Accounts)
 	acpMgr := acpbackend.NewManager(dataDir, reg, logs, cfg.ACP.ToolActivity)
+	cliMgr := clibackend.NewManager(dataDir, reg, logs)
 	s := &Server{
 		dataDir:  dataDir,
 		cfg:      cfg,
@@ -59,6 +62,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		pool:     pm,
 		httpBE:   httpbackend.New(),
 		acpBE:    acpMgr,
+		cliBE:    cliMgr,
 		logs:     logs,
 	}
 	if logs != nil {
@@ -93,6 +97,7 @@ func (s *Server) Router() *router.Router      { return s.router }
 func (s *Server) Secrets() *secrets.Store     { return s.secrets }
 func (s *Server) Registry() *descriptors.Registry { return s.registry }
 func (s *Server) ACP() *acpbackend.Manager    { return s.acpBE }
+func (s *Server) CLI() *clibackend.Manager    { return s.cliBE }
 func (s *Server) HTTPBackend() *httpbackend.Client { return s.httpBE }
 func (s *Server) Logs() *logbuf.Buffer        { return s.logs }
 func (s *Server) DataDir() string             { return s.dataDir }
@@ -194,25 +199,32 @@ func (s *Server) Stop(ctx context.Context) error {
 	return nil
 }
 
-// TestAccount runs a live connectivity test against an API-key or ACP account and returns discovered models.
+// TestAccount runs a live connectivity test against an API-key, ACP, or direct CLI account and returns discovered models.
 func (s *Server) TestAccount(ctx context.Context, acct config.AccountConfig) ([]string, error) {
-	if acct.Kind == config.KindACP {
+	switch acct.Kind {
+	case config.KindACP:
 		return s.acpBE.TestAccount(ctx, acct)
+	case config.KindCLI:
+		return s.cliBE.TestAccount(ctx, acct)
+	default:
+		key, _ := s.secrets.Get(acct.ID)
+		return s.httpBE.TestAccount(ctx, acct, key)
 	}
-	key, _ := s.secrets.Get(acct.ID)
-	return s.httpBE.TestAccount(ctx, acct, key)
 }
 
-// FetchModelsWithKey fetches all available models from an API-key provider using an explicit key
-// (used during Add Account before the account is saved) or from an ACP backend.
+// FetchModelsWithKey fetches all available models from an API-key, ACP, or direct CLI backend.
 func (s *Server) FetchModelsWithKey(ctx context.Context, acct config.AccountConfig, apiKey string) ([]string, error) {
-	if acct.Kind == config.KindACP {
+	switch acct.Kind {
+	case config.KindACP:
 		return s.acpBE.TestAccount(ctx, acct)
+	case config.KindCLI:
+		return s.cliBE.TestAccount(ctx, acct)
+	default:
+		if apiKey == "" {
+			apiKey, _ = s.secrets.Get(acct.ID)
+		}
+		return s.httpBE.TestAccount(ctx, acct, apiKey)
 	}
-	if apiKey == "" {
-		apiKey, _ = s.secrets.Get(acct.ID)
-	}
-	return s.httpBE.TestAccount(ctx, acct, apiKey)
 }
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -458,9 +470,12 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 
 		var resp *backend.ChatResponse
 		var callErr error
-		if acct.Kind == config.KindACP {
+		switch acct.Kind {
+		case config.KindACP:
 			resp, callErr = s.acpBE.Complete(ctx, acct, req)
-		} else {
+		case config.KindCLI:
+			resp, callErr = s.cliBE.Complete(ctx, acct, req)
+		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
 			resp, callErr = s.httpBE.Complete(ctx, acct, apiKey, req)
 		}
@@ -586,9 +601,12 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 		}
 
 		var streamErr error
-		if acct.Kind == config.KindACP {
+		switch acct.Kind {
+		case config.KindACP:
 			streamErr = s.acpBE.Stream(r.Context(), acct, req, cb)
-		} else {
+		case config.KindCLI:
+			streamErr = s.cliBE.Stream(r.Context(), acct, req, cb)
+		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
 			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, req, cb)
 		}
