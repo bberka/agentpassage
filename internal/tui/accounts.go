@@ -235,7 +235,7 @@ func (a *App) performDeleteAccount(target config.AccountConfig) {
 func (a *App) viewAccounts(bodyHeight int) string {
 	accts := a.filteredAccounts()
 	snaps := make(map[string]pool.AccountSnapshot)
-	for _, s := range a.srv.Pool().Snapshots() {
+	for _, s := range a.srv.LiveSnapshots() {
 		snaps[s.ID] = s
 	}
 

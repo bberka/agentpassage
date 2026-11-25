@@ -9,9 +9,10 @@ import (
 
 	"github.com/bberka/acpx/internal/config"
 	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/acpx/internal/service"
 )
 
-const settingsCount = 6
+const settingsCount = 7
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -82,6 +83,36 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.setStatus("ACP tool activity streaming: "+cfg.ACP.ToolActivity, false)
 		case 5:
 			a.copyToClipboard("data directory", a.srv.DataDir())
+		case 6: // Install/start or restart OS background service
+			st := service.Status()
+			if !st.Installed {
+				if unit, err := service.Install(a.srv.DataDir()); err != nil {
+					a.setStatus("Service install failed: "+err.Error(), true)
+				} else {
+					a.setStatus("Installed & started background service: "+unit, false)
+				}
+			} else if !st.Running {
+				if err := service.Start(); err != nil {
+					a.setStatus("Service start failed: "+err.Error(), true)
+				} else {
+					a.setStatus("Started background service", false)
+				}
+			} else {
+				if err := service.Restart(); err != nil {
+					a.setStatus("Service restart failed: "+err.Error(), true)
+				} else {
+					a.setStatus("Restarted background service", false)
+				}
+			}
+		}
+	case "S":
+		// Uninstall background service when on Settings
+		if a.settingCursor == 6 {
+			if err := service.Uninstall(); err != nil {
+				a.setStatus("Service uninstall failed: "+err.Error(), true)
+			} else {
+				a.setStatus("Stopped & uninstalled background service", false)
+			}
 		}
 	}
 	return a, nil
@@ -97,6 +128,9 @@ func (a *App) viewSettings(bodyHeight int) string {
 		keyDisp = cfg.Server.LocalKey
 	}
 
+	svc := service.Status()
+	svcVal := fmt.Sprintf("%s: %s   (enter: install/start/restart, S: uninstall)", svc.Manager, svc.Detail)
+
 	rows := []struct {
 		label string
 		value string
@@ -107,6 +141,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Theme", cfg.UI.Theme + "   (enter to cycle: auto / dark / light / transparent / ansi16)"},
 		{"ACP Tool Activity", cfg.ACP.ToolActivity + "   (enter to toggle: drop / text)"},
 		{"Data Directory", a.srv.DataDir() + "   (secrets: " + a.srv.Secrets().Backend() + ")"},
+		{"Background Service", svcVal},
 	}
 
 	var lines []string

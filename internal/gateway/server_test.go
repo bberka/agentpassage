@@ -236,3 +236,68 @@ func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {
 	}
 	res.Body.Close()
 }
+
+func TestAttachToRunningDaemonAndHotReload(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.Bind = "127.0.0.1"
+	cfg.Server.Port = 18789
+	cfg.Server.LocalKey = "acpx_attach_test_key_1234"
+	if err := config.Save(dir, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	sec := secrets.NewFileOnly(dir)
+	reg, _ := descriptors.LoadRegistry(dir)
+	logs := logbuf.New(50, dir, sec.KnownSecrets)
+	defer logs.Close()
+	logs.Info("system", "daemon started")
+
+	daemon := gateway.New(dir, cfg, sec, reg, logs)
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("daemon Start failed: %v", err)
+	}
+	defer daemon.Stop(t.Context())
+
+	// Extract bound port and attach a second Server instance (simulating opening `acpx` TUI while service runs)
+	var boundPort int
+	_, portStr, okCut := strings.Cut(daemon.Addr(), ":")
+	if !okCut {
+		t.Fatalf("unexpected addr %q", daemon.Addr())
+	}
+	_ = json.Unmarshal([]byte(portStr), &boundPort)
+
+	cfg2, _, err := config.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg2.Server.Port = boundPort
+
+	client := gateway.New(dir, cfg2, sec, reg, nil)
+	ok, err := client.AttachIfRunning()
+	if err != nil || !ok || !client.Attached() {
+		t.Fatalf("AttachIfRunning failed: ok=%v err=%v", ok, err)
+	}
+	if len(client.LiveLogEntries()) == 0 {
+		t.Fatalf("expected attached client to fetch remote logs from /admin/logs")
+	}
+
+	// Add an account via the attached client -> saves config.toml AND triggers POST /admin/reload on the daemon!
+	cfg2.Accounts = append(cfg2.Accounts, config.AccountConfig{
+		ID:      "deepseek-hot",
+		Name:    "hot",
+		Kind:    config.KindAPIKey,
+		Backend: "deepseek",
+		Enabled: true,
+		BaseURL: "https://api.deepseek.com/v1",
+		Models:  []string{"deepseek-chat"},
+	})
+	if err := client.ReloadConfig(cfg2); err != nil {
+		t.Fatalf("attached ReloadConfig failed: %v", err)
+	}
+
+	// Daemon must now know about the newly added account immediately without restart!
+	if daemon.Config().FindAccount("deepseek-hot") == nil {
+		t.Fatalf("expected daemon to hot-reload new account via /admin/reload")
+	}
+}

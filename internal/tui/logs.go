@@ -10,7 +10,7 @@ import (
 )
 
 func (a *App) filteredLogs() []logbuf.Entry {
-	all := a.srv.Logs().Entries()
+	all := a.srv.LiveLogEntries()
 	q := strings.ToLower(a.filterText)
 	var out []logbuf.Entry
 	for _, e := range all {

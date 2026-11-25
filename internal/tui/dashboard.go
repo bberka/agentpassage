@@ -29,12 +29,16 @@ func (a *App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) viewDashboard(bodyHeight int) string {
 	cfg := a.srv.Config()
-	snaps := a.srv.Pool().Snapshots()
+	snaps := a.srv.LiveSnapshots()
 	models := a.srv.Router().ListModels(false)
 
 	status := a.styles.StateErr.Render("○ STOPPED")
 	if a.srv.Running() {
-		status = a.styles.StateReady.Render("● RUNNING")
+		if a.srv.Attached() {
+			status = a.styles.StateReady.Render("● ATTACHED TO SERVICE")
+		} else {
+			status = a.styles.StateReady.Render("● RUNNING")
+		}
 	}
 	keyDisp := secrets.Mask(cfg.Server.LocalKey)
 	if a.revealKey {
@@ -105,7 +109,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 	renderLogsCard := func(w, h int) string {
 		inner := w - 4
 		maxRows := max(h-3, 3)
-		entries := a.srv.Logs().Entries()
+		entries := a.srv.LiveLogEntries()
 		var lines []string
 		lines = append(lines, a.styles.Subtitle.Render("Live Activity")+"  "+a.styles.Muted.Render("5:full logs  C:connect CLIs"))
 		if len(entries) == 0 {

@@ -275,6 +275,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.spinTick++
+		if a.srv.Attached() && a.spinTick%10 == 0 {
+			return a, tea.Batch(tickCmd(), a.syncDaemonCmd())
+		}
 		return a, tickCmd()
 
 	case logEntryMsg:
@@ -587,7 +590,11 @@ func (a *App) renderTopBar() string {
 
 	right := a.styles.PillStopped.Render("○ stopped")
 	if a.srv.Running() {
-		right = a.styles.PillRunning.Render("● " + a.srv.Addr())
+		label := "● " + a.srv.Addr()
+		if a.srv.Attached() {
+			label += " (attached)"
+		}
+		right = a.styles.PillRunning.Render(label)
 	}
 
 	gap := max(a.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
@@ -597,7 +604,7 @@ func (a *App) renderTopBar() string {
 
 func (a *App) renderBanners() []string {
 	var out []string
-	for _, ban := range a.srv.Pool().Banners() {
+	for _, ban := range a.srv.LiveBanners() {
 		out = append(out, a.styles.BannerCrit.Width(a.width).Render(fmt.Sprintf("! %s: %s", ban.AccountName, ban.Message)))
 	}
 	if a.srv.Secrets().UsingFileFallback() {
@@ -891,5 +898,12 @@ func (a *App) syncRegistryCmd() tea.Cmd {
 	return func() tea.Msg {
 		count, err := descriptors.SyncRegistry(context.Background(), a.srv.DataDir())
 		return registrySyncMsg{count: count, err: err}
+	}
+}
+
+func (a *App) syncDaemonCmd() tea.Cmd {
+	return func() tea.Msg {
+		a.srv.SyncFromDaemon()
+		return nil
 	}
 }

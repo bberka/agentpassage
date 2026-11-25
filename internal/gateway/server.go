@@ -42,10 +42,14 @@ type Server struct {
 	cliBE    *clibackend.Manager
 	logs     *logbuf.Buffer
 
-	srv      *http.Server
-	listener net.Listener
-	running  bool
-	listenOn string
+	srv          *http.Server
+	listener     net.Listener
+	running      bool
+	attached     bool
+	listenOn     string
+	remoteSnaps  []pool.AccountSnapshot
+	remoteBans   []pool.HealthBanner
+	remoteLogs   []logbuf.Entry
 }
 
 func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptors.Registry, logs *logbuf.Buffer) *Server {
@@ -104,7 +108,10 @@ func (s *Server) DataDir() string             { return s.dataDir }
 
 func (s *Server) ReloadConfig(cfg *config.Config) error {
 	s.mu.Lock()
+	prevKey := s.cfg.Server.LocalKey
 	s.cfg = cfg
+	attached := s.attached
+	addr := s.listenOn
 	if s.logs != nil {
 		s.logs.RegisterSecret(cfg.Server.LocalKey)
 	}
@@ -113,7 +120,175 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	s.router.UpdateConfig(cfg)
 	s.pool.SyncAccounts(cfg.Accounts)
 	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)
-	return config.Save(s.dataDir, cfg)
+	if err := config.Save(s.dataDir, cfg); err != nil {
+		return err
+	}
+	// If attached to a running background daemon, ask it to hot-reload from disk!
+	if attached && addr != "" {
+		key := prevKey
+		if key == "" {
+			key = cfg.Server.LocalKey
+		}
+		_ = s.notifyRemoteReload(addr, key)
+	}
+	return nil
+}
+
+func (s *Server) notifyRemoteReload(addr, key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/admin/reload", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("remote reload HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// AttachIfRunning checks if an acpx daemon is already listening on the configured host:port.
+// If so, switches this Server into attached client mode instead of failing with address-in-use.
+func (s *Server) AttachIfRunning() (bool, error) {
+	s.mu.RLock()
+	addr := net.JoinHostPort(s.cfg.Server.Bind, fmt.Sprintf("%d", s.cfg.Server.Port))
+	s.mu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/healthz", nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("unexpected healthz status %d", resp.StatusCode)
+	}
+	var hz struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&hz); err != nil || hz.Status != "ok" || hz.Version == "" {
+		return false, fmt.Errorf("listener on %s is not acpx", addr)
+	}
+
+	s.mu.Lock()
+	s.attached = true
+	s.running = true
+	s.listenOn = addr
+	s.mu.Unlock()
+
+	s.SyncFromDaemon()
+	return true, nil
+}
+
+// Attached reports whether this Server is attached to an already-running acpx daemon/service.
+func (s *Server) Attached() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.attached
+}
+
+// SyncFromDaemon refreshes live account snapshots, banners, and logs when attached to a background daemon.
+func (s *Server) SyncFromDaemon() {
+	s.mu.RLock()
+	attached := s.attached
+	addr := s.listenOn
+	key := s.cfg.Server.LocalKey
+	s.mu.RUnlock()
+	if !attached || addr == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Fetch /admin/state
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/state", nil); err == nil {
+		req.Header.Set("Authorization", "Bearer "+key)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				var st struct {
+					Accounts []pool.AccountSnapshot `json:"accounts"`
+					Banners  []pool.HealthBanner    `json:"banners"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&st); err == nil {
+					s.mu.Lock()
+					s.remoteSnaps = st.Accounts
+					s.remoteBans = st.Banners
+					s.mu.Unlock()
+				}
+			}
+			_ = resp.Body.Close()
+		}
+	}
+
+	// Fetch /admin/logs
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/logs", nil); err == nil {
+		req.Header.Set("Authorization", "Bearer "+key)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				var lg struct {
+					Entries []logbuf.Entry `json:"entries"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&lg); err == nil {
+					s.mu.Lock()
+					s.remoteLogs = lg.Entries
+					s.mu.Unlock()
+				}
+			}
+			_ = resp.Body.Close()
+		}
+	}
+}
+
+// LiveSnapshots returns live account snapshots (from the remote daemon when attached, or local pool).
+func (s *Server) LiveSnapshots() []pool.AccountSnapshot {
+	s.mu.RLock()
+	attached := s.attached
+	snaps := s.remoteSnaps
+	s.mu.RUnlock()
+	if attached && len(snaps) > 0 {
+		return snaps
+	}
+	return s.pool.Snapshots()
+}
+
+// LiveBanners returns live health banners (from the remote daemon when attached, or local pool).
+func (s *Server) LiveBanners() []pool.HealthBanner {
+	s.mu.RLock()
+	attached := s.attached
+	bans := s.remoteBans
+	s.mu.RUnlock()
+	if attached {
+		return bans
+	}
+	return s.pool.Banners()
+}
+
+// LiveLogEntries returns recent log entries (from the remote daemon when attached, or local buffer).
+func (s *Server) LiveLogEntries() []logbuf.Entry {
+	s.mu.RLock()
+	attached := s.attached
+	logs := s.remoteLogs
+	s.mu.RUnlock()
+	if attached && len(logs) > 0 {
+		return logs
+	}
+	if s.logs == nil {
+		return nil
+	}
+	return s.logs.Entries()
 }
 
 func (s *Server) Addr() string {
@@ -135,6 +310,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /admin/state", s.withAuth(s.handleAdminState))
+	mux.HandleFunc("GET /admin/logs", s.withAuth(s.handleAdminLogs))
+	mux.HandleFunc("POST /admin/reload", s.withAuth(s.handleAdminReload))
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleListModels))
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChatCompletions))
 	mux.HandleFunc("POST /v1/messages", s.withAuth(s.handleAnthropicMessages))
@@ -273,6 +450,42 @@ func (s *Server) handleAdminState(w http.ResponseWriter, r *http.Request) {
 		"accounts":        s.pool.Snapshots(),
 		"banners":         s.pool.Banners(),
 		"models_count":    len(s.router.ListModels(false)),
+	})
+}
+
+func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
+	var entries []logbuf.Entry
+	if s.logs != nil {
+		entries = s.logs.Entries()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries": entries,
+	})
+}
+
+func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
+	cfg, _, err := config.Load(s.dataDir)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "reload_error", err.Error())
+		return
+	}
+	s.mu.Lock()
+	s.cfg = cfg
+	if s.logs != nil {
+		s.logs.RegisterSecret(cfg.Server.LocalKey)
+	}
+	s.mu.Unlock()
+
+	s.router.UpdateConfig(cfg)
+	s.pool.SyncAccounts(cfg.Accounts)
+	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)
+	if s.logs != nil {
+		s.logs.Info("system", fmt.Sprintf("hot-reloaded config (%d accounts, %d models)", len(cfg.Accounts), len(s.router.ListModels(false))))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "reloaded",
+		"accounts": len(cfg.Accounts),
+		"models":   len(s.router.ListModels(false)),
 	})
 }
 

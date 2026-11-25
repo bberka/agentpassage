@@ -63,9 +63,10 @@ See the [Quickstart Guide](docs/quickstart.md) for end-to-end examples with Deep
 
 | Command | Description |
 |---|---|
-| `acpx` | Start the localhost gateway and open the full-screen interactive TUI |
+| `acpx` | Start the localhost gateway and open the full-screen TUI (auto-attaches if background service is already running) |
 | `acpx --no-tui` | Start the gateway without the TUI |
 | `acpx serve [--port N] [--bind ADDR] [--allow-remote]` | Run headless HTTP server |
+| `acpx service <install\|uninstall\|start\|stop\|restart\|status\|logs>` | Run `acpx` permanently as a background OS service (`systemd --user` / `launchd` / Windows Task) |
 | `acpx acp` | Run `acpx` as a native ACP stdio server (register directly in T3 Code / Zed) |
 | `acpx add [--expose pool\|prefix\|both] [--prefix a-]` | Add an API-key or ACP account |
 | `acpx install <tool\|all>` | Install ACP CLI/adapter from the 45+ agent registry |

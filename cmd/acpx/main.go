@@ -24,6 +24,7 @@ import (
 	"github.com/bberka/acpx/internal/logbuf"
 	"github.com/bberka/acpx/internal/router"
 	"github.com/bberka/acpx/internal/secrets"
+	"github.com/bberka/acpx/internal/service"
 	"github.com/bberka/acpx/internal/tui"
 )
 
@@ -39,6 +40,8 @@ func run(args []string) error {
 		switch args[0] {
 		case "serve":
 			return cmdServe(args[1:])
+		case "service":
+			return cmdService(args[1:])
 		case "acp":
 			return cmdACPBridge(args[1:])
 		case "add":
@@ -96,6 +99,7 @@ Usage:
   acpx [flags]                 Start gateway and open full-screen TUI
   acpx --no-tui [flags]        Start gateway without TUI
   acpx serve [flags]           Start headless HTTP gateway
+  acpx service <cmd>           Manage OS background service (install|uninstall|start|stop|restart|status|logs)
   acpx acp                     Run acpx as an ACP stdio server (for T3 Code, Zed, etc.)
   acpx add [flags]             Add an ACP or API-key account
   acpx list [--json]           List configured accounts and models
@@ -149,12 +153,18 @@ func startTUI(port int, bind string, allowRemote bool) error {
 
 	srv := gateway.New(dataDir, cfg, sec, reg, logs)
 	if err := srv.Start(); err != nil {
-		return err
+		// If another acpx daemon or background service is already listening on this port,
+		// attach the TUI to it seamlessly instead of failing with address-in-use!
+		if ok, attachErr := srv.AttachIfRunning(); !ok {
+			return fmt.Errorf("%w (hint: port is held by another process; try `acpx --port 8788` — attach check: %v)", err, attachErr)
+		}
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = srv.Stop(ctx)
+		if !srv.Attached() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = srv.Stop(ctx)
+		}
 	}()
 
 	app := tui.New(srv)
@@ -207,6 +217,72 @@ func cmdServe(args []string) error {
 		return err
 	}
 	return startHeadless(*port, *bind, *allowRemote)
+}
+
+func cmdService(args []string) error {
+	dataDir, _, _, _, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	sub := "status"
+	if len(args) > 0 {
+		sub = args[0]
+	}
+
+	switch sub {
+	case "install":
+		unit, err := service.Install(dataDir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Installed and started acpx background service (%s).\n", unit)
+		fmt.Println("Run `acpx` anytime to open the TUI attached to the running service.")
+		return nil
+	case "uninstall", "remove":
+		if err := service.Uninstall(); err != nil {
+			return err
+		}
+		fmt.Println("Stopped and uninstalled acpx background service.")
+		return nil
+	case "start":
+		if err := service.Start(); err != nil {
+			return err
+		}
+		fmt.Println("Started acpx service.")
+		return nil
+	case "stop":
+		if err := service.Stop(); err != nil {
+			return err
+		}
+		fmt.Println("Stopped acpx service.")
+		return nil
+	case "restart":
+		if err := service.Restart(); err != nil {
+			return err
+		}
+		fmt.Println("Restarted acpx service.")
+		return nil
+	case "status":
+		st := service.Status()
+		fmt.Printf("Manager:   %s\n", st.Manager)
+		fmt.Printf("Installed: %v\n", st.Installed)
+		fmt.Printf("Running:   %v (%s)\n", st.Running, st.Detail)
+		if st.UnitPath != "" {
+			fmt.Printf("Unit:      %s\n", st.UnitPath)
+		}
+		return nil
+	case "logs":
+		out, err := service.Logs(dataDir, 50)
+		if err != nil {
+			return err
+		}
+		fmt.Println(out)
+		return nil
+	default:
+		return fmt.Errorf("usage: acpx service <install|uninstall|start|stop|restart|status|logs>")
+	}
 }
 
 func cmdACPBridge(_ []string) error {
