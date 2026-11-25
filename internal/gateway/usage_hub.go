@@ -242,20 +242,31 @@ function render() {
   if (lastQuota && lastQuota.updated_at && !String(lastQuota.updated_at).startsWith('0001-')) {
     $('quotaMeta').textContent = 'updated ' + new Date(lastQuota.updated_at).toLocaleTimeString();
   }
+  const fmtTok = n => {
+    n = Number(n || 0);
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
+    return String(n);
+  };
   $('quotaGrid').innerHTML = qList.map(q => {
-    const srcBadge = q.source && q.source.endsWith('-live')
-      ? '<span class="badge b-ok">' + esc(q.plan_type ? q.plan_type : 'live') + '</span>'
+    const isLive = q.source && (q.source.endsWith('-live') || q.source === 'claude-logs');
+    const srcBadge = isLive
+      ? '<span class="badge b-ok">' + esc(q.plan_type ? q.plan_type : (q.source === 'claude-logs' ? 'claude' : 'live')) + '</span>'
       : (q.source === 'local-budget'
         ? '<span class="badge b-warn">budget</span>'
         : '<span class="badge" style="background:rgba(139,148,158,.15);color:var(--muted);">local</span>');
+    const tokNote = (q.tokens_5h || q.tokens_7d) ? (' · tok 5h=' + fmtTok(q.tokens_5h) + ' 7d=' + fmtTok(q.tokens_7d)) : '';
     let body = renderQuotaWindow(q.primary) + renderQuotaWindow(q.secondary);
-    if (!body) {
+    if (!body && q.credits) {
+      body = '<div style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ok);">' + esc(q.credits) + '</div>' +
+        '<div class="muted" style="font-size:11px;font-family:var(--mono);">5h: ' + fmt(q.local_5h_reqs) + ' reqs · 7d: ' + fmt(q.local_7d_reqs) + ' reqs' + tokNote + '</div>';
+    } else if (!body) {
       body = '<div class="muted" style="font-size:12px;">' +
-        'Local traffic: <strong>' + fmt(q.local_5h_reqs) + '</strong> reqs (5h) · <strong>' + fmt(q.local_7d_reqs) + '</strong> reqs (7d)' +
+        'Local traffic: <strong>' + fmt(q.local_5h_reqs) + '</strong> reqs (5h) · <strong>' + fmt(q.local_7d_reqs) + '</strong> reqs (7d)' + tokNote +
         (q.error ? '<br><span style="color:var(--warn);">' + esc(q.error) + '</span>' : '<br>Provider has no live quota API — set hourly/weekly budgets in Accounts.') +
         '</div>';
     } else {
-      body += '<div class="muted" style="font-size:11px;font-family:var(--mono);">acpx traffic: 1h=' + fmt(q.local_1h_reqs) + ' · 5h=' + fmt(q.local_5h_reqs) + ' · 7d=' + fmt(q.local_7d_reqs) + (q.credits ? ' · ' + esc(q.credits) : '') + '</div>';
+      body += '<div class="muted" style="font-size:11px;font-family:var(--mono);">acpx traffic: 1h=' + fmt(q.local_1h_reqs) + ' · 5h=' + fmt(q.local_5h_reqs) + ' · 7d=' + fmt(q.local_7d_reqs) + tokNote + (q.credits ? ' · ' + esc(q.credits) : '') + '</div>';
     }
     return '<div class="q-card"><div class="q-head"><span class="q-name">' + esc(q.account_name) + '</span>' + srcBadge + '</div>' + body + '</div>';
   }).join('') || '<div class="muted">No accounts configured yet.</div>';

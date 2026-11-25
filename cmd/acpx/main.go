@@ -801,8 +801,16 @@ func cmdUsage(args []string) error {
 			if plan == "" {
 				plan = q.Source
 			}
-			fmt.Printf("  %-18s %-8s %-28s %-26s %d / %d reqs\n",
-				q.AccountName, plan, fmtWin(q.Primary), fmtWin(q.Secondary), q.Local5h, q.Local7d)
+			prim := fmtWin(q.Primary)
+			if q.Primary == nil && q.Credits != "" {
+				prim = q.Credits
+			}
+			localCol := fmt.Sprintf("%d / %d reqs", q.Local5h, q.Local7d)
+			if q.Tokens5h > 0 || q.Tokens7d > 0 {
+				localCol = fmt.Sprintf("%d/%d reqs (%s/%s tok)", q.Local5h, q.Local7d, quota.FormatCompactTokens(q.Tokens5h), quota.FormatCompactTokens(q.Tokens7d))
+			}
+			fmt.Printf("  %-18s %-8s %-28s %-26s %s\n",
+				q.AccountName, plan, prim, fmtWin(q.Secondary), localCol)
 		}
 	}
 

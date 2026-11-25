@@ -87,6 +87,13 @@ func renderShareBar(count, total, width int) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
+func (a *App) surfaceText(s string) string {
+	if !a.styles.HasCanvasBg {
+		return s
+	}
+	return lipgloss.NewStyle().Background(a.styles.SurfaceBg).Render(s)
+}
+
 func (a *App) renderQuotaWindowInline(w *quota.Window, now time.Time) string {
 	if w == nil {
 		return a.styles.Muted.Render("—")
@@ -110,7 +117,7 @@ func (a *App) renderQuotaWindowInline(w *quota.Window, now time.Time) string {
 	if reset != "" {
 		meta += " (" + reset + ")"
 	}
-	return st.Render(bar) + " " + meta
+	return st.Render(bar) + a.styles.ColGap(1) + a.surfaceText(meta)
 }
 
 func (a *App) viewUsage(bodyHeight int) string {
@@ -141,19 +148,16 @@ func (a *App) viewUsage(bodyHeight int) string {
 
 	hubURL := a.srv.UsageHubURL(false)
 	topLines := []string{
-		a.styles.Title.Render("◆ Usage Report Hub") + "   " +
+		a.styles.Title.Render("◆ Usage Report Hub") + a.styles.ColGap(3) +
 			a.styles.Highlight.Render(hubURL),
 		a.styles.Divider.Render(strings.Repeat("─", innerW)),
-		fmt.Sprintf("  Requests: %s (24h:%d · 7d:%d)   Success: %s (%d err)   Tokens: %s (in:%d out:%d)   Avg: %dms",
-			a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalRequests)),
-			u.Requests24h, u.Requests7d,
-			rateStyle.Render(fmt.Sprintf("%.1f%%", rate)),
-			u.ErrorRequests,
-			a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalTokens)),
-			u.PromptTokens, u.CompletionTokens,
-			u.AvgLatencyMs,
-		),
-		fmt.Sprintf("  %s:  %s", a.styles.Muted.Render(chartTitle), a.styles.Highlight.Render(renderSparkline(buckets))),
+		a.surfaceText("  Requests: ") + a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalRequests)) +
+			a.surfaceText(fmt.Sprintf(" (24h:%d · 7d:%d)   Success: ", u.Requests24h, u.Requests7d)) +
+			rateStyle.Render(fmt.Sprintf("%.1f%%", rate)) +
+			a.surfaceText(fmt.Sprintf(" (%d err)   Tokens: ", u.ErrorRequests)) +
+			a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalTokens)) +
+			a.surfaceText(fmt.Sprintf(" (in:%d out:%d)   Avg: %dms", u.PromptTokens, u.CompletionTokens, u.AvgLatencyMs)),
+		a.surfaceText("  ") + a.styles.Muted.Render(chartTitle) + a.surfaceText(":  ") + a.styles.Highlight.Render(renderSparkline(buckets)),
 	}
 	topCard := a.styles.Card.Width(fullW).Render(strings.Join(topLines, "\n"))
 
@@ -163,7 +167,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 	if !qRep.UpdatedAt.IsZero() {
 		qMeta = "updated " + qRep.UpdatedAt.Format("15:04:05")
 	}
-	qLines = append(qLines, a.styles.Subtitle.Render("Subscription Limits (Hourly / Weekly)")+"   "+a.styles.Muted.Render(qMeta))
+	qLines = append(qLines, a.styles.Subtitle.Render("Subscription Limits (Hourly / Weekly)")+a.styles.ColGap(3)+a.styles.Muted.Render(qMeta))
 	qLines = append(qLines, a.styles.JoinRow(2,
 		a.styles.TableHeader.Render(fmt.Sprintf("%-16s", "ACCOUNT")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "PLAN")),
@@ -183,6 +187,10 @@ func (a *App) viewUsage(bodyHeight int) string {
 			plan := q.PlanType
 			if plan == "" {
 				switch q.Source {
+				case "claude-logs":
+					plan = "claude"
+				case "deepseek-live", "openrouter-live", "headers-live":
+					plan = "api"
 				case "local-budget":
 					plan = "budget"
 				case "unavailable":
@@ -192,10 +200,16 @@ func (a *App) viewUsage(bodyHeight int) string {
 				}
 			}
 			prim := a.renderQuotaWindowInline(q.Primary, now)
+			if q.Primary == nil && q.Credits != "" {
+				prim = a.styles.StateReady.Render(truncate(q.Credits, 34))
+			}
 			sec := a.renderQuotaWindowInline(q.Secondary, now)
 			localCol := fmt.Sprintf("%d / %d reqs", q.Local5h, q.Local7d)
+			if q.Tokens5h > 0 || q.Tokens7d > 0 {
+				localCol = fmt.Sprintf("%d/%d req · %s/%s", q.Local5h, q.Local7d, quota.FormatCompactTokens(q.Tokens5h), quota.FormatCompactTokens(q.Tokens7d))
+			}
 			qLines = append(qLines, a.styles.JoinRow(2,
-				a.styles.PadCell(truncate(q.AccountName, 16), 16),
+				a.styles.PadCell(a.surfaceText(truncate(q.AccountName, 16)), 16),
 				a.styles.PadCell(a.styles.Muted.Render(truncate(plan, 8)), 8),
 				a.styles.PadCell(prim, 34),
 				a.styles.PadCell(sec, 26),
