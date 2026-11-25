@@ -1007,15 +1007,30 @@ func cmdInstall(args []string) error {
 	return nil
 }
 
+func confirmAction(prompt string) bool {
+	fmt.Printf("%s [y/N]: ", prompt)
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && len(strings.TrimSpace(line)) == 0 {
+		return false
+	}
+	ans := strings.ToLower(strings.TrimSpace(line))
+	return ans == "y" || ans == "yes"
+}
+
 func cmdConnect(args []string) error {
 	dryRun := false
+	assumeYes := false
 	var rest []string
 	for _, a := range args {
-		if a == "--dry-run" || a == "-dry-run" {
+		switch a {
+		case "--dry-run", "-dry-run":
 			dryRun = true
-			continue
+		case "-y", "--yes":
+			assumeYes = true
+		default:
+			rest = append(rest, a)
 		}
-		rest = append(rest, a)
 	}
 	_, cfg, _, _, logs, err := loadRuntime(0, "", false)
 	if err != nil {
@@ -1035,8 +1050,8 @@ func cmdConnect(args []string) error {
 			fmt.Printf("  %-16s %-18s %-11s %s\n", t.ID, t.Name, state, t.Description)
 		}
 		fmt.Println("\nUsage:")
-		fmt.Println("  acpx connect <client...> [--dry-run]   (e.g. t3code, zed, vscode, jetbrains, continue, neovim, opencode, codex, claude, pi, grok, aider)")
-		fmt.Println("  acpx disconnect <client...|all>        (cleanly remove acpx from connected IDEs & CLIs)")
+		fmt.Println("  acpx connect <client...> [--yes] [--dry-run]  (asks before modifying files)")
+		fmt.Println("  acpx disconnect <client...|all> [--yes]       (cleanly remove acpx from connected IDEs & CLIs)")
 		return nil
 	}
 
@@ -1048,7 +1063,30 @@ func cmdConnect(args []string) error {
 		if !ok {
 			return fmt.Errorf("unknown client %q (run `acpx connect` to list supported clients)", id)
 		}
-		res, err := connect.Apply(id, cfg, models, t.AutoApply && !dryRun)
+		// Always preview first before touching any external IDE/CLI config file.
+		preview, err := connect.Apply(id, cfg, models, false)
+		if err != nil {
+			return err
+		}
+		if !t.AutoApply || dryRun {
+			if preview.Message != "" {
+				fmt.Println(preview.Message)
+			}
+			fmt.Println("\n" + preview.Snippet)
+			continue
+		}
+
+		fmt.Printf("Target: %s (%s)\n", t.Name, t.ID)
+		fmt.Printf("File:   %s\n", t.ConfigPath)
+		fmt.Printf("Backup: %s.acpx.bak\n\n", t.ConfigPath)
+		fmt.Println(preview.Snippet)
+
+		if !assumeYes && !confirmAction("Write acpx config to "+t.ConfigPath+"?") {
+			fmt.Println("Cancelled — no files modified.")
+			continue
+		}
+
+		res, err := connect.Apply(id, cfg, models, true)
 		if err != nil {
 			return err
 		}
@@ -1058,13 +1096,22 @@ func cmdConnect(args []string) error {
 		if res.Backup != "" {
 			fmt.Println("Backup saved:", res.Backup)
 		}
-		fmt.Println("\n" + res.Snippet)
 	}
 	return nil
 }
 
 func cmdDisconnect(args []string) error {
-	if len(args) == 0 {
+	assumeYes := false
+	var rest []string
+	for _, a := range args {
+		if a == "-y" || a == "--yes" {
+			assumeYes = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+
+	if len(rest) == 0 {
 		connected := 0
 		fmt.Println("Currently connected IDEs & CLIs:")
 		for _, t := range connect.ListTargets() {
@@ -1076,16 +1123,30 @@ func cmdDisconnect(args []string) error {
 		if connected == 0 {
 			fmt.Println("  (none)")
 		}
-		fmt.Println("\nUsage: acpx disconnect <client...|all>")
+		fmt.Println("\nUsage: acpx disconnect <client...|all> [--yes]")
 		return nil
 	}
 
-	if len(args) == 1 && strings.EqualFold(args[0], "all") {
-		results, errs := connect.DisconnectAll()
-		if len(results) == 0 && len(errs) == 0 {
+	if len(rest) == 1 && strings.EqualFold(rest[0], "all") {
+		var toRemove []connect.Target
+		for _, t := range connect.ListTargets() {
+			if t.AutoApply && t.ConfigPath != "" && t.Connected {
+				toRemove = append(toRemove, t)
+			}
+		}
+		if len(toRemove) == 0 {
 			fmt.Println("No connected IDEs or CLIs found.")
 			return nil
 		}
+		fmt.Println("Will remove acpx from:")
+		for _, t := range toRemove {
+			fmt.Printf("  - %-18s %s\n", t.Name, t.ConfigPath)
+		}
+		if !assumeYes && !confirmAction(fmt.Sprintf("Disconnect acpx from all %d client(s)?", len(toRemove))) {
+			fmt.Println("Cancelled — no files modified.")
+			return nil
+		}
+		results, errs := connect.DisconnectAll()
 		for _, r := range results {
 			fmt.Println(r.Message)
 		}
@@ -1098,7 +1159,20 @@ func cmdDisconnect(args []string) error {
 		return nil
 	}
 
-	for _, id := range args {
+	for _, id := range rest {
+		t, ok := connect.FindTarget(id)
+		if !ok {
+			return fmt.Errorf("unknown client %q (run `acpx connect` to list supported clients)", id)
+		}
+		if !t.AutoApply || t.ConfigPath == "" {
+			fmt.Printf("%s is configured manually in its GUI — remove the acpx Base URL there.\n", t.Name)
+			continue
+		}
+		fmt.Printf("Will remove acpx from %s (%s)\n", t.Name, t.ConfigPath)
+		if !assumeYes && !confirmAction("Proceed?") {
+			fmt.Println("Cancelled — no files modified.")
+			continue
+		}
 		res, err := connect.Disconnect(id)
 		if err != nil {
 			return err
@@ -1109,11 +1183,56 @@ func cmdDisconnect(args []string) error {
 }
 
 func cmdUninstall(args []string) error {
+	assumeYes := false
+	purge := false
+	for _, a := range args {
+		switch a {
+		case "-y", "--yes":
+			assumeYes = true
+		case "--purge":
+			purge = true
+		}
+	}
+
 	dataDir, _, _, _, logs, err := loadRuntime(0, "", false)
 	if err != nil {
 		return err
 	}
 	defer logs.Close()
+
+	var connected []connect.Target
+	for _, t := range connect.ListTargets() {
+		if t.AutoApply && t.ConfigPath != "" && t.Connected {
+			connected = append(connected, t)
+		}
+	}
+	st := service.Status()
+
+	fmt.Println("acpx uninstall plan:")
+	if len(connected) == 0 {
+		fmt.Println("  - Connections: none connected")
+	} else {
+		fmt.Printf("  - Disconnect %d IDE/CLI(s):\n", len(connected))
+		for _, t := range connected {
+			fmt.Printf("      * %-18s %s\n", t.Name, t.ConfigPath)
+		}
+	}
+	if st.Installed || st.Running {
+		fmt.Printf("  - Background service: stop & uninstall (%s)\n", st.Manager)
+	} else {
+		fmt.Println("  - Background service: not installed")
+	}
+	if purge && dataDir != "" {
+		fmt.Printf("  - Purge data directory: DELETE %s\n", dataDir)
+	} else if dataDir != "" {
+		fmt.Printf("  - Config & profiles: kept at %s (pass --purge to delete)\n", dataDir)
+	}
+	fmt.Println()
+
+	if !assumeYes && !confirmAction("Proceed with uninstall?") {
+		fmt.Println("Cancelled — nothing was changed.")
+		return nil
+	}
 
 	// 1. Disconnect all registered IDEs & CLIs cleanly.
 	results, errs := connect.DisconnectAll()
@@ -1129,31 +1248,20 @@ func cmdUninstall(args []string) error {
 	}
 
 	// 2. Stop & remove OS background service if installed.
-	st := service.Status()
 	if st.Installed || st.Running {
 		if err := service.Uninstall(); err != nil {
 			fmt.Fprintf(os.Stderr, "Service uninstall warning: %v\n", err)
 		} else {
 			fmt.Println("Service: stopped and uninstalled background service.")
 		}
-	} else {
-		fmt.Println("Service: not installed.")
 	}
 
-	// 3. Report remaining local binary & config paths without deleting user data unless requested.
-	purge := false
-	for _, a := range args {
-		if a == "--purge" {
-			purge = true
-		}
-	}
+	// 3. Optionally purge data dir, and print binary removal hint.
 	if purge && dataDir != "" {
 		if err := os.RemoveAll(dataDir); err != nil {
 			return fmt.Errorf("remove data dir %s: %w", dataDir, err)
 		}
 		fmt.Printf("Purged config & profiles directory: %s\n", dataDir)
-	} else if dataDir != "" {
-		fmt.Printf("\nConfig & profiles kept at: %s (pass --purge to delete)\n", dataDir)
 	}
 	if exe, err := os.Executable(); err == nil {
 		fmt.Printf("To remove the binary itself: rm %s\n", exe)

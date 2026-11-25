@@ -130,8 +130,10 @@ type App struct {
 	detectSearching bool
 
 	// Connect CLI / T3 Code modal
-	connectTargets []connect.Target
-	connectCursor  int
+	connectTargets       []connect.Target
+	connectCursor        int
+	connectConfirmAction string // "", "connect", "disconnect", "disconnect_all"
+	connectConfirmTarget connect.Target
 
 	// Cached OS background service status (refreshed asynchronously)
 	svcStatus service.StatusInfo

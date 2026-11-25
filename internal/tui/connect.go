@@ -11,6 +11,7 @@ import (
 
 func (a *App) openConnectModal() {
 	a.connectTargets = connect.ListTargets()
+	a.connectConfirmAction = ""
 	if a.connectCursor >= len(a.connectTargets) {
 		a.connectCursor = 0
 	}
@@ -18,6 +19,56 @@ func (a *App) openConnectModal() {
 }
 
 func (a *App) updateConnectModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Confirmation gate before writing or removing any external IDE/CLI config file.
+	if a.connectConfirmAction != "" {
+		switch msg.String() {
+		case "y", "Y", "enter":
+			action := a.connectConfirmAction
+			target := a.connectConfirmTarget
+			a.connectConfirmAction = ""
+			switch action {
+			case "connect":
+				models := a.srv.Router().ListModels(false)
+				res, err := connect.Apply(target.ID, a.srv.Config(), models, target.AutoApply)
+				if err != nil {
+					a.setStatus("Connect failed: "+err.Error(), true)
+					return a, nil
+				}
+				a.connectTargets = connect.ListTargets()
+				a.setStatus(res.Message, false)
+			case "disconnect":
+				res, err := connect.Disconnect(target.ID)
+				if err != nil {
+					a.setStatus("Disconnect failed: "+err.Error(), true)
+					return a, nil
+				}
+				a.connectTargets = connect.ListTargets()
+				a.setStatus(res.Message, false)
+			case "disconnect_all":
+				results, errs := connect.DisconnectAll()
+				a.connectTargets = connect.ListTargets()
+				removed := 0
+				for _, r := range results {
+					if r.Removed {
+						removed++
+					}
+				}
+				if len(errs) > 0 {
+					a.setStatus(fmt.Sprintf("Disconnected %d client(s) with %d error(s)", removed, len(errs)), true)
+				} else {
+					a.setStatus(fmt.Sprintf("Disconnected acpx from all %d connected IDE/CLI(s)", removed), false)
+				}
+			}
+			return a, nil
+		case "n", "N", "esc", "q":
+			a.connectConfirmAction = ""
+			a.setStatus("Cancelled — no files modified", false)
+			return a, nil
+		default:
+			return a, nil
+		}
+	}
+
 	switch msg.String() {
 	case "esc", "q":
 		a.modal = modalNone
@@ -39,46 +90,39 @@ func (a *App) updateConnectModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
 			t := a.connectTargets[a.connectCursor]
-			models := a.srv.Router().ListModels(false)
-			res, err := connect.Apply(t.ID, a.srv.Config(), models, t.AutoApply)
-			if err != nil {
-				a.setStatus("Connect failed: "+err.Error(), true)
+			if !t.AutoApply {
+				models := a.srv.Router().ListModels(false)
+				res, err := connect.Apply(t.ID, a.srv.Config(), models, false)
+				if err == nil {
+					a.copyToClipboard(t.Name+" config", res.Snippet)
+				}
 				return a, nil
 			}
-			a.connectTargets = connect.ListTargets()
-			if res.Applied {
-				a.setStatus(res.Message, false)
-			} else {
-				a.copyToClipboard(t.Name+" config", res.Snippet)
-			}
+			a.connectConfirmAction = "connect"
+			a.connectConfirmTarget = t
 		}
 	case "u", "x", "delete":
 		if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
 			t := a.connectTargets[a.connectCursor]
-			res, err := connect.Disconnect(t.ID)
-			if err != nil {
-				a.setStatus("Disconnect failed: "+err.Error(), true)
+			if !t.AutoApply || !t.Connected {
+				a.setStatus(t.Name+" is not auto-connected", false)
 				return a, nil
 			}
-			a.connectTargets = connect.ListTargets()
-			a.setStatus(res.Message, false)
+			a.connectConfirmAction = "disconnect"
+			a.connectConfirmTarget = t
 		}
 	case "U":
-		results, errs := connect.DisconnectAll()
-		a.connectTargets = connect.ListTargets()
-		removed := 0
-		for _, r := range results {
-			if r.Removed {
-				removed++
+		connectedCount := 0
+		for _, t := range a.connectTargets {
+			if t.Connected {
+				connectedCount++
 			}
 		}
-		if len(errs) > 0 {
-			a.setStatus(fmt.Sprintf("Disconnected %d client(s) with %d error(s)", removed, len(errs)), true)
-		} else if removed == 0 {
+		if connectedCount == 0 {
 			a.setStatus("No connected IDEs or CLIs found to disconnect", false)
-		} else {
-			a.setStatus(fmt.Sprintf("Disconnected acpx from all %d connected IDE/CLI(s)", removed), false)
+			return a, nil
 		}
+		a.connectConfirmAction = "disconnect_all"
 	case "c":
 		if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
 			t := a.connectTargets[a.connectCursor]
@@ -145,6 +189,29 @@ func (a *App) viewConnectModal() string {
 	}
 	for i := end - start; i < maxRows; i++ {
 		lines = append(lines, "")
+	}
+
+	if a.connectConfirmAction != "" {
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		switch a.connectConfirmAction {
+		case "connect":
+			lines = append(lines, a.styles.StateWarn.Render("Confirm Connect — "+a.connectConfirmTarget.Name))
+			lines = append(lines, "  Will write acpx config to: "+a.styles.Highlight.Render(truncate(a.connectConfirmTarget.ConfigPath, innerW-28)))
+			lines = append(lines, a.styles.Muted.Render("  Backup will be saved to .acpx.bak before modifying."))
+		case "disconnect":
+			lines = append(lines, a.styles.StateWarn.Render("Confirm Disconnect — "+a.connectConfirmTarget.Name))
+			lines = append(lines, "  Will remove acpx entry from: "+a.styles.Highlight.Render(truncate(a.connectConfirmTarget.ConfigPath, innerW-30)))
+			lines = append(lines, a.styles.Muted.Render("  All other settings stay untouched (.acpx.bak backup created)."))
+		case "disconnect_all":
+			lines = append(lines, a.styles.StateErr.Render(fmt.Sprintf("Confirm Disconnect All (%d connected)", connectedCount)))
+			lines = append(lines, a.styles.Muted.Render("  Will remove acpx from every connected IDE & CLI config file (.acpx.bak backups saved)."))
+		}
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		lines = append(lines, a.styles.JoinHints(
+			a.styles.KeyHint("y / enter", "confirm"),
+			a.styles.KeyHint("n / esc", "cancel"),
+		))
+		return a.styles.ModalWarn.Width(cardW).Render(strings.Join(lines, "\n"))
 	}
 
 	if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
