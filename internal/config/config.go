@@ -54,9 +54,23 @@ type Config struct {
 	ACP      ACPConfig       `toml:"acp"`
 	Catalog  CatalogConfig   `toml:"catalog"`
 	Health   HealthConfig    `toml:"health"`
+	Privacy  PrivacyConfig   `toml:"privacy"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Models   []ModelOverride `toml:"models"`
 	Routing  []RoutingRule   `toml:"routing"`
+}
+
+type PrivacyPattern struct {
+	Name    string `toml:"name" json:"name"`
+	Pattern string `toml:"pattern" json:"pattern"`
+}
+
+type PrivacyConfig struct {
+	Enabled        bool             `toml:"enabled" json:"enabled"`
+	RedactAPIKeys  bool             `toml:"redact_api_keys" json:"redact_api_keys"`
+	RedactEmails   bool             `toml:"redact_emails" json:"redact_emails"`
+	RedactPhones   bool             `toml:"redact_phones" json:"redact_phones"`
+	CustomPatterns []PrivacyPattern `toml:"custom_patterns,omitempty" json:"custom_patterns,omitempty"`
 }
 
 type HealthConfig struct {
@@ -348,6 +362,12 @@ func Default() *Config {
 		Health: HealthConfig{
 			Enabled:         true,
 			IntervalSeconds: 300,
+		},
+		Privacy: PrivacyConfig{
+			Enabled:       false,
+			RedactAPIKeys: true,
+			RedactEmails:  true,
+			RedactPhones:  true,
 		},
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"github.com/bberka/agentpassage/internal/health"
 	"github.com/bberka/agentpassage/internal/logbuf"
 	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/privacy"
 	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/router"
 	"github.com/bberka/agentpassage/internal/secrets"
@@ -47,6 +48,7 @@ type Server struct {
 	usage    *usage.Tracker
 	health   *health.Checker
 	quota    *quota.Fetcher
+	privacy  *privacy.Filter
 
 	srv          *http.Server
 	listener     net.Listener
@@ -79,6 +81,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		cliBE:    cliMgr,
 		logs:     logs,
 		usage:    usageTrk,
+		privacy:  privacy.NewFilter(cfg.Privacy),
 	}
 	s.health = health.New(
 		func() []config.AccountConfig {
@@ -167,6 +170,7 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	s.mu.Lock()
 	prevKey := s.cfg.Server.LocalKey
 	s.cfg = cfg
+	s.privacy = privacy.NewFilter(cfg.Privacy)
 	attached := s.attached
 	addr := s.listenOn
 	if s.logs != nil {
@@ -1021,8 +1025,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	chatReq.UpstreamModel = plan.UpstreamModel
 
+	privSess := s.newPrivacySession()
+	chatReq = applyPrivacyToRequest(privSess, chatReq)
+
 	if req.Stream {
-		s.executeOpenAIStream(w, r, plan, chatReq, start)
+		s.executeOpenAIStream(w, r, plan, chatReq, privSess, start)
 		return
 	}
 
@@ -1038,6 +1045,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		s.recordUsage(r.URL.Path, req.Model, acctName, backendID, status, start, backend.Usage{}, false)
 		writeOpenAIError(w, status, "backend_error", execErr.Error())
 		return
+	}
+	if privSess != nil {
+		resp.Content = privSess.RestoreText(resp.Content)
+		s.recordPrivacyHeader(w, privSess, req.Model)
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
@@ -1082,6 +1093,41 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logRequest(r, req.Model, acctName, http.StatusOK, start, nil)
 	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) newPrivacySession() *privacy.Session {
+	s.mu.RLock()
+	f := s.privacy
+	s.mu.RUnlock()
+	if f == nil {
+		return nil
+	}
+	return f.NewSession()
+}
+
+func applyPrivacyToRequest(sess *privacy.Session, req backend.ChatRequest) backend.ChatRequest {
+	if sess == nil {
+		return req
+	}
+	req.Messages = sess.RedactMessages(req.Messages)
+	if len(req.RawOpenAIBody) > 0 {
+		req.RawOpenAIBody = sess.RedactRawOpenAIBody(req.RawOpenAIBody)
+	}
+	return req
+}
+
+func (s *Server) recordPrivacyHeader(w http.ResponseWriter, sess *privacy.Session, model string) {
+	if sess == nil {
+		return
+	}
+	if hdr := sess.HeaderValue(); hdr != "" {
+		if w != nil {
+			w.Header().Set("X-Apx-Redacted", hdr)
+		}
+		if s.logs != nil {
+			s.logs.Info("privacy", fmt.Sprintf("redacted & restored (%s) for %s", hdr, model))
+		}
+	}
 }
 
 func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req backend.ChatRequest) (*backend.ChatResponse, *config.AccountConfig, int, error) {
@@ -1142,7 +1188,7 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 	return nil, lastAcct, httpStatusFromError(lastErr), lastErr
 }
 
-func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, plan *router.Plan, req backend.ChatRequest, start time.Time) {
+func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, plan *router.Plan, req backend.ChatRequest, privSess *privacy.Session, start time.Time) {
 	tried := make(map[string]bool)
 	var lastErr error
 	var lastAcct string
@@ -1198,6 +1244,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 			if sessionID != "" {
 				w.Header().Set("X-Apx-Session-Id", sessionID)
 			}
+			s.recordPrivacyHeader(w, privSess, req.Model)
 			w.WriteHeader(http.StatusOK)
 			// Initial role chunk
 			writeSSE(w, map[string]any{
@@ -1215,15 +1262,26 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 		var finishedSent bool
 		var streamUsage backend.Usage
 		var outTextLen int
+		deltaRestorer := privSess.NewStreamRestorer()
+		reasonRestorer := privSess.NewStreamRestorer()
 		cb := func(ch backend.StreamChunk) error {
 			sendHeaders(ch.ToolsIgnored, ch.SessionID)
-			delta := map[string]any{}
-			if ch.Delta != "" {
-				delta["content"] = ch.Delta
-				outTextLen += len(ch.Delta)
+			restoredDelta := deltaRestorer.Push(ch.Delta)
+			restoredReason := reasonRestorer.Push(ch.Reasoning)
+			if ch.FinishReason != "" {
+				restoredDelta += deltaRestorer.Flush()
+				restoredReason += reasonRestorer.Flush()
 			}
-			if ch.Reasoning != "" {
-				delta["reasoning_content"] = ch.Reasoning
+			delta := map[string]any{}
+			if restoredDelta != "" {
+				delta["content"] = restoredDelta
+				outTextLen += len(restoredDelta)
+			}
+			if restoredReason != "" {
+				delta["reasoning_content"] = restoredReason
+			}
+			if len(delta) == 0 && ch.FinishReason == "" && ch.Usage == nil {
+				return nil
 			}
 			var fr any = nil
 			if ch.FinishReason != "" {
@@ -1267,6 +1325,25 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 			s.pool.RecordSuccess(acct.ID)
 			if !headersSent {
 				sendHeaders(acct.Kind == config.KindACP && req.HasTools, "")
+			}
+			if tailDelta, tailReason := deltaRestorer.Flush(), reasonRestorer.Flush(); tailDelta != "" || tailReason != "" {
+				delta := map[string]any{}
+				if tailDelta != "" {
+					delta["content"] = tailDelta
+					outTextLen += len(tailDelta)
+				}
+				if tailReason != "" {
+					delta["reasoning_content"] = tailReason
+				}
+				writeSSE(w, map[string]any{
+					"id":      compID,
+					"object":  "chat.completion.chunk",
+					"created": created,
+					"model":   req.Model,
+					"choices": []map[string]any{
+						{"index": 0, "delta": delta, "finish_reason": nil},
+					},
+				})
 			}
 			if !finishedSent {
 				writeSSE(w, map[string]any{

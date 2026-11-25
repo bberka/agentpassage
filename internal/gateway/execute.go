@@ -18,6 +18,9 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 	}
 	req.UpstreamModel = plan.UpstreamModel
 
+	privSess := s.newPrivacySession()
+	req = applyPrivacyToRequest(privSess, req)
+
 	tried := make(map[string]bool)
 	var lastErr error
 	var lastAcct string
@@ -44,9 +47,20 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 		tried[acct.ID] = true
 
 		emitted := false
+		deltaRestorer := privSess.NewStreamRestorer()
+		reasonRestorer := privSess.NewStreamRestorer()
 		wrapped := func(ch backend.StreamChunk) error {
+			ch.Delta = deltaRestorer.Push(ch.Delta)
+			ch.Reasoning = reasonRestorer.Push(ch.Reasoning)
+			if ch.FinishReason != "" {
+				ch.Delta += deltaRestorer.Flush()
+				ch.Reasoning += reasonRestorer.Flush()
+			}
 			if ch.Delta != "" {
 				emitted = true
+			}
+			if ch.Delta == "" && ch.Reasoning == "" && ch.FinishReason == "" && ch.Usage == nil {
+				return nil
 			}
 			return cb(ch)
 		}
@@ -67,7 +81,11 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 		lease.Release()
 
 		if streamErr == nil {
+			if td, tr := deltaRestorer.Flush(), reasonRestorer.Flush(); td != "" || tr != "" {
+				_ = cb(backend.StreamChunk{Delta: td, Reasoning: tr})
+			}
 			s.pool.RecordSuccess(acct.ID)
+			s.recordPrivacyHeader(nil, privSess, req.Model)
 			return acctName, nil
 		}
 

@@ -11,6 +11,7 @@ import (
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/privacy"
 	"github.com/bberka/agentpassage/internal/router"
 )
 
@@ -101,8 +102,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 	chatReq.UpstreamModel = plan.UpstreamModel
 
+	privSess := s.newPrivacySession()
+	chatReq = applyPrivacyToRequest(privSess, chatReq)
+
 	if req.Stream {
-		s.executeAnthropicStream(w, r, plan, chatReq, start)
+		s.executeAnthropicStream(w, r, plan, chatReq, privSess, start)
 		return
 	}
 
@@ -115,6 +119,10 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		s.logRequest(r, req.Model, acctName, status, start, execErr)
 		writeAnthropicError(w, status, "api_error", execErr.Error())
 		return
+	}
+	if privSess != nil {
+		resp.Content = privSess.RestoreText(resp.Content)
+		s.recordPrivacyHeader(w, privSess, req.Model)
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
@@ -151,7 +159,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, plan *router.Plan, req backend.ChatRequest, start time.Time) {
+func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, plan *router.Plan, req backend.ChatRequest, privSess *privacy.Session, start time.Time) {
 	tried := make(map[string]bool)
 	var lastErr error
 	var lastAcct string
@@ -208,6 +216,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 			if sessionID != "" {
 				w.Header().Set("X-Apx-Session-Id", sessionID)
 			}
+			s.recordPrivacyHeader(w, privSess, req.Model)
 			w.WriteHeader(http.StatusOK)
 			writeAnthropicEvent(w, "message_start", map[string]any{
 				"type": "message_start",
@@ -228,13 +237,18 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 			flusher.Flush()
 		}
 
+		deltaRestorer := privSess.NewStreamRestorer()
 		cb := func(ch backend.StreamChunk) error {
 			sendStart(ch.ToolsIgnored, ch.SessionID)
-			if ch.Delta != "" {
+			restored := deltaRestorer.Push(ch.Delta)
+			if ch.FinishReason != "" {
+				restored += deltaRestorer.Flush()
+			}
+			if restored != "" {
 				writeAnthropicEvent(w, "content_block_delta", map[string]any{
 					"type":  "content_block_delta",
 					"index": 0,
-					"delta": map[string]any{"type": "text_delta", "text": ch.Delta},
+					"delta": map[string]any{"type": "text_delta", "text": restored},
 				})
 				flusher.Flush()
 			}
@@ -265,6 +279,13 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 		if streamErr == nil {
 			s.pool.RecordSuccess(acct.ID)
 			sendStart(acct.Kind == config.KindACP && req.HasTools, "")
+			if tail := deltaRestorer.Flush(); tail != "" {
+				writeAnthropicEvent(w, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": 0,
+					"delta": map[string]any{"type": "text_delta", "text": tail},
+				})
+			}
 			writeAnthropicEvent(w, "content_block_stop", map[string]any{
 				"type":  "content_block_stop",
 				"index": 0,
