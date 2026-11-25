@@ -23,11 +23,11 @@ import (
 	"github.com/bberka/acpx/internal/gateway"
 	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/logbuf"
+	"github.com/bberka/acpx/internal/quota"
 	"github.com/bberka/acpx/internal/router"
 	"github.com/bberka/acpx/internal/secrets"
 	"github.com/bberka/acpx/internal/service"
 	"github.com/bberka/acpx/internal/tui"
-	"github.com/bberka/acpx/internal/usage"
 )
 
 func main() {
@@ -716,21 +716,49 @@ func cmdModels(args []string) error {
 func cmdUsage(args []string) error {
 	fs := flag.NewFlagSet("usage", flag.ContinueOnError)
 	asJSON := fs.Bool("json", false, "output JSON")
+	refresh := fs.Bool("refresh", false, "force live subscription quota refresh")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	dataDir, cfg, _, _, logs, err := loadRuntime(0, "", false)
+	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
 	if err != nil {
 		return err
 	}
 	defer logs.Close()
 
-	trk := usage.New(dataDir)
-	defer trk.Close()
-	sum := trk.Summary()
+	srv := gateway.New(dataDir, cfg, sec, reg, logs)
+	attached, _ := srv.AttachIfRunning()
+	if !attached {
+		defer srv.ACP().Close()
+	}
+
+	var qrep quota.Report
+	if attached && !*refresh {
+		qrep = srv.LiveQuota()
+		if qrep.UpdatedAt.IsZero() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			if r, err := srv.RefreshQuotaNow(ctx, ""); err == nil {
+				qrep = r
+			}
+			cancel()
+		}
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		if r, err := srv.RefreshQuotaNow(ctx, ""); err == nil {
+			qrep = r
+		} else {
+			qrep = srv.LiveQuota()
+		}
+		cancel()
+	}
+
+	sum := srv.LiveUsage()
 
 	if *asJSON {
-		return json.NewEncoder(os.Stdout).Encode(sum)
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"usage": sum,
+			"quota": qrep,
+		})
 	}
 
 	hubURL := strings.TrimSuffix(cfg.BaseURL(), "/v1") + "/usage"
@@ -740,7 +768,33 @@ func cmdUsage(args []string) error {
 	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Avg latency: %dms\n\n",
 		sum.TotalTokens, sum.PromptTokens, sum.CompletionTokens, sum.Tokens24h, sum.AvgLatencyMs)
 
-	fmt.Println("By Account:")
+	fmt.Println("Subscription Limits (Hourly / Weekly):")
+	if len(qrep.Accounts) == 0 {
+		fmt.Println("  (no accounts configured)")
+	} else {
+		now := time.Now()
+		fmt.Printf("  %-18s %-8s %-28s %-26s %s\n", "ACCOUNT", "PLAN", "PRIMARY / HOURLY", "WEEKLY / SECONDARY", "ACPX 5h/7d")
+		fmtWin := func(w *quota.Window) string {
+			if w == nil {
+				return "—"
+			}
+			s := fmt.Sprintf("%s: %.0f%% left", w.Label, w.LeftPercent)
+			if r := quota.FormatResetIn(w.ResetsAt, now); r != "" {
+				s += " (resets " + r + ")"
+			}
+			return s
+		}
+		for _, q := range qrep.Accounts {
+			plan := q.PlanType
+			if plan == "" {
+				plan = q.Source
+			}
+			fmt.Printf("  %-18s %-8s %-28s %-26s %d / %d reqs\n",
+				q.AccountName, plan, fmtWin(q.Primary), fmtWin(q.Secondary), q.Local5h, q.Local7d)
+		}
+	}
+
+	fmt.Println("\nBy Account:")
 	if len(sum.ByAccount) == 0 {
 		fmt.Println("  (no traffic recorded yet)")
 	}

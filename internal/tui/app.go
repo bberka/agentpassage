@@ -18,6 +18,7 @@ import (
 	"github.com/bberka/acpx/internal/gateway"
 	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/logbuf"
+	"github.com/bberka/acpx/internal/quota"
 	"github.com/bberka/acpx/internal/service"
 )
 
@@ -84,6 +85,11 @@ type registrySyncMsg struct {
 
 type healthCheckDoneMsg struct {
 	report health.Report
+	err    error
+}
+
+type quotaRefreshDoneMsg struct {
+	report quota.Report
 	err    error
 }
 
@@ -401,6 +407,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.setStatus(fmt.Sprintf("Health check: %d/%d accounts healthy", rep.HealthyCount, rep.TotalCount), false)
 		}
+		return a, nil
+
+	case quotaRefreshDoneMsg:
+		if msg.err != nil {
+			a.setStatus("Quota refresh failed: "+msg.err.Error(), true)
+			return a, nil
+		}
+		live := 0
+		for _, q := range msg.report.Accounts {
+			if strings.HasSuffix(q.Source, "-live") {
+				live++
+			}
+		}
+		a.setStatus(fmt.Sprintf("Updated subscription limits (%d live / %d accounts)", live, len(msg.report.Accounts)), false)
 		return a, nil
 
 	case tea.KeyMsg:
@@ -748,6 +768,7 @@ func (a *App) renderFooter() string {
 			}
 		case ScreenUsage:
 			hints = []string{
+				a.styles.KeyHint("R", "refresh limits"),
 				a.styles.KeyHint("o", "open web hub"),
 				a.styles.KeyHint("u", "copy hub URL"),
 				a.styles.KeyHint("t", "24h / 14d"),
@@ -1001,5 +1022,14 @@ func (a *App) runHealthCheckCmd(accountID string) tea.Cmd {
 		defer cancel()
 		rep, err := a.srv.CheckHealthNow(ctx, accountID)
 		return healthCheckDoneMsg{report: rep, err: err}
+	}
+}
+
+func (a *App) refreshQuotaCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		rep, err := a.srv.RefreshQuotaNow(ctx, "")
+		return quotaRefreshDoneMsg{report: rep, err: err}
 	}
 }

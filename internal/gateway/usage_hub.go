@@ -67,6 +67,17 @@ const usageHubHTML = `<!doctype html>
   .b-err { background: rgba(248,81,73,.15); color: var(--err); }
   .share-bg { width: 80px; height: 6px; background: var(--elev); border-radius: 4px; overflow: hidden; display: inline-block; vertical-align: middle; }
   .share-fg { height: 100%; background: var(--accent); }
+  .q-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .q-card { background: var(--elev); border: 1px solid var(--border); border-radius: 8px; padding: 12px; display: grid; gap: 8px; }
+  .q-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .q-name { font-family: var(--mono); font-weight: 600; font-size: 13px; }
+  .q-row { display: grid; gap: 4px; }
+  .q-meta { display: flex; justify-content: space-between; font-size: 12px; font-family: var(--mono); }
+  .q-bar { width: 100%; height: 8px; background: var(--bg); border-radius: 5px; overflow: hidden; }
+  .q-fill { height: 100%; border-radius: 5px; transition: width .25s; }
+  .q-ok { background: var(--ok); }
+  .q-warn { background: var(--warn); }
+  .q-err { background: var(--err); }
   #authBox { max-width: 440px; margin: 80px auto; text-align: center; }
   #authBox input { width: 100%; margin: 14px 0 10px; font-family: var(--mono); }
   .muted { color: var(--muted); }
@@ -79,6 +90,7 @@ const usageHubHTML = `<!doctype html>
   <div class="brand"><span class="pill">◆ acpx</span> Usage Report Hub</div>
   <div class="controls">
     <span id="liveDot" class="muted" style="font-size:12px;">localhost</span>
+    <button id="refreshQuotaBtn">Refresh Limits</button>
     <button id="checkHealthBtn">Check Health</button>
     <button id="toggleChart">24h / 14d</button>
     <button id="toggleAuto">Auto: ON</button>
@@ -102,6 +114,11 @@ const usageHubHTML = `<!doctype html>
     <div class="card"><div class="kpi-label">Success Rate</div><div class="kpi-val" id="kRate">100%</div><div class="kpi-sub" id="kErrSub">0 errors</div></div>
     <div class="card"><div class="kpi-label">Total Tokens</div><div class="kpi-val" id="kTok">0</div><div class="kpi-sub" id="kTokSub">in: 0 · out: 0</div></div>
     <div class="card"><div class="kpi-label">Avg Latency</div><div class="kpi-val" id="kLat">0 ms</div><div class="kpi-sub" id="kModels">0 models</div></div>
+  </section>
+
+  <section class="card">
+    <h2><span>Subscription Limits &amp; Remaining Quota</span><span id="quotaMeta" class="muted" style="font-size:12px;font-weight:400;">hourly · weekly · monthly</span></h2>
+    <div id="quotaGrid" class="q-grid"></div>
   </section>
 
   <section class="card">
@@ -138,6 +155,7 @@ let autoRefresh = true;
 let lastUsage = null;
 let lastState = null;
 let lastHealth = null;
+let lastQuota = null;
 
 const $ = id => document.getElementById(id);
 const fmt = n => Number(n || 0).toLocaleString();
@@ -160,10 +178,11 @@ async function fetchData() {
   if (!apiKey) { showAuth(); return; }
   try {
     const h = { 'Authorization': 'Bearer ' + apiKey };
-    const [uRes, sRes, hRes] = await Promise.all([
+    const [uRes, sRes, hRes, qRes] = await Promise.all([
       fetch('/admin/usage', { headers: h }),
       fetch('/admin/state', { headers: h }),
       fetch('/admin/health', { headers: h }),
+      fetch('/admin/quota', { headers: h }),
     ]);
     if (uRes.status === 401 || sRes.status === 401) {
       sessionStorage.removeItem('acpx_key');
@@ -174,6 +193,7 @@ async function fetchData() {
     lastUsage = await uRes.json();
     lastState = await sRes.json();
     lastHealth = hRes.ok ? await hRes.json() : null;
+    lastQuota = qRes.ok ? await qRes.json() : null;
     showApp();
     render();
     $('liveDot').textContent = '● ' + (lastState.address || '127.0.0.1') + ' · updated ' + new Date().toLocaleTimeString();
@@ -189,9 +209,56 @@ function stateBadge(st) {
   return '<span class="badge b-err">' + esc(st || 'unknown') + '</span>';
 }
 
+function fmtReset(iso) {
+  if (!iso) return '';
+  const diffMs = new Date(iso).getTime() - Date.now();
+  if (diffMs <= 0) return 'resets now';
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 60) return 'resets in ' + mins + 'm';
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 48) return 'resets in ' + hrs + 'h ' + (mins % 60) + 'm';
+  return 'resets in ' + Math.floor(hrs / 24) + 'd ' + (hrs % 24) + 'h';
+}
+
+function renderQuotaWindow(w) {
+  if (!w) return '';
+  const used = Math.max(0, Math.min(100, Number(w.used_percent || 0)));
+  const left = Math.max(0, Math.min(100, Number(w.left_percent != null ? w.left_percent : (100 - used))));
+  const cls = used >= 90 ? 'q-err' : (used >= 70 ? 'q-warn' : 'q-ok');
+  const countTxt = w.limit_count ? (' (' + fmt(w.used_count) + '/' + fmt(w.limit_count) + ')') : '';
+  const resetTxt = fmtReset(w.resets_at);
+  return '<div class="q-row">' +
+    '<div class="q-meta"><span>' + esc(w.label) + countTxt + '</span><span><strong>' + left.toFixed(0) + '% left</strong>' + (resetTxt ? ' · <span class="muted">' + esc(resetTxt) + '</span>' : '') + '</span></div>' +
+    '<div class="q-bar"><div class="q-fill ' + cls + '" style="width:' + left + '%"></div></div>' +
+    '</div>';
+}
+
 function render() {
   const u = lastUsage || {};
   const s = lastState || {};
+
+  // Subscription Limits cards
+  const qList = (lastQuota && lastQuota.accounts) || [];
+  if (lastQuota && lastQuota.updated_at && !String(lastQuota.updated_at).startsWith('0001-')) {
+    $('quotaMeta').textContent = 'updated ' + new Date(lastQuota.updated_at).toLocaleTimeString();
+  }
+  $('quotaGrid').innerHTML = qList.map(q => {
+    const srcBadge = q.source && q.source.endsWith('-live')
+      ? '<span class="badge b-ok">' + esc(q.plan_type ? q.plan_type : 'live') + '</span>'
+      : (q.source === 'local-budget'
+        ? '<span class="badge b-warn">budget</span>'
+        : '<span class="badge" style="background:rgba(139,148,158,.15);color:var(--muted);">local</span>');
+    let body = renderQuotaWindow(q.primary) + renderQuotaWindow(q.secondary);
+    if (!body) {
+      body = '<div class="muted" style="font-size:12px;">' +
+        'Local traffic: <strong>' + fmt(q.local_5h_reqs) + '</strong> reqs (5h) · <strong>' + fmt(q.local_7d_reqs) + '</strong> reqs (7d)' +
+        (q.error ? '<br><span style="color:var(--warn);">' + esc(q.error) + '</span>' : '<br>Provider has no live quota API — set hourly/weekly budgets in Accounts.') +
+        '</div>';
+    } else {
+      body += '<div class="muted" style="font-size:11px;font-family:var(--mono);">acpx traffic: 1h=' + fmt(q.local_1h_reqs) + ' · 5h=' + fmt(q.local_5h_reqs) + ' · 7d=' + fmt(q.local_7d_reqs) + (q.credits ? ' · ' + esc(q.credits) : '') + '</div>';
+    }
+    return '<div class="q-card"><div class="q-head"><span class="q-name">' + esc(q.account_name) + '</span>' + srcBadge + '</div>' + body + '</div>';
+  }).join('') || '<div class="muted">No accounts configured yet.</div>';
 
   $('banners').innerHTML = (s.banners || []).map(b =>
     '<div class="err-banner">! ' + esc(b.account_name) + ': ' + esc(b.message) + '</div>'
@@ -267,6 +334,16 @@ $('unlockBtn').onclick = () => {
 $('keyInput').onkeydown = e => { if (e.key === 'Enter') $('unlockBtn').click(); };
 $('logoutBtn').onclick = () => { sessionStorage.removeItem('acpx_key'); apiKey = ''; showAuth(); };
 $('refreshBtn').onclick = fetchData;
+$('refreshQuotaBtn').onclick = async () => {
+  if (!apiKey) return;
+  $('refreshQuotaBtn').textContent = 'Refreshing...';
+  try {
+    await fetch('/admin/quota/refresh', { method: 'POST', headers: { 'Authorization': 'Bearer ' + apiKey } });
+    await fetchData();
+  } finally {
+    $('refreshQuotaBtn').textContent = 'Refresh Limits';
+  }
+};
 $('checkHealthBtn').onclick = async () => {
   if (!apiKey) return;
   $('checkHealthBtn').textContent = 'Checking...';

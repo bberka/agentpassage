@@ -36,6 +36,12 @@ type AccountUsage struct {
 	Backend          string    `json:"backend"`
 	Requests         int       `json:"requests"`
 	Errors           int       `json:"errors"`
+	Reqs1h           int       `json:"reqs_1h"`
+	Reqs5h           int       `json:"reqs_5h"`
+	Reqs24h          int       `json:"reqs_24h"`
+	Reqs7d           int       `json:"reqs_7d"`
+	Tokens5h         int       `json:"tokens_5h"`
+	Tokens7d         int       `json:"tokens_7d"`
 	PromptTokens     int       `json:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`
 	TotalTokens      int       `json:"total_tokens"`
@@ -189,6 +195,8 @@ func (t *Tracker) SummaryAt(now time.Time) Summary {
 		s.Daily14d[i].Label = dayStart.AddDate(0, 0, i).Format("01-02")
 	}
 
+	cutoff1h := now.Add(-1 * time.Hour)
+	cutoff5h := now.Add(-5 * time.Hour)
 	cutoff24h := now.Add(-24 * time.Hour)
 	cutoff7d := now.Add(-7 * 24 * time.Hour)
 
@@ -263,6 +271,20 @@ func (t *Tracker) SummaryAt(now time.Time) Summary {
 		aa.u.Requests++
 		if isErr {
 			aa.u.Errors++
+		}
+		if !r.Time.Before(cutoff1h) {
+			aa.u.Reqs1h++
+		}
+		if !r.Time.Before(cutoff5h) {
+			aa.u.Reqs5h++
+			aa.u.Tokens5h += r.TotalTokens
+		}
+		if !r.Time.Before(cutoff24h) {
+			aa.u.Reqs24h++
+		}
+		if !r.Time.Before(cutoff7d) {
+			aa.u.Reqs7d++
+			aa.u.Tokens7d += r.TotalTokens
 		}
 		aa.u.PromptTokens += r.PromptTokens
 		aa.u.CompletionTokens += r.CompletionTokens

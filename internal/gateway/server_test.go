@@ -215,6 +215,19 @@ func TestGatewayOpenAIAndAnthropicEndpoints(t *testing.T) {
 	if !strings.Contains(string(body), `"overall_health":"healthy"`) || !strings.Contains(string(body), `"accounts_healthy":1`) {
 		t.Fatalf("expected enriched /healthz with overall_health=healthy, got %s", body)
 	}
+
+	// 9. Subscription Quota API (/admin/quota and POST /admin/quota/refresh)
+	req, _ = http.NewRequest("GET", ts.URL+"/admin/quota", nil)
+	req.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("GET /admin/quota failed: %v %d", err, res.StatusCode)
+	}
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if !strings.Contains(string(body), `"account_name":"deepseek/default"`) || !strings.Contains(string(body), `"local_5h_reqs":4`) {
+		t.Fatalf("expected deepseek/default with local_5h_reqs=4 in /admin/quota, got %s", body)
+	}
 }
 
 func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {

@@ -5,10 +5,12 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/bberka/acpx/internal/quota"
 	"github.com/bberka/acpx/internal/usage"
 )
 
@@ -26,10 +28,9 @@ func (a *App) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "t":
 		a.usageShow14d = !a.usageShow14d
-	case "r":
-		if a.srv.Attached() {
-			return a, a.syncDaemonCmd()
-		}
+	case "r", "R":
+		a.setStatus("Refreshing live subscription limits...", false)
+		return a, a.refreshQuotaCmd()
 	}
 	return a, nil
 }
@@ -86,8 +87,36 @@ func renderShareBar(count, total, width int) string {
 	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }
 
+func (a *App) renderQuotaWindowInline(w *quota.Window, now time.Time) string {
+	if w == nil {
+		return a.styles.Muted.Render("—")
+	}
+	left := int(w.LeftPercent + 0.5)
+	if left < 0 {
+		left = 0
+	}
+	if left > 100 {
+		left = 100
+	}
+	bar := renderShareBar(left, 100, 8)
+	st := a.styles.StateReady
+	if w.UsedPercent >= 90 {
+		st = a.styles.StateErr
+	} else if w.UsedPercent >= 70 {
+		st = a.styles.StateWarn
+	}
+	reset := quota.FormatResetIn(w.ResetsAt, now)
+	meta := fmt.Sprintf("%s %d%% left", w.Label, left)
+	if reset != "" {
+		meta += " (" + reset + ")"
+	}
+	return st.Render(bar) + " " + meta
+}
+
 func (a *App) viewUsage(bodyHeight int) string {
 	u := a.srv.LiveUsage()
+	qRep := a.srv.LiveQuota()
+	now := time.Now()
 	fullW := max(a.width-2, 40)
 	innerW := fullW - 4
 
@@ -128,12 +157,54 @@ func (a *App) viewUsage(bodyHeight int) string {
 	}
 	topCard := a.styles.Card.Width(fullW).Render(strings.Join(topLines, "\n"))
 
-	remH := max(bodyHeight-lipgloss.Height(topCard), 8)
+	// Subscription Limits card (Hourly / Weekly remaining quota)
+	var qLines []string
+	qMeta := "press R to refresh live limits"
+	if !qRep.UpdatedAt.IsZero() {
+		qMeta = "updated " + qRep.UpdatedAt.Format("15:04:05")
+	}
+	qLines = append(qLines, a.styles.Subtitle.Render("Subscription Limits (Hourly / Weekly)")+"   "+a.styles.Muted.Render(qMeta))
+	qLines = append(qLines, a.styles.TableHeader.Render(fmt.Sprintf("%-18s %-8s %-30s %-26s %s", "ACCOUNT", "PLAN", "PRIMARY / HOURLY", "WEEKLY / SECONDARY", "ACPX 5h/7d")))
+	if len(qRep.Accounts) == 0 {
+		qLines = append(qLines, a.styles.Muted.Render("No accounts configured yet."))
+	} else {
+		maxQ := clamp(bodyHeight/3, 3, 8)
+		for i, q := range qRep.Accounts {
+			if i >= maxQ {
+				qLines = append(qLines, a.styles.Muted.Render(fmt.Sprintf("... +%d more (open web hub with 'o')", len(qRep.Accounts)-maxQ)))
+				break
+			}
+			plan := q.PlanType
+			if plan == "" {
+				switch q.Source {
+				case "local-budget":
+					plan = "budget"
+				case "unavailable":
+					plan = "n/a"
+				default:
+					plan = "local"
+				}
+			}
+			prim := a.renderQuotaWindowInline(q.Primary, now)
+			sec := a.renderQuotaWindowInline(q.Secondary, now)
+			localCol := fmt.Sprintf("%d / %d reqs", q.Local5h, q.Local7d)
+			qLines = append(qLines, fmt.Sprintf("%-18s %-8s %-30s %-26s %s",
+				truncate(q.AccountName, 18),
+				truncate(plan, 8),
+				prim,
+				sec,
+				a.styles.Muted.Render(truncate(localCol, max(innerW-88, 8))),
+			))
+		}
+	}
+	quotaCard := a.styles.Card.Width(fullW).Render(strings.Join(qLines, "\n"))
+
+	remH := max(bodyHeight-lipgloss.Height(topCard)-lipgloss.Height(quotaCard), 6)
 	totalReq := max(u.TotalRequests, 1)
 
 	renderAccountCard := func(w, h int) string {
 		inW := w - 4
-		maxRows := max(h-4, 3)
+		maxRows := max(h-4, 2)
 		var lines []string
 		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("By Account (%d)", len(u.ByAccount))))
 		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-18s %-6s %-5s %-8s %-6s %s", "ACCOUNT", "REQS", "ERR", "TOKENS", "AVG", "SHARE")))
@@ -160,7 +231,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 
 	renderModelCard := func(w, h int) string {
 		inW := w - 4
-		maxRows := max(h-4, 3)
+		maxRows := max(h-4, 2)
 		var lines []string
 		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("By Model (%d)", len(u.ByModel))))
 		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-24s %-6s %-8s %-6s %s", "MODEL", "REQS", "TOKENS", "AVG", "SHARE")))
@@ -188,10 +259,10 @@ func (a *App) viewUsage(bodyHeight int) string {
 		leftW := (a.width - 3) / 2
 		rightW := a.width - 3 - leftW
 		bottom := lipgloss.JoinHorizontal(lipgloss.Top, renderAccountCard(leftW, remH), " ", renderModelCard(rightW, remH))
-		return lipgloss.JoinVertical(lipgloss.Left, topCard, bottom)
+		return lipgloss.JoinVertical(lipgloss.Left, topCard, quotaCard, bottom)
 	}
 
 	h1 := max(remH/2, 4)
 	h2 := max(remH-h1, 4)
-	return lipgloss.JoinVertical(lipgloss.Left, topCard, renderAccountCard(fullW, h1), renderModelCard(fullW, h2))
+	return lipgloss.JoinVertical(lipgloss.Left, topCard, quotaCard, renderAccountCard(fullW, h1), renderModelCard(fullW, h2))
 }

@@ -106,6 +106,7 @@ type AccountConfig struct {
 	MaxConcurrency  int               `toml:"max_concurrency"`
 	HourlyLimit     int               `toml:"hourly_limit,omitempty"`
 	DailyLimit      int               `toml:"daily_limit,omitempty"`
+	WeeklyLimit     int               `toml:"weekly_limit,omitempty"`
 }
 
 // EffectivePrefix returns the model prefix used when ExposeMode is "prefix" or "both".

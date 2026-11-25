@@ -23,6 +23,7 @@ import (
 	"github.com/bberka/acpx/internal/health"
 	"github.com/bberka/acpx/internal/logbuf"
 	"github.com/bberka/acpx/internal/pool"
+	"github.com/bberka/acpx/internal/quota"
 	"github.com/bberka/acpx/internal/router"
 	"github.com/bberka/acpx/internal/secrets"
 	"github.com/bberka/acpx/internal/usage"
@@ -45,6 +46,7 @@ type Server struct {
 	logs     *logbuf.Buffer
 	usage    *usage.Tracker
 	health   *health.Checker
+	quota    *quota.Fetcher
 
 	srv          *http.Server
 	listener     net.Listener
@@ -56,6 +58,7 @@ type Server struct {
 	remoteLogs   []logbuf.Entry
 	remoteUsage  *usage.Summary
 	remoteHealth *health.Report
+	remoteQuota  *quota.Report
 }
 
 func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptors.Registry, logs *logbuf.Buffer) *Server {
@@ -98,6 +101,17 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		logs,
 		cfg.Health,
 	)
+	s.quota = quota.New(
+		dataDir,
+		func() []config.AccountConfig {
+			s.mu.RLock()
+			defer s.mu.RUnlock()
+			return append([]config.AccountConfig(nil), s.cfg.Accounts...)
+		},
+		func() usage.Summary {
+			return s.LiveUsage()
+		},
+	)
 	if logs != nil {
 		logs.RegisterSecret(cfg.Server.LocalKey)
 	}
@@ -135,6 +149,7 @@ func (s *Server) HTTPBackend() *httpbackend.Client { return s.httpBE }
 func (s *Server) Logs() *logbuf.Buffer        { return s.logs }
 func (s *Server) Usage() *usage.Tracker       { return s.usage }
 func (s *Server) Health() *health.Checker     { return s.health }
+func (s *Server) Quota() *quota.Fetcher       { return s.quota }
 func (s *Server) DataDir() string             { return s.dataDir }
 
 func (s *Server) ReloadConfig(cfg *config.Config) error {
@@ -351,6 +366,79 @@ func (s *Server) SyncFromDaemon() {
 			_ = resp.Body.Close()
 		}
 	}
+
+	// Fetch /admin/quota
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/quota", nil); err == nil {
+		req.Header.Set("Authorization", "Bearer "+key)
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				var qrep quota.Report
+				if err := json.NewDecoder(resp.Body).Decode(&qrep); err == nil {
+					s.mu.Lock()
+					s.remoteQuota = &qrep
+					s.mu.Unlock()
+				}
+			}
+			_ = resp.Body.Close()
+		}
+	}
+}
+
+// LiveQuota returns the latest subscription quota & rolling usage report.
+func (s *Server) LiveQuota() quota.Report {
+	s.mu.RLock()
+	attached := s.attached
+	rq := s.remoteQuota
+	s.mu.RUnlock()
+	if attached && rq != nil {
+		return *rq
+	}
+	if s.quota == nil {
+		return quota.Report{}
+	}
+	return s.quota.Report()
+}
+
+// RefreshQuotaNow fetches fresh subscription limits (via daemon if attached, or locally).
+func (s *Server) RefreshQuotaNow(ctx context.Context, accountID string) (quota.Report, error) {
+	s.mu.RLock()
+	attached := s.attached
+	addr := s.listenOn
+	key := s.cfg.Server.LocalKey
+	s.mu.RUnlock()
+
+	if attached && addr != "" {
+		url := "http://" + addr + "/admin/quota/refresh"
+		if accountID != "" {
+			url += "?account=" + accountID
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		if err != nil {
+			return quota.Report{}, err
+		}
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return quota.Report{}, err
+		}
+		defer resp.Body.Close()
+		var rep quota.Report
+		if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
+			return quota.Report{}, err
+		}
+		s.mu.Lock()
+		s.remoteQuota = &rep
+		s.mu.Unlock()
+		return rep, nil
+	}
+
+	if accountID != "" {
+		if acct := s.Config().FindAccount(accountID); acct != nil {
+			s.quota.RefreshOne(ctx, *acct)
+			return s.quota.Report(), nil
+		}
+	}
+	return s.quota.RefreshAll(ctx), nil
 }
 
 // LiveHealth returns the latest health check report (from daemon when attached, or local checker).
@@ -498,6 +586,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/state", s.withAuth(s.handleAdminState))
 	mux.HandleFunc("GET /admin/logs", s.withAuth(s.handleAdminLogs))
 	mux.HandleFunc("GET /admin/usage", s.withAuth(s.handleAdminUsage))
+	mux.HandleFunc("GET /admin/quota", s.withAuth(s.handleAdminQuota))
+	mux.HandleFunc("POST /admin/quota/refresh", s.withAuth(s.handleAdminQuotaRefresh))
 	mux.HandleFunc("GET /admin/health", s.withAuth(s.handleAdminHealth))
 	mux.HandleFunc("POST /admin/health/check", s.withAuth(s.handleAdminHealthCheck))
 	mux.HandleFunc("POST /admin/reload", s.withAuth(s.handleAdminReload))
@@ -543,6 +633,9 @@ func (s *Server) Start() error {
 	if s.health != nil {
 		s.health.Start()
 	}
+	if s.quota != nil {
+		s.quota.Start()
+	}
 
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -565,6 +658,9 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.acpBE.Close()
 	if s.health != nil {
 		s.health.Stop()
+	}
+	if s.quota != nil {
+		s.quota.Stop()
 	}
 	if s.usage != nil {
 		_ = s.usage.Close()
@@ -647,6 +743,20 @@ func (s *Server) handleAdminHealthCheck(w http.ResponseWriter, r *http.Request) 
 	rep, err := s.CheckHealthNow(r.Context(), acctID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "health_check_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+func (s *Server) handleAdminQuota(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.LiveQuota())
+}
+
+func (s *Server) handleAdminQuotaRefresh(w http.ResponseWriter, r *http.Request) {
+	acctID := strings.TrimSpace(r.URL.Query().Get("account"))
+	rep, err := s.RefreshQuotaNow(r.Context(), acctID)
+	if err != nil {
+		writeOpenAIError(w, http.StatusInternalServerError, "quota_error", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, rep)
