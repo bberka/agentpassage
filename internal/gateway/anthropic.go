@@ -150,7 +150,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
-	s.recordUsage(r.URL.Path, req.Model, acctName, acct.Backend, http.StatusOK, start, resp.Usage, resp.Usage.TotalTokens == 0)
+	s.recordUsageForRequest(r, res.UsedModel, acctName, acct.Backend, http.StatusOK, start, resp.Usage, resp.Usage.TotalTokens == 0)
 	s.logRequest(r, req.Model, acctName, http.StatusOK, start, nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":            msgID,
@@ -322,7 +322,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 				flusher.Flush()
 				u := backend.Usage{PromptTokens: estimateMessagesTokens(req.Messages), CompletionTokens: outputTokens}
 				u.TotalTokens = u.PromptTokens + u.CompletionTokens
-				s.recordUsage(r.URL.Path, usedModel, acctName, acct.Backend, http.StatusOK, start, u, outputTokens == 0)
+				s.recordUsageForRequest(r, usedModel, acctName, acct.Backend, http.StatusOK, start, u, outputTokens == 0)
 				s.logRequest(r, usedModel, acctName, http.StatusOK, start, nil)
 				return
 			}

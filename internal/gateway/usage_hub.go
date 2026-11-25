@@ -3,7 +3,8 @@ package gateway
 import "net/http"
 
 func (s *Server) handleAdminUsage(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.LiveUsage())
+	period := r.URL.Query().Get("period")
+	writeJSON(w, http.StatusOK, s.LiveUsagePeriod(period))
 }
 
 func (s *Server) handleUsageHub(w http.ResponseWriter, r *http.Request) {
@@ -87,9 +88,16 @@ const usageHubHTML = `<!doctype html>
 </head>
 <body>
 <header>
-  <div class="brand"><span class="pill">◆ apx</span> Usage Report Hub</div>
+  <div class="brand"><span class="pill">◆ apx</span> AgentPassage Usage Hub</div>
   <div class="controls">
     <span id="liveDot" class="muted" style="font-size:12px;">localhost</span>
+    <select id="periodSel" style="background:var(--elev);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:6px 10px;font-size:13px;">
+      <option value="all">Period: All</option>
+      <option value="1h">Last 1h</option>
+      <option value="24h">Last 24h</option>
+      <option value="7d">Last 7d</option>
+      <option value="30d">Last 30d</option>
+    </select>
     <button id="refreshQuotaBtn">Refresh Limits</button>
     <button id="checkHealthBtn">Check Health</button>
     <button id="toggleChart">24h / 14d</button>
@@ -114,6 +122,7 @@ const usageHubHTML = `<!doctype html>
     <div class="card"><div class="kpi-label">Success Rate</div><div class="kpi-val" id="kRate">100%</div><div class="kpi-sub" id="kErrSub">0 errors</div></div>
     <div class="card"><div class="kpi-label">Total Tokens</div><div class="kpi-val" id="kTok">0</div><div class="kpi-sub" id="kTokSub">in: 0 · out: 0</div></div>
     <div class="card"><div class="kpi-label">Avg Latency</div><div class="kpi-val" id="kLat">0 ms</div><div class="kpi-sub" id="kModels">0 models</div></div>
+    <div class="card"><div class="kpi-label">Est. Cost (Ref)</div><div class="kpi-val" id="kCost">$0.00</div><div class="kpi-sub">estimate — list rates</div></div>
   </section>
 
   <section class="card">
@@ -133,7 +142,18 @@ const usageHubHTML = `<!doctype html>
     </div>
     <div class="card">
       <h2>By Model</h2>
-      <table><thead><tr><th>Model</th><th>Reqs</th><th>Tokens</th><th>Avg ms</th><th>Share</th></tr></thead><tbody id="modelBody"></tbody></table>
+      <table><thead><tr><th>Model</th><th>Reqs</th><th>Tokens</th><th>Est. Cost</th><th>Share</th></tr></thead><tbody id="modelBody"></tbody></table>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>By API Key</h2>
+      <table><thead><tr><th>API Key</th><th>Reqs</th><th>Err</th><th>Tokens</th><th>Est. Cost</th></tr></thead><tbody id="keyBody"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>By Project</h2>
+      <table><thead><tr><th>Project</th><th>Reqs</th><th>Err</th><th>Tokens</th><th>Est. Cost</th></tr></thead><tbody id="projBody"></tbody></table>
     </div>
   </section>
 
@@ -151,6 +171,7 @@ if (qs.get('key')) {
 }
 let apiKey = sessionStorage.getItem('apx_key') || '';
 let chartMode = '24h';
+let periodMode = 'all';
 let autoRefresh = true;
 let lastUsage = null;
 let lastState = null;
@@ -179,7 +200,7 @@ async function fetchData() {
   try {
     const h = { 'Authorization': 'Bearer ' + apiKey };
     const [uRes, sRes, hRes, qRes] = await Promise.all([
-      fetch('/admin/usage', { headers: h }),
+      fetch('/admin/usage?period=' + encodeURIComponent(periodMode), { headers: h }),
       fetch('/admin/state', { headers: h }),
       fetch('/admin/health', { headers: h }),
       fetch('/admin/quota', { headers: h }),
@@ -281,8 +302,15 @@ function render() {
   $('kErrSub').textContent = fmt(u.error_requests) + ' errors';
   $('kTok').textContent = fmt(u.total_tokens);
   $('kTokSub').textContent = 'in: ' + fmt(u.prompt_tokens) + ' · out: ' + fmt(u.completion_tokens) + ' · 24h: ' + fmt(u.tokens_24h);
+  const fmtCost = c => {
+    const n = Number(c || 0);
+    if (n <= 0) return '$0.00';
+    if (n < 0.01) return '~$' + n.toFixed(4);
+    return '~$' + n.toFixed(2);
+  };
   $('kLat').textContent = fmt(u.avg_latency_ms) + ' ms';
   $('kModels').textContent = fmt(s.models_count) + ' exposed models · ' + esc(s.secrets_backend || '');
+  $('kCost').textContent = fmtCost(u.estimated_cost_usd);
 
   const buckets = chartMode === '24h' ? (u.hourly_24h || []) : (u.daily_14d || []);
   $('chartTitle').textContent = chartMode === '24h' ? 'Requests — Last 24 Hours' : 'Requests — Last 14 Days';
@@ -328,8 +356,16 @@ function render() {
   const totalReq = Math.max(1, u.total_requests || 1);
   $('modelBody').innerHTML = (u.by_model || []).map(m => {
     const share = Math.round((m.requests / totalReq) * 100);
-    return '<tr><td>' + esc(m.model) + '</td><td>' + fmt(m.requests) + '</td><td>' + fmt(m.total_tokens) + '</td><td>' + fmt(m.avg_latency_ms) + '</td><td><span class="share-bg"><span class="share-fg" style="width:' + share + '%"></span></span> ' + share + '%</td></tr>';
+    return '<tr><td>' + esc(m.model) + '</td><td>' + fmt(m.requests) + '</td><td>' + fmt(m.total_tokens) + '</td><td>' + esc(fmtCost(m.estimated_cost_usd)) + '</td><td><span class="share-bg"><span class="share-fg" style="width:' + share + '%"></span></span> ' + share + '%</td></tr>';
   }).join('') || '<tr><td colspan="5" class="muted">No requests recorded yet</td></tr>';
+
+  $('keyBody').innerHTML = (u.by_key || []).map(k =>
+    '<tr><td>' + esc(k.key) + '</td><td>' + fmt(k.requests) + '</td><td>' + fmt(k.errors) + '</td><td>' + fmt(k.total_tokens) + '</td><td>' + esc(fmtCost(k.estimated_cost_usd)) + '</td></tr>'
+  ).join('') || '<tr><td colspan="5" class="muted">No API-key traffic yet</td></tr>';
+
+  $('projBody').innerHTML = (u.by_project || []).map(p =>
+    '<tr><td>' + esc(p.project) + '</td><td>' + fmt(p.requests) + '</td><td>' + fmt(p.errors) + '</td><td>' + fmt(p.total_tokens) + '</td><td>' + esc(fmtCost(p.estimated_cost_usd)) + '</td></tr>'
+  ).join('') || '<tr><td colspan="5" class="muted">No project traffic yet</td></tr>';
 
   $('recentBody').innerHTML = (u.recent || []).map(r => {
     const ok = r.status >= 200 && r.status < 400;
@@ -365,6 +401,7 @@ $('checkHealthBtn').onclick = async () => {
     $('checkHealthBtn').textContent = 'Check Health';
   }
 };
+$('periodSel').onchange = e => { periodMode = e.target.value; fetchData(); };
 $('toggleChart').onclick = () => { chartMode = chartMode === '24h' ? '14d' : '24h'; render(); };
 $('toggleAuto').onclick = () => { autoRefresh = !autoRefresh; $('toggleAuto').textContent = 'Auto: ' + (autoRefresh ? 'ON' : 'OFF'); };
 

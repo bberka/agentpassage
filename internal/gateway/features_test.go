@@ -142,4 +142,94 @@ func TestPrivacyFilterModelFallbackAndProjectRouting(t *testing.T) {
 	if res2.StatusCode != http.StatusOK || res2.Header.Get("X-Apx-Account") != "prov2/backup" || res2.Header.Get("X-Apx-Project") != "work" {
 		t.Fatalf("expected project-routed prov2/backup for work key, got status=%d acct=%q proj=%q", res2.StatusCode, res2.Header.Get("X-Apx-Account"), res2.Header.Get("X-Apx-Project"))
 	}
+
+	// 3. Expanded usage reporting tracks API key, project, and period filter
+	uSum := gw.LiveUsagePeriod("1h")
+	if uSum.Period != "1h" || !uSum.CostEstimated || len(uSum.ByKey) < 2 || len(uSum.ByProject) < 2 {
+		t.Fatalf("expected expanded usage with ByKey & ByProject, got %+v", uSum)
+	}
+}
+
+func TestEmbeddingsAndRerankEndpoints(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/embeddings":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": "list",
+				"data": []map[string]any{
+					{"object": "embedding", "index": 0, "embedding": []float64{0.1, 0.2, 0.3}},
+				},
+				"usage": map[string]any{"prompt_tokens": 6, "total_tokens": 6},
+			})
+		case "/v1/rerank":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results": []map[string]any{
+					{"index": 1, "relevance_score": 0.95},
+					{"index": 0, "relevance_score": 0.12},
+				},
+				"usage": map[string]any{"total_tokens": 18},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer up.Close()
+
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Server.LocalKey = "apx_embed_test_key_12345"
+	cfg.Accounts = []config.AccountConfig{
+		{
+			ID:             "embed-main",
+			Name:           "main",
+			Kind:           config.KindAPIKey,
+			Backend:        "openai",
+			Enabled:        true,
+			BaseURL:        up.URL + "/v1",
+			AuthStyle:      config.AuthNone,
+			Models:         []string{"text-embedding-3-small", "rerank-v3"},
+			MaxConcurrency: 4,
+		},
+	}
+
+	sec := secrets.NewFileOnly(dir)
+	reg, _ := descriptors.LoadRegistry(dir)
+	gw := gateway.New(dir, cfg, sec, reg, nil)
+	ts := httptest.NewServer(gw.Handler())
+	defer ts.Close()
+
+	// POST /v1/embeddings
+	embReq, _ := http.NewRequest("POST", ts.URL+"/v1/embeddings", bytes.NewBufferString(`{"model":"text-embedding-3-small","input":"hello world"}`))
+	embReq.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	embReq.Header.Set("X-Apx-Project", "search")
+	embRes, err := http.DefaultClient.Do(embReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	embBody, _ := io.ReadAll(embRes.Body)
+	embRes.Body.Close()
+	if embRes.StatusCode != http.StatusOK || !strings.Contains(string(embBody), `"embedding"`) {
+		t.Fatalf("unexpected embeddings response %d: %s", embRes.StatusCode, string(embBody))
+	}
+
+	// POST /v1/rerank
+	rrReq, _ := http.NewRequest("POST", ts.URL+"/v1/rerank", bytes.NewBufferString(`{"model":"rerank-v3","query":"go gateway","documents":["cats","agentpassage gateway"]}`))
+	rrReq.Header.Set("Authorization", "Bearer "+cfg.Server.LocalKey)
+	rrReq.Header.Set("X-Apx-Project", "search")
+	rrRes, err := http.DefaultClient.Do(rrReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rrBody, _ := io.ReadAll(rrRes.Body)
+	rrRes.Body.Close()
+	if rrRes.StatusCode != http.StatusOK || !strings.Contains(string(rrBody), `"relevance_score"`) {
+		t.Fatalf("unexpected rerank response %d: %s", rrRes.StatusCode, string(rrBody))
+	}
+
+	// Verify usage recorded for project "search" and estimated cost > 0
+	sum := gw.LiveUsagePeriod("24h")
+	if sum.TotalRequests != 2 || sum.EstimatedCostUSD <= 0 {
+		t.Fatalf("expected 2 requests with positive estimated cost, got %+v", sum)
+	}
 }

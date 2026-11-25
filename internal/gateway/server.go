@@ -518,17 +518,44 @@ func (s *Server) CheckHealthNow(ctx context.Context, accountID string) (health.R
 
 // LiveUsage returns usage summary from the background daemon when attached, or local tracker.
 func (s *Server) LiveUsage() usage.Summary {
+	return s.LiveUsagePeriod("all")
+}
+
+// LiveUsagePeriod returns a period-filtered usage summary ("1h", "24h", "7d", "30d", "all").
+func (s *Server) LiveUsagePeriod(period string) usage.Summary {
+	if period == "" {
+		period = "all"
+	}
 	s.mu.RLock()
 	attached := s.attached
 	ru := s.remoteUsage
+	addr := s.listenOn
+	key := s.cfg.Server.LocalKey
 	s.mu.RUnlock()
-	if attached && ru != nil {
-		return *ru
+	if attached {
+		if period != "all" && addr != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/usage?period="+period, nil)
+			if err == nil {
+				req.Header.Set("Authorization", "Bearer "+key)
+				if resp, err := http.DefaultClient.Do(req); err == nil {
+					defer resp.Body.Close()
+					var sum usage.Summary
+					if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&sum) == nil {
+						return sum
+					}
+				}
+			}
+		}
+		if ru != nil {
+			return *ru
+		}
 	}
 	if s.usage == nil {
 		return usage.Summary{}
 	}
-	return s.usage.Summary()
+	return s.usage.SummaryPeriod(period)
 }
 
 // UsageHubURL returns the localhost URL for the web Usage Report Hub.
@@ -612,6 +639,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleListModels))
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChatCompletions))
 	mux.HandleFunc("POST /v1/messages", s.withAuth(s.handleAnthropicMessages))
+	mux.HandleFunc("POST /v1/embeddings", s.withAuth(s.handleEmbeddings))
+	mux.HandleFunc("POST /v1/rerank", s.withAuth(s.handleRerank))
 	return mux
 }
 
@@ -1045,7 +1074,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			backendID = acct.Backend
 		}
 		s.logRequest(r, req.Model, acctName, status, start, execErr)
-		s.recordUsage(r.URL.Path, req.Model, acctName, backendID, status, start, backend.Usage{}, false)
+		s.recordUsageForRequest(r, req.Model, acctName, backendID, status, start, backend.Usage{}, false)
 		writeOpenAIError(w, status, "backend_error", execErr.Error())
 		return
 	}
@@ -1078,7 +1107,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		u.TotalTokens = u.PromptTokens + u.CompletionTokens
 		est = true
 	}
-	s.recordUsage(r.URL.Path, req.Model, acctName, acct.Backend, http.StatusOK, start, u, est)
+	s.recordUsageForRequest(r, res.UsedModel, acctName, acct.Backend, http.StatusOK, start, u, est)
 
 	id := resp.ID
 	if id == "" {
@@ -1388,7 +1417,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 					streamUsage.TotalTokens = streamUsage.PromptTokens + streamUsage.CompletionTokens
 					est = true
 				}
-				s.recordUsage(r.URL.Path, usedModel, acctName, acct.Backend, http.StatusOK, start, streamUsage, est)
+				s.recordUsageForRequest(r, usedModel, acctName, acct.Backend, http.StatusOK, start, streamUsage, est)
 				s.logRequest(r, usedModel, acctName, http.StatusOK, start, nil)
 				return
 			}
@@ -1430,9 +1459,19 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 	writeOpenAIError(w, status, "backend_error", lastErr.Error())
 }
 
-func (s *Server) recordUsage(endpoint, model, acct, backendID string, status int, start time.Time, u backend.Usage, estimated bool) {
+func (s *Server) recordUsageForRequest(r *http.Request, model, acct, backendID string, status int, start time.Time, u backend.Usage, estimated bool) {
 	if s.usage == nil {
 		return
+	}
+	keyName := "local-admin"
+	if r != nil {
+		if p := principalFromContext(r.Context()); p != nil && p.KeyName != "" {
+			keyName = p.KeyName
+		}
+	}
+	endpoint := ""
+	if r != nil {
+		endpoint = r.URL.Path
 	}
 	s.usage.Record(usage.Record{
 		Time:             time.Now(),
@@ -1440,6 +1479,8 @@ func (s *Server) recordUsage(endpoint, model, acct, backendID string, status int
 		Backend:          backendID,
 		Model:            model,
 		Endpoint:         endpoint,
+		APIKey:           keyName,
+		Project:          projectFromRequest(r),
 		Status:           status,
 		DurationMs:       time.Since(start).Milliseconds(),
 		PromptTokens:     u.PromptTokens,
