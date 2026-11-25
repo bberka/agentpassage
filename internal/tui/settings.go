@@ -34,7 +34,7 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.setStatus("Rotated local API key (clients must use the new key)", false)
 	case "enter", " ":
 		switch a.settingCursor {
-		case 0: // Port
+		case 0:
 			return a, a.openEditModal("Server Port", "TCP port (1-65535); restart required to rebind", strconv.Itoa(cfg.Server.Port), func(val string) error {
 				p, err := strconv.Atoi(val)
 				if err != nil || p < 1 || p > 65535 {
@@ -46,7 +46,7 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.setStatus(fmt.Sprintf("Saved port %d (restart acpx to apply)", p), false)
 				return nil
 			})
-		case 1: // Bind address
+		case 1:
 			return a, a.openEditModal("Bind Address", "Default 127.0.0.1 (non-loopback requires --allow-remote)", cfg.Server.Bind, func(val string) error {
 				if val == "" {
 					val = config.DefaultBind
@@ -57,9 +57,9 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.setStatus("Saved bind address "+val+" (restart acpx to apply)", false)
 				return nil
 			})
-		case 2: // Local key -> copy
+		case 2:
 			a.copyToClipboard("local API key", cfg.Server.LocalKey)
-		case 3: // Theme cycle
+		case 3:
 			themes := []string{"auto", "dark", "light", "ansi16"}
 			next := themes[0]
 			for i, t := range themes {
@@ -72,7 +72,7 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.styles = NewStyles(next)
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus("Theme set to "+next, false)
-		case 4: // ACP tool activity
+		case 4:
 			if cfg.ACP.ToolActivity == config.ToolActivityDrop {
 				cfg.ACP.ToolActivity = config.ToolActivityText
 			} else {
@@ -80,15 +80,18 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus("ACP tool activity streaming: "+cfg.ACP.ToolActivity, false)
-		case 5: // Data dir -> copy
+		case 5:
 			a.copyToClipboard("data directory", a.srv.DataDir())
 		}
 	}
 	return a, nil
 }
 
-func (a *App) viewSettings(_ int) string {
+func (a *App) viewSettings(bodyHeight int) string {
 	cfg := a.srv.Config()
+	fullW := max(a.width-2, 40)
+	innerW := fullW - 4
+
 	keyDisp := secrets.Mask(cfg.Server.LocalKey)
 	if a.revealKey {
 		keyDisp = cfg.Server.LocalKey
@@ -100,22 +103,23 @@ func (a *App) viewSettings(_ int) string {
 	}{
 		{"Port", strconv.Itoa(cfg.Server.Port)},
 		{"Bind Address", cfg.Server.Bind},
-		{"Local Key", keyDisp + "  (v:reveal c:copy g:rotate)"},
-		{"Theme", cfg.UI.Theme + "  (enter to cycle)"},
-		{"ACP Tool Activity", cfg.ACP.ToolActivity + "  (drop | text)"},
-		{"Data Directory", a.srv.DataDir() + "  (secrets: " + a.srv.Secrets().Backend() + ")"},
+		{"Local Key", keyDisp + "   (v:reveal  c:copy  g:rotate)"},
+		{"Theme", cfg.UI.Theme + "   (enter to cycle: auto / dark / light / ansi16)"},
+		{"ACP Tool Activity", cfg.ACP.ToolActivity + "   (enter to toggle: drop / text)"},
+		{"Data Directory", a.srv.DataDir() + "   (secrets: " + a.srv.Secrets().Backend() + ")"},
 	}
 
 	var lines []string
-	lines = append(lines, a.styles.Title.Render("Settings")+"  "+a.styles.Muted.Render("enter:edit/toggle  v:reveal key  g:rotate key"))
+	lines = append(lines, a.styles.Title.Render("Settings")+"   "+a.styles.Muted.Render("enter:edit/toggle  v:reveal key  g:rotate key  C:connect CLIs"))
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
 	for i, r := range rows {
-		line := fmt.Sprintf("%-20s %s", r.label, r.value)
+		line := fmt.Sprintf("%-20s %s", r.label, truncate(r.value, max(innerW-24, 16)))
 		if i == a.settingCursor {
-			lines = append(lines, a.styles.Selected.Render("> "+line))
+			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+line))
 		} else {
 			lines = append(lines, "  "+line)
 		}
 	}
-	return strings.Join(lines, "\n")
+	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

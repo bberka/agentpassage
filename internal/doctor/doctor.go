@@ -75,28 +75,39 @@ func Run(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 	}
 	checks = append(checks, Check{Name: "Gateway bind", Status: bindStatus, Detail: bindDetail})
 
-	// 4. Detected ACP CLIs
-	for _, d := range reg.DetectInstalled() {
+	// 4. Detected ACP CLIs (show all installed agents plus core primary tools)
+	primary := map[string]bool{
+		"agy": true, "codex": true, "claude": true, "cursor": true,
+		"grok": true, "opencode": true, "muse-code": true, "pi": true,
+		"cline": true, "gemini": true,
+	}
+	installedCount := 0
+	allDetected := reg.DetectInstalled()
+	for _, d := range allDetected {
 		if d.Found {
+			installedCount++
 			checks = append(checks, Check{
 				Name:   "CLI: " + d.Descriptor.Name,
 				Status: StatusOK,
 				Detail: fmt.Sprintf("found at %s", d.BinaryPath),
 			})
-		} else if d.Hint != "" {
+		} else if primary[d.Descriptor.ID] {
+			detail := fmt.Sprintf("%q not found (run `acpx install %s`)", d.Descriptor.Detect, d.Descriptor.ID)
+			if d.Hint != "" {
+				detail = d.Hint
+			}
 			checks = append(checks, Check{
 				Name:   "CLI: " + d.Descriptor.Name,
 				Status: StatusWarn,
-				Detail: d.Hint,
-			})
-		} else {
-			checks = append(checks, Check{
-				Name:   "CLI: " + d.Descriptor.Name,
-				Status: StatusWarn,
-				Detail: fmt.Sprintf("%q not found on PATH", d.Descriptor.Detect),
+				Detail: detail,
 			})
 		}
 	}
+	checks = append(checks, Check{
+		Name:   "ACP Registry",
+		Status: StatusOK,
+		Detail: fmt.Sprintf("%d agents available (%d installed locally; press 'i' in TUI or run `acpx install`)", len(allDetected), installedCount),
+	})
 
 	// 5. Configured accounts
 	if len(cfg.Accounts) == 0 {

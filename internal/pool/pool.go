@@ -274,10 +274,27 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		chosen = eligible[0]
 
 	case config.StrategyRoundRobin:
-		key := req.RuleKey
-		idx := m.rrCursor[key] % len(eligible)
-		chosen = eligible[idx]
-		m.rrCursor[key] = idx + 1
+		// If a session/thread key is present, keep messages within the same thread on its assigned account,
+		// while rotating new threads cleanly round-robin across eligible accounts.
+		if req.SessionKey != "" {
+			if pinnedID, ok := m.stickyMap[req.SessionKey]; ok {
+				for _, a := range eligible {
+					if a.ID == pinnedID {
+						chosen = a
+						break
+					}
+				}
+			}
+		}
+		if chosen == nil {
+			key := req.RuleKey
+			idx := m.rrCursor[key] % len(eligible)
+			chosen = eligible[idx]
+			m.rrCursor[key] = idx + 1
+			if req.SessionKey != "" {
+				m.stickyMap[req.SessionKey] = chosen.ID
+			}
+		}
 
 	case config.StrategyLeastBusy:
 		chosen = eligible[0]

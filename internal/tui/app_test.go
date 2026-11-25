@@ -13,12 +13,12 @@ import (
 	"github.com/bberka/acpx/internal/secrets"
 )
 
-func TestTUIRendersAllScreensAt80x24(t *testing.T) {
+func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.UI.OnboardingComplete = true
 	cfg.Accounts = []config.AccountConfig{
-		{ID: "agy-work", Name: "work", Kind: config.KindACP, Backend: "agy", Enabled: true, Models: []string{"gemini-3.1-pro"}},
+		{ID: "agy-a", Name: "a", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposeBoth, ModelPrefix: "a-", Models: []string{"gemini-4-neon"}},
 		{ID: "deepseek-main", Name: "main", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, BaseURL: "https://api.deepseek.com/v1", Models: []string{"deepseek-chat"}},
 	}
 	cfg.Routing = []config.RoutingRule{
@@ -34,29 +34,36 @@ func TestTUIRendersAllScreensAt80x24(t *testing.T) {
 	app := New(srv)
 	defer app.Close()
 
-	app.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-
-	for idx, key := range []string{"1", "2", "3", "4", "5", "6"} {
-		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
-		out := app.View()
-		if len(strings.TrimSpace(out)) == 0 {
-			t.Fatalf("screen %d rendered empty output", idx)
+	// Test both compact 80x24 and wide 120x36 full-screen layouts
+	for _, sz := range []tea.WindowSizeMsg{{Width: 80, Height: 24}, {Width: 120, Height: 36}} {
+		app.Update(sz)
+		for idx, key := range []string{"1", "2", "3", "4", "5", "6"} {
+			app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+			out := app.View()
+			if len(strings.TrimSpace(out)) == 0 {
+				t.Fatalf("size %dx%d screen %d rendered empty output", sz.Width, sz.Height, idx)
+			}
 		}
 	}
 
-	// Open help modal and ensure it renders
-	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
-	if !strings.Contains(app.View(), "Keyboard Shortcuts") {
-		t.Fatalf("expected help modal")
+	// Open ACP Registry & Installer modal (i)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	if app.modal != modalWelcome || !strings.Contains(app.View(), "ACP Registry") {
+		t.Fatalf("expected ACP Registry modal on 'i'")
 	}
-
-	// Close help, go to Routing (4), cycle strategy until subscription warning triggers
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
-	// sticky -> manual -> failover -> round-robin (warning!)
-	for range 3 {
-		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+
+	// Open Connect CLIs & T3 Code modal (C)
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("C")})
+	if app.modal != modalConnect || !strings.Contains(app.View(), "T3 Code") {
+		t.Fatalf("expected Connect modal with T3 Code on 'C'")
 	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Go to Routing (4), press 's' once -> sticky -> round-robin triggers subscription warning!
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 	if app.modal != modalSubStrategyWarn {
 		t.Fatalf("expected subscription strategy warning modal, got modal=%v", app.modal)
 	}

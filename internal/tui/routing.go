@@ -11,10 +11,10 @@ import (
 
 var strategyOrder = []string{
 	config.StrategySticky,
-	config.StrategyManual,
-	config.StrategyFailover,
 	config.StrategyRoundRobin,
 	config.StrategyLeastBusy,
+	config.StrategyFailover,
+	config.StrategyManual,
 }
 
 func (a *App) ruleHasSubscriptionAccounts(rule config.RoutingRule) bool {
@@ -52,7 +52,7 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.routingCursor++
 		}
 	case "a":
-		return a, a.openEditModal("Add Routing Rule", "Model pattern (e.g. agy/*, deepseek/*, or *)", "agy/*", func(val string) error {
+		return a, a.openEditModal("Add Routing Rule", "Model pattern (e.g. agy/*, gemini-4-neon, deepseek/*, or *)", "agy/*", func(val string) error {
 			if val == "" {
 				return fmt.Errorf("pattern is required")
 			}
@@ -72,7 +72,7 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "s": // cycle strategy
+	case "s":
 		rule := cfg.Routing[a.routingCursor]
 		idx := 0
 		for i, st := range strategyOrder {
@@ -93,7 +93,7 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = a.srv.ReloadConfig(cfg)
 		a.setStatus(fmt.Sprintf("Rule %s strategy -> %s", rule.Pattern, next), false)
 
-	case "e": // edit accounts list for rule
+	case "e":
 		rule := cfg.Routing[a.routingCursor]
 		return a, a.openEditModal("Rule Accounts", "Comma-separated account IDs/names (blank = all matching)", strings.Join(rule.Accounts, ","), func(val string) error {
 			cfg := a.srv.Config()
@@ -109,7 +109,7 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return nil
 		})
 
-	case "4": // toggle allow cross-account retry on 429
+	case "4":
 		cfg.Routing[a.routingCursor].AllowCrossAccountRetryOn429 = !cfg.Routing[a.routingCursor].AllowCrossAccountRetryOn429
 		_ = a.srv.ReloadConfig(cfg)
 		a.setStatus(fmt.Sprintf("Rule %s cross-account 429 retry = %v",
@@ -127,16 +127,22 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) viewRouting(bodyHeight int) string {
 	cfg := a.srv.Config()
+	fullW := max(a.width-2, 40)
+	innerW := fullW - 4
+
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Routing Rules (%d)", len(cfg.Routing)))+"  "+
-		a.styles.Muted.Render("a:add  s:strategy  e:accounts  4:429-retry  x:del"))
-	lines = append(lines, a.styles.Muted.Render("Default strategy without a matching rule: sticky (LRU for new sessions)."))
-	lines = append(lines, "")
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Routing Rules (%d)", len(cfg.Routing)))+"   "+
+		a.styles.Muted.Render("a:add  s:cycle strategy  e:accounts  4:429-retry  x:del"))
+	lines = append(lines, a.styles.Muted.Render("Default without a rule: sticky (LRU per thread). Use round-robin to rotate threads across accounts, or Accounts→m/P for prefixed models (a-model, b-model)."))
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(cfg.Routing) == 0 {
-		lines = append(lines, a.styles.Muted.Render("No custom rules yet. Press 'a' to create a per-model routing rule."))
-		return strings.Join(lines, "\n")
+		lines = append(lines, "")
+		lines = append(lines, a.styles.Muted.Render("  No custom rules yet. Press 'a' to add a rule (e.g. 'agy/*' or '*') and press 's' to pick round-robin/failover/sticky."))
+		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
+
+	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-24s %-14s %-11s %s", "PATTERN", "STRATEGY", "429 RETRY", "ACCOUNTS")))
 
 	for i, r := range cfg.Routing {
 		if a.filterText != "" && !strings.Contains(strings.ToLower(r.Pattern), strings.ToLower(a.filterText)) {
@@ -144,19 +150,19 @@ func (a *App) viewRouting(bodyHeight int) string {
 		}
 		accts := "(all matching)"
 		if len(r.Accounts) > 0 {
-			accts = strings.Join(r.Accounts, ",")
+			accts = strings.Join(r.Accounts, ", ")
 		}
 		retry429 := "off"
 		if r.AllowCrossAccountRetryOn429 {
 			retry429 = "on"
 		}
-		row := fmt.Sprintf("%-22s %-12s 429-retry:%-3s accounts:%s",
-			truncate(r.Pattern, 22), r.Strategy, retry429, truncate(accts, max(a.width-52, 12)))
+		row := fmt.Sprintf("%-24s %-14s %-11s %s",
+			truncate(r.Pattern, 24), r.Strategy, retry429, truncate(accts, max(innerW-54, 12)))
 		if i == a.routingCursor {
-			lines = append(lines, a.styles.Selected.Render("> "+row))
+			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 		} else {
 			lines = append(lines, "  "+row)
 		}
 	}
-	return strings.Join(lines, "\n")
+	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

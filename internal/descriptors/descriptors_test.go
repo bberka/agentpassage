@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestBuiltInAndCustomYAMLDescriptors(t *testing.T) {
+func TestBuiltInRegistryAndCustomYAMLDescriptors(t *testing.T) {
 	dir := t.TempDir()
 	bd := filepath.Join(dir, "backends.d")
 	if err := os.MkdirAll(bd, 0o700); err != nil {
@@ -32,14 +32,35 @@ default_models: ["m1", "m2"]
 		t.Fatalf("unexpected load errs: %v", errs)
 	}
 
+	// Verify agy uses relative flags + isolated HOME={profile} (prevents "must not be absolute" error)
 	agy, ok := reg.GetACP("agy")
 	if !ok {
 		t.Fatalf("missing built-in agy descriptor")
 	}
 	gotAgy := agy.ExpandCommand("/tmp/prof", nil)
-	wantAgy := []string{"agy", "acp", "--app-data-dir", "/tmp/prof", "--gemini-dir", "/tmp/prof/.gemini"}
+	wantAgy := []string{"agy", "acp", "--app-data-dir", "antigravity-cli", "--gemini-dir", ".gemini"}
 	if !reflect.DeepEqual(gotAgy, wantAgy) {
 		t.Fatalf("agy expand mismatch: got=%v want=%v", gotAgy, wantAgy)
+	}
+	gotEnv := agy.ExpandEnv("/tmp/prof", nil)
+	wantEnv := []string{"HOME=/tmp/prof", "XDG_CONFIG_HOME=/tmp/prof/.config"}
+	if !reflect.DeepEqual(gotEnv, wantEnv) {
+		t.Fatalf("agy env mismatch: got=%v want=%v", gotEnv, wantEnv)
+	}
+
+	// Verify all requested ACP agents and official registry agents are registered
+	required := []string{
+		"agy", "codex", "claude", "cursor", "grok", "opencode", "muse-code", "pi", "cline",
+		"gemini", "agoragentic-acp", "amp-acp", "auggie", "autohand", "bob", "codebuddy-code",
+		"cortex-code", "corust-agent", "crow-cli", "deepagents", "devin", "dimcode", "dirac",
+		"factory-droid", "fast-agent", "github-copilot-cli", "glm-acp-agent", "goose", "harn",
+		"junie", "kilo", "kimchi", "kimi", "kimi-code", "kiro", "minimax-code", "minion-code",
+		"mistral-vibe", "nova", "poolside", "qoder", "qwen-code", "sigit", "stakpak", "vtcode",
+	}
+	for _, id := range required {
+		if _, ok := reg.GetACP(id); !ok {
+			t.Errorf("expected ACP descriptor %q to be registered", id)
+		}
 	}
 
 	my, ok := reg.GetACP("myagent")

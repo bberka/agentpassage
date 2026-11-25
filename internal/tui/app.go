@@ -9,9 +9,11 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bberka/acpx/internal/backend"
 	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/acpx/internal/connect"
 	"github.com/bberka/acpx/internal/descriptors"
 	"github.com/bberka/acpx/internal/gateway"
 	"github.com/bberka/acpx/internal/logbuf"
@@ -29,12 +31,12 @@ const (
 )
 
 var screenNames = []string{
-	"1:Dashboard",
-	"2:Accounts",
-	"3:Models",
-	"4:Routing",
-	"5:Logs",
-	"6:Settings",
+	"1 Dashboard",
+	"2 Accounts",
+	"3 Models",
+	"4 Routing",
+	"5 Logs",
+	"6 Settings",
 }
 
 type modalKind int
@@ -44,6 +46,9 @@ const (
 	modalHelp
 	modalWelcome
 	modalAddAccount
+	modalInstalling
+	modalLoginPrompt
+	modalConnect
 	modalConfirmDelete
 	modalSubStrategyWarn
 	modalEditText
@@ -65,53 +70,67 @@ type loginDoneMsg struct {
 	err       error
 }
 
+type registrySyncMsg struct {
+	count int
+	err   error
+}
+
 // App is the root Bubble Tea model for acpx.
 type App struct {
-	srv    *gateway.Server
-	styles Styles
-	width  int
-	height int
+	srv      *gateway.Server
+	styles   Styles
+	width    int
+	height   int
+	spinTick int
 
 	screen Screen
 	modal  modalKind
 
-	// Status message shown in footer
 	statusMsg string
 	statusErr bool
 
-	// Filter state (shared across filterable screens)
 	filtering   bool
 	filterInput textinput.Model
 	filterText  string
 
-	// Key reveal on dashboard/settings
 	revealKey bool
 
-	// Cursors per screen
 	acctCursor    int
 	modelCursor   int
 	showHidden    bool
 	routingCursor int
 	logCursor     int
-	logLevel      string // "", "INFO", "WARN", "ERROR"
+	logLevel      string
 	settingCursor int
 
-	// Welcome / Detect wizard state
+	// Welcome / ACP Registry Detect & Install modal
 	detected       []descriptors.DetectedCLI
 	detectCursor   int
-	detectSelected map[int]bool
+	detectSelected map[string]bool
+	detectSearch   textinput.Model
+	detectSearching bool
 
-	// Add Account wizard state
-	addStep      int // 0=choose kind, 1=choose backend/preset, 2=enter details
+	// Connect CLI / T3 Code modal
+	connectTargets []connect.Target
+	connectCursor  int
+
+	// Live in-app ACP installer
+	installer *installState
+
+	// Pre-login confirmation target
+	loginTarget *config.AccountConfig
+
+	// Add Account wizard
+	addStep      int
 	addKind      string
 	addBackend   string
 	addListCur   int
 	addFocus     int
-	addInputs    []textinput.Model // name, key/custom-cmd, baseURL/cwd, models
+	addInputs    []textinput.Model
 	addAuthStyle string
 	addTesting   bool
 
-	// Generic single-line text edit modal (rename, alias, port, bind, pattern)
+	// Generic single-line text edit modal
 	editTitle    string
 	editHint     string
 	editInput    textinput.Model
@@ -124,7 +143,7 @@ type App struct {
 	warnRuleIdx  int
 	warnStrategy string
 
-	// Live permission approval prompt (when ACP account permission_mode == "ask")
+	// Live permission approval prompt
 	activePerm *backend.PermissionRequest
 	permCh     chan backend.PermissionRequest
 
@@ -136,8 +155,12 @@ type App struct {
 func New(srv *gateway.Server) *App {
 	cfg := srv.Config()
 	fi := textinput.New()
-	fi.Placeholder = "filter..."
+	fi.Placeholder = "type to filter..."
 	fi.CharLimit = 64
+
+	ds := textinput.New()
+	ds.Placeholder = "search 45+ ACP agents (codex, claude, cursor, opencode, cline, muse...)"
+	ds.CharLimit = 64
 
 	ei := textinput.New()
 	ei.CharLimit = 256
@@ -147,18 +170,18 @@ func New(srv *gateway.Server) *App {
 	a := &App{
 		srv:            srv,
 		styles:         NewStyles(cfg.UI.Theme),
-		width:          80,
-		height:         24,
+		width:          100,
+		height:         30,
 		screen:         ScreenDashboard,
 		filterInput:    fi,
+		detectSearch:   ds,
 		editInput:      ei,
-		detectSelected: make(map[int]bool),
+		detectSelected: make(map[string]bool),
 		permCh:         make(chan backend.PermissionRequest, 8),
 		logSubID:       subID,
 		logSubCh:       subCh,
 	}
 
-	// Hook ACP interactive permission handler into TUI.
 	srv.ACP().SetPermissionHandler(func(ctx context.Context, req backend.PermissionRequest) backend.PermissionDecision {
 		req.ReplyCh = make(chan backend.PermissionDecision, 1)
 		select {
@@ -174,7 +197,6 @@ func New(srv *gateway.Server) *App {
 		}
 	})
 
-	// First run: show Welcome & Detect wizard.
 	if !cfg.UI.OnboardingComplete && len(cfg.Accounts) == 0 {
 		a.openWelcome()
 	}
@@ -183,6 +205,9 @@ func New(srv *gateway.Server) *App {
 }
 
 func (a *App) Close() {
+	if a.installer != nil && a.installer.cancel != nil {
+		a.installer.cancel()
+	}
 	a.srv.Logs().Unsubscribe(a.logSubID)
 	a.srv.ACP().SetPermissionHandler(nil)
 }
@@ -196,7 +221,7 @@ func (a *App) Init() tea.Cmd {
 }
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
 }
@@ -228,7 +253,7 @@ func (a *App) setStatus(msg string, isErr bool) {
 
 func (a *App) copyToClipboard(label, text string) {
 	if err := clipboard.WriteAll(text); err != nil {
-		a.setStatus(fmt.Sprintf("%s: %s (clipboard unavailable: %v)", label, text, err), false)
+		a.setStatus(fmt.Sprintf("%s ready (clipboard unavailable)", label), false)
 		return
 	}
 	a.setStatus(fmt.Sprintf("Copied %s to clipboard", label), false)
@@ -237,15 +262,30 @@ func (a *App) copyToClipboard(label, text string) {
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		a.width = max(msg.Width, 40)
-		a.height = max(msg.Height, 16)
+		a.width = max(msg.Width, 60)
+		a.height = max(msg.Height, 18)
 		return a, nil
 
 	case tickMsg:
+		a.spinTick++
 		return a, tickCmd()
 
 	case logEntryMsg:
 		return a, waitLogCmd(a.logSubCh)
+
+	case installEventMsg:
+		return a.handleInstallEvent(msg)
+
+	case registrySyncMsg:
+		if msg.err != nil {
+			a.setStatus("Registry sync failed: "+msg.err.Error(), true)
+			return a, nil
+		}
+		reg, _ := descriptors.LoadRegistry(a.srv.DataDir())
+		a.srv.ACP().SetRegistry(reg)
+		a.detected = reg.DetectInstalled()
+		a.setStatus(fmt.Sprintf("Synced official ACP registry (%d agents)", msg.count), false)
+		return a, nil
 
 	case permReqMsg:
 		req := backend.PermissionRequest(msg)
@@ -274,25 +314,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loginDoneMsg:
 		if msg.err != nil {
-			a.setStatus("Login exited with error: "+msg.err.Error(), true)
+			a.setStatus("Login exited: "+msg.err.Error(), true)
 		} else {
 			a.srv.Pool().ClearHealth(msg.accountID)
-			a.setStatus("Login finished. Press 't' on Accounts to test.", false)
+			a.setStatus("Login finished — press 't' on Accounts to test.", false)
 		}
 		return a, nil
 
 	case tea.KeyMsg:
-		// Global quit on Ctrl+C
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
 		}
 
-		// Active modal handles keys first
 		if a.modal != modalNone {
 			return a.updateModal(msg)
 		}
 
-		// Filter bar input mode
 		if a.filtering {
 			switch msg.String() {
 			case "esc", "enter":
@@ -308,7 +345,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Shared keys everywhere
 		switch msg.String() {
 		case "?":
 			a.modal = modalHelp
@@ -326,6 +362,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.filterInput.Focus()
 				return a, textinput.Blink
 			}
+		case "i", "W":
+			if a.screen == ScreenDashboard || a.screen == ScreenAccounts {
+				a.openWelcome()
+				return a, nil
+			}
+		case "C":
+			a.openConnectModal()
+			return a, nil
 		case "1":
 			a.switchScreen(ScreenDashboard)
 			return a, nil
@@ -352,7 +396,6 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
-		// Dispatch to active screen
 		switch a.screen {
 		case ScreenDashboard:
 			return a.updateDashboard(msg)
@@ -395,8 +438,17 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modalWelcome:
 		return a.updateWelcomeModal(msg)
 
+	case modalInstalling:
+		return a.updateInstallModal(msg)
+
 	case modalAddAccount:
 		return a.updateAddAccountModal(msg)
+
+	case modalLoginPrompt:
+		return a.updateLoginPromptModal(msg)
+
+	case modalConnect:
+		return a.updateConnectModal(msg)
 
 	case modalConfirmDelete:
 		switch msg.String() {
@@ -482,115 +534,226 @@ func (a *App) openEditModal(title, hint, initial string, onSubmit func(string) e
 	return textinput.Blink
 }
 
-func (a *App) View() string {
-	var b strings.Builder
+func (a *App) renderTopBar() string {
+	brand := a.styles.Brand.Render("◆ acpx")
 
-	// Top tab bar (fits within 80 columns)
 	tabs := make([]string, 0, len(screenNames))
+	compact := a.width < 94
 	for i, name := range screenNames {
+		label := name
+		if compact {
+			parts := strings.SplitN(name, " ", 2)
+			label = parts[0] + ":" + parts[1][:min(len(parts[1]), 4)]
+		}
 		if Screen(i) == a.screen {
-			tabs = append(tabs, a.styles.TabActive.Render(name))
+			tabs = append(tabs, a.styles.TabActive.Render(label))
 		} else {
-			tabs = append(tabs, a.styles.TabInactive.Render(name))
+			tabs = append(tabs, a.styles.TabInactive.Render(label))
 		}
 	}
-	header := a.styles.Header.Render("acpx") + " " + strings.Join(tabs, "")
-	b.WriteString(header + "\n")
+	left := brand + " " + strings.Join(tabs, "")
 
-	// Health / security banners
+	right := a.styles.PillStopped.Render("○ stopped")
+	if a.srv.Running() {
+		right = a.styles.PillRunning.Render("● " + a.srv.Addr())
+	}
+
+	gap := max(a.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
+	line := left + strings.Repeat(" ", gap) + right
+	return a.styles.TopBar.Width(a.width).Render(line)
+}
+
+func (a *App) renderBanners() []string {
+	var out []string
 	for _, ban := range a.srv.Pool().Banners() {
-		b.WriteString(a.styles.BannerCrit.Render(fmt.Sprintf("! %s: %s", ban.AccountName, ban.Message)) + "\n")
+		out = append(out, a.styles.BannerCrit.Width(a.width).Render(fmt.Sprintf("! %s: %s", ban.AccountName, ban.Message)))
 	}
 	if a.srv.Secrets().UsingFileFallback() {
-		b.WriteString(a.styles.BannerWarn.Render("Keychain unavailable — API keys stored in 0600 file") + "\n")
+		out = append(out, a.styles.BannerWarn.Width(a.width).Render("Keychain unavailable — API keys stored in 0600 file ("+a.srv.DataDir()+"/secrets.json)"))
 	}
-
-	// Optional filter bar
 	if a.filtering || a.filterText != "" {
 		if a.filtering {
-			b.WriteString("Filter: " + a.filterInput.View() + " (enter/esc done)\n")
+			out = append(out, " "+a.styles.Highlight.Render("Filter:")+" "+a.filterInput.View()+"  "+a.styles.Muted.Render("(enter/esc done)"))
 		} else {
-			b.WriteString(a.styles.Muted.Render(fmt.Sprintf("Filter: %q  (/ edit)", a.filterText)) + "\n")
+			out = append(out, " "+a.styles.Muted.Render(fmt.Sprintf("Active filter: %q  (/ edit, switch tab to clear)", a.filterText)))
 		}
 	}
+	return out
+}
 
-	// Main content or modal
-	bodyHeight := max(a.height-5, 8)
-	var content string
+func (a *App) renderFooter() string {
+	var hints []string
 	if a.modal != modalNone {
-		content = a.viewModal()
+		hints = []string{
+			a.styles.KeyHint("esc", "close"),
+			a.styles.KeyHint("ctrl+c", "quit"),
+		}
 	} else {
 		switch a.screen {
 		case ScreenDashboard:
-			content = a.viewDashboard(bodyHeight)
+			hints = []string{
+				a.styles.KeyHint("a", "add"),
+				a.styles.KeyHint("i", "ACP registry"),
+				a.styles.KeyHint("C", "connect CLIs"),
+				a.styles.KeyHint("c", "copy URL"),
+				a.styles.KeyHint("k", "copy key"),
+				a.styles.KeyHint("?", "help"),
+				a.styles.KeyHint("q", "quit"),
+			}
 		case ScreenAccounts:
-			content = a.viewAccounts(bodyHeight)
+			hints = []string{
+				a.styles.KeyHint("a", "add"),
+				a.styles.KeyHint("i", "install ACP"),
+				a.styles.KeyHint("m", "pool/prefix"),
+				a.styles.KeyHint("P", "prefix"),
+				a.styles.KeyHint("l", "login"),
+				a.styles.KeyHint("t", "test"),
+				a.styles.KeyHint("C", "connect"),
+			}
 		case ScreenModels:
-			content = a.viewModels(bodyHeight)
+			hints = []string{
+				a.styles.KeyHint("a", "alias"),
+				a.styles.KeyHint("r", "rename"),
+				a.styles.KeyHint("h", "hide"),
+				a.styles.KeyHint("H", "show hidden"),
+				a.styles.KeyHint("/", "filter"),
+			}
 		case ScreenRouting:
-			content = a.viewRouting(bodyHeight)
+			hints = []string{
+				a.styles.KeyHint("a", "add rule"),
+				a.styles.KeyHint("s", "strategy"),
+				a.styles.KeyHint("e", "accounts"),
+				a.styles.KeyHint("4", "429-retry"),
+				a.styles.KeyHint("x", "del"),
+			}
 		case ScreenLogs:
-			content = a.viewLogs(bodyHeight)
+			hints = []string{
+				a.styles.KeyHint("j/k", "scroll"),
+				a.styles.KeyHint("l", "level"),
+				a.styles.KeyHint("/", "filter"),
+				a.styles.KeyHint("q", "back"),
+			}
 		case ScreenSettings:
-			content = a.viewSettings(bodyHeight)
+			hints = []string{
+				a.styles.KeyHint("enter", "edit/toggle"),
+				a.styles.KeyHint("v", "reveal key"),
+				a.styles.KeyHint("c", "copy key"),
+				a.styles.KeyHint("g", "rotate key"),
+			}
 		}
 	}
-	b.WriteString(content)
 
-	// Footer status bar
-	b.WriteString("\n")
+	left := strings.Join(hints, "  ")
+	right := ""
 	if a.statusMsg != "" {
 		st := a.styles.StateReady
 		if a.statusErr {
 			st = a.styles.StateErr
 		}
-		b.WriteString(st.Render(truncate(a.statusMsg, a.width-2)) + "\n")
+		avail := max(a.width-lipgloss.Width(left)-6, 12)
+		right = st.Render(truncate(a.statusMsg, avail))
 	}
-	footer := a.styles.StatusBar.Render("1-6/Tab:screens  ?:help  /:filter  q:back/quit")
-	b.WriteString(truncate(footer, a.width))
-	return b.String()
+	gap := max(a.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
+	return a.styles.FooterBar.Width(a.width).Render(left + strings.Repeat(" ", gap) + right)
+}
+
+func (a *App) View() string {
+	topBar := a.renderTopBar()
+	banners := a.renderBanners()
+	footer := a.renderFooter()
+
+	chromeLines := lipgloss.Height(topBar) + len(banners) + lipgloss.Height(footer)
+	bodyHeight := max(a.height-chromeLines, 10)
+
+	var body string
+	if a.modal != modalNone {
+		modalCard := a.viewModal()
+		body = lipgloss.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, modalCard)
+	} else {
+		switch a.screen {
+		case ScreenDashboard:
+			body = a.viewDashboard(bodyHeight)
+		case ScreenAccounts:
+			body = a.viewAccounts(bodyHeight)
+		case ScreenModels:
+			body = a.viewModels(bodyHeight)
+		case ScreenRouting:
+			body = a.viewRouting(bodyHeight)
+		case ScreenLogs:
+			body = a.viewLogs(bodyHeight)
+		case ScreenSettings:
+			body = a.viewSettings(bodyHeight)
+		}
+		body = lipgloss.Place(a.width, bodyHeight, lipgloss.Left, lipgloss.Top, body)
+	}
+
+	parts := []string{topBar}
+	parts = append(parts, banners...)
+	parts = append(parts, body, footer)
+	return strings.Join(parts, "\n")
 }
 
 func (a *App) viewModal() string {
 	switch a.modal {
 	case modalHelp:
-		return a.styles.Modal.Width(min(a.width-4, 74)).Render(strings.Join([]string{
+		cardW := clamp(a.width-12, 56, 80)
+		return a.styles.Modal.Width(cardW).Render(strings.Join([]string{
 			a.styles.Title.Render("acpx Keyboard Shortcuts"),
+			a.styles.Divider.Render(strings.Repeat("─", cardW-6)),
 			"",
-			"Global:   1-6 or Tab switch screen   ? help   / filter   q back/quit",
-			"Dashboard: c copy URL   k copy key   v reveal key   a add account   W detect",
-			"Accounts:  a add  e edit  r rename  d disable  x delete  l login  t test  p perm",
-			"Models:    r rename  a set alias  h hide/unhide  H toggle hidden",
-			"Routing:   a add rule  s cycle strategy  4 toggle 429 retry  x delete",
-			"Logs:      / filter  l cycle level (ALL/INFO/WARN/ERROR)",
-			"Settings:  enter edit selected  v reveal key  c copy key  g rotate key",
+			a.styles.Subtitle.Render("Navigation"),
+			"  1–6 / Tab     Switch screens   C Connect CLIs/T3 Code   ? Help   q Back/Quit",
 			"",
-			a.styles.Muted.Render("Press ? or Esc to close"),
+			a.styles.Subtitle.Render("Dashboard"),
+			"  a Add account   i Browse & install 45+ ACP tools   c Copy URL   k Copy key   v Reveal",
+			"",
+			a.styles.Subtitle.Render("Accounts"),
+			"  a Add   i Install ACP   m Cycle pool/prefix/both   P Edit prefix (e.g. a-, b-)",
+			"  l Login/Key   t Test   p Perm   d Toggle   r Rename   e Edit   x Delete",
+			"",
+			a.styles.Subtitle.Render("Models & Routing"),
+			"  Models:  a Alias   r Rename   h Hide/Unhide   H Show hidden   / Filter",
+			"  Routing: a Add rule   s Cycle strategy (sticky/round-robin/failover...)   4 429-retry",
+			"",
+			a.styles.KeyHint("?", "close") + "   " + a.styles.KeyHint("esc", "close"),
 		}, "\n"))
 
 	case modalWelcome:
 		return a.viewWelcomeModal()
 
+	case modalInstalling:
+		return a.viewInstallModal()
+
 	case modalAddAccount:
 		return a.viewAddAccountModal()
 
+	case modalLoginPrompt:
+		return a.viewLoginPromptModal()
+
+	case modalConnect:
+		return a.viewConnectModal()
+
 	case modalConfirmDelete:
+		cardW := clamp(a.width-16, 48, 68)
 		name := ""
 		extra := ""
 		if a.deleteTarget != nil {
 			name = a.deleteTarget.Backend + "/" + a.deleteTarget.Name
 			if a.deleteTarget.Kind == config.KindACP {
-				extra = "\nThis will also permanently delete its isolated profile directory."
+				extra = "\nIts isolated profile directory will also be permanently deleted."
 			}
 		}
-		return a.styles.Modal.Width(min(a.width-4, 68)).Render(
-			a.styles.StateErr.Render("Confirm Account Deletion") + "\n\n" +
-				fmt.Sprintf("Delete account %q?%s\n\n", name, extra) +
-				"[y] Delete   [n] Cancel",
-		)
+		return a.styles.ModalDanger.Width(cardW).Render(strings.Join([]string{
+			a.styles.StateErr.Render("Confirm Account Deletion"),
+			"",
+			fmt.Sprintf("Delete account %q?%s", name, extra),
+			"",
+			a.styles.KeyHint("y", "delete permanently") + "   " + a.styles.KeyHint("n", "cancel"),
+		}, "\n"))
 
 	case modalSubStrategyWarn:
-		return a.styles.Modal.Width(min(a.width-4, 72)).Render(strings.Join([]string{
+		cardW := clamp(a.width-14, 52, 74)
+		return a.styles.ModalWarn.Width(cardW).Render(strings.Join([]string{
 			a.styles.StateWarn.Render("Subscription Pool Warning"),
 			"",
 			fmt.Sprintf("Strategy %q spreads traffic across multiple subscription accounts.", a.warnStrategy),
@@ -599,32 +762,50 @@ func (a *App) viewModal() string {
 			"",
 			"Only proceed if you understand the risk and opt in explicitly.",
 			"",
-			"[y] I understand, enable " + a.warnStrategy + "   [n] Cancel",
+			a.styles.KeyHint("y", "enable "+a.warnStrategy) + "   " + a.styles.KeyHint("n", "cancel"),
 		}, "\n"))
 
 	case modalEditText:
-		return a.styles.Modal.Width(min(a.width-4, 68)).Render(
-			a.styles.Title.Render(a.editTitle) + "\n" +
-				a.styles.Muted.Render(a.editHint) + "\n\n" +
-				a.editInput.View() + "\n\n" +
-				a.styles.Muted.Render("Enter: save   Esc: cancel"),
-		)
+		cardW := clamp(a.width-14, 50, 72)
+		return a.styles.Modal.Width(cardW).Render(strings.Join([]string{
+			a.styles.Title.Render(a.editTitle),
+			a.styles.Muted.Render(a.editHint),
+			"",
+			a.editInput.View(),
+			"",
+			a.styles.KeyHint("enter", "save") + "   " + a.styles.KeyHint("esc", "cancel"),
+		}, "\n"))
 
 	case modalPermission:
 		if a.activePerm == nil {
 			return ""
 		}
+		cardW := clamp(a.width-12, 54, 76)
 		p := a.activePerm
-		return a.styles.Modal.Width(min(a.width-4, 74)).Render(strings.Join([]string{
+		return a.styles.ModalWarn.Width(cardW).Render(strings.Join([]string{
 			a.styles.StateWarn.Render("ACP Agent Permission Request"),
+			"",
 			fmt.Sprintf("Account: %s", p.AccountName),
 			fmt.Sprintf("Action:  %s (%s)", p.Title, p.ToolName),
-			"Args:    " + truncate(p.Arguments, 60),
+			"Args:    " + truncate(p.Arguments, cardW-16),
 			"",
-			"[y] Approve once   [n] Deny",
+			a.styles.KeyHint("y", "approve once") + "   " + a.styles.KeyHint("n", "deny"),
 		}, "\n"))
 	}
 	return ""
+}
+
+func clamp(v, lo, hi int) int {
+	if hi < lo {
+		return lo
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func truncate(s string, maxLen int) string {
@@ -658,4 +839,11 @@ func (a *App) loginAccountCmd(acct config.AccountConfig) tea.Cmd {
 	return tea.ExecProcess(cmd, func(err error) tea.Msg {
 		return loginDoneMsg{accountID: acct.ID, err: err}
 	})
+}
+
+func (a *App) syncRegistryCmd() tea.Cmd {
+	return func() tea.Msg {
+		count, err := descriptors.SyncRegistry(context.Background(), a.srv.DataDir())
+		return registrySyncMsg{count: count, err: err}
+	}
 }

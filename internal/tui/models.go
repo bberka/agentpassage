@@ -98,17 +98,23 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) viewModels(bodyHeight int) string {
 	models := a.filteredModels()
+	fullW := max(a.width-2, 40)
+	innerW := fullW - 4
+
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Models (%d)", len(models)))+"  "+
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Models (%d)", len(models)))+"   "+
 		a.styles.Muted.Render("r:rename  a:alias  h:hide  H:show-hidden  /:filter"))
-	lines = append(lines, "")
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(models) == 0 {
-		lines = append(lines, a.styles.Muted.Render("No models found. Add an account to populate models."))
-		return strings.Join(lines, "\n")
+		lines = append(lines, "")
+		lines = append(lines, a.styles.Muted.Render("  No models exposed yet. Add an account on tab 2."))
+		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	maxRows := max(bodyHeight-3, 4)
+	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-34s %-12s %-7s %s", "MODEL ID", "MODE", "KIND", "NOTES")))
+
+	maxRows := max(bodyHeight-6, 4)
 	start := 0
 	if a.modelCursor >= maxRows {
 		start = a.modelCursor - maxRows + 1
@@ -116,22 +122,36 @@ func (a *App) viewModels(bodyHeight int) string {
 
 	for i := start; i < len(models) && i < start+maxRows; i++ {
 		m := models[i]
-		flags := ""
+		mode := fmt.Sprintf("pool(%d)", len(m.AccountIDs))
+		if m.Prefixed {
+			mode = "prefix"
+		} else if m.AccountID != "" {
+			mode = "direct"
+		}
+		var flags []string
 		if m.Hidden {
-			flags += "[hidden] "
+			flags = append(flags, "[hidden]")
 		}
 		if m.Alias != "" {
-			flags += "alias:" + m.Alias + " "
+			flags = append(flags, "alias:"+m.Alias)
 		}
 		if m.DisplayName != "" {
-			flags += "name:" + m.DisplayName
+			flags = append(flags, "name:"+m.DisplayName)
 		}
-		row := fmt.Sprintf("%-34s %-7s %s", truncate(m.ID, 34), m.Kind, truncate(flags, max(a.width-46, 10)))
+		if m.AccountName != "" {
+			flags = append(flags, "acct:"+m.AccountName)
+		}
+		row := fmt.Sprintf("%-34s %-12s %-7s %s",
+			truncate(m.ID, 34),
+			mode,
+			m.Kind,
+			truncate(strings.Join(flags, " "), max(innerW-58, 10)),
+		)
 		if i == a.modelCursor {
-			lines = append(lines, a.styles.Selected.Render("> "+row))
+			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 		} else {
 			lines = append(lines, "  "+row)
 		}
 	}
-	return strings.Join(lines, "\n")
+	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

@@ -15,11 +15,12 @@ type ModelEntry struct {
 	DisplayName string   `json:"display_name,omitempty"`
 	Alias       string   `json:"alias,omitempty"`
 	Backend     string   `json:"backend"`
-	AccountID   string   `json:"account_id,omitempty"` // non-empty for manual <backend>/<account>/<model> entries
+	AccountID   string   `json:"account_id,omitempty"` // non-empty for manual or prefixed entries
 	AccountName string   `json:"account_name,omitempty"`
 	Upstream    string   `json:"upstream"`
 	Kind        string   `json:"kind"` // "acp" or "api_key"
 	Hidden      bool     `json:"hidden,omitempty"`
+	Prefixed    bool     `json:"prefixed,omitempty"`
 	AccountIDs  []string `json:"account_ids,omitempty"`
 }
 
@@ -49,9 +50,13 @@ func (r *Router) UpdateConfig(cfg *config.Config) {
 }
 
 // ListModels builds the merged model namespace:
-// - <backend>/<model> (pooled across accounts for that backend)
-// - <backend>/<account>/<model> (manual targeting for every account)
-// - aliases configured in config.Models
+// - If account.ExposeMode is "pool" or "both":
+//     - <backend>/<model> (pooled across accounts for that backend)
+//     - bare <model> (when not "default" and unambiguous across backends, so clients see e.g. "gemini-4-neon")
+//     - <backend>/<account>/<model> (explicit manual targeting)
+// - If account.ExposeMode is "prefix" or "both":
+//     - <prefix><model> (e.g. "a-gemini-4-neon", "b-gemini-4-neon") targeting that account directly
+// - Plus aliases configured in config.Models
 func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -62,7 +67,10 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 	}
 
 	pooled := make(map[string]*ModelEntry)
-	var manual []ModelEntry
+	bare := make(map[string]*ModelEntry)
+	bareBackends := make(map[string]map[string]bool)
+	var direct []ModelEntry
+	seenDirect := make(map[string]bool)
 
 	for _, acct := range r.cfg.Accounts {
 		if !acct.Enabled {
@@ -72,34 +80,81 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 		if len(models) == 0 && acct.Kind == config.KindACP {
 			models = []string{"default"}
 		}
+		mode := acct.ExposeMode
+		if mode == "" {
+			mode = config.ExposePool
+		}
+
 		for _, m := range models {
 			m = strings.TrimSpace(m)
 			if m == "" {
 				continue
 			}
-			poolID := acct.Backend + "/" + m
-			if entry, ok := pooled[poolID]; ok {
-				entry.AccountIDs = append(entry.AccountIDs, acct.ID)
-			} else {
-				pooled[poolID] = &ModelEntry{
-					ID:         poolID,
-					Backend:    acct.Backend,
-					Upstream:   m,
-					Kind:       acct.Kind,
-					AccountIDs: []string{acct.ID},
+
+			if mode == config.ExposePool || mode == config.ExposeBoth {
+				poolID := acct.Backend + "/" + m
+				if entry, ok := pooled[poolID]; ok {
+					entry.AccountIDs = append(entry.AccountIDs, acct.ID)
+				} else {
+					pooled[poolID] = &ModelEntry{
+						ID:         poolID,
+						Backend:    acct.Backend,
+						Upstream:   m,
+						Kind:       acct.Kind,
+						AccountIDs: []string{acct.ID},
+					}
+				}
+
+				// Also expose bare model name (e.g. "gemini-4-neon") for clean pooled rotation.
+				if m != "default" && !strings.Contains(m, "/") {
+					if bareBackends[m] == nil {
+						bareBackends[m] = make(map[string]bool)
+					}
+					bareBackends[m][acct.Backend] = true
+					if entry, ok := bare[m]; ok {
+						entry.AccountIDs = append(entry.AccountIDs, acct.ID)
+					} else {
+						bare[m] = &ModelEntry{
+							ID:         m,
+							Backend:    acct.Backend,
+							Upstream:   m,
+							Kind:       acct.Kind,
+							AccountIDs: []string{acct.ID},
+						}
+					}
+				}
+
+				manualID := acct.Backend + "/" + acct.Name + "/" + m
+				if !seenDirect[manualID] {
+					seenDirect[manualID] = true
+					direct = append(direct, ModelEntry{
+						ID:          manualID,
+						Backend:     acct.Backend,
+						AccountID:   acct.ID,
+						AccountName: acct.Name,
+						Upstream:    m,
+						Kind:        acct.Kind,
+						AccountIDs:  []string{acct.ID},
+					})
 				}
 			}
 
-			manualID := acct.Backend + "/" + acct.Name + "/" + m
-			manual = append(manual, ModelEntry{
-				ID:          manualID,
-				Backend:     acct.Backend,
-				AccountID:   acct.ID,
-				AccountName: acct.Name,
-				Upstream:    m,
-				Kind:        acct.Kind,
-				AccountIDs:  []string{acct.ID},
-			})
+			if mode == config.ExposePrefix || mode == config.ExposeBoth {
+				prefID := acct.EffectivePrefix() + m
+				if !seenDirect[prefID] {
+					seenDirect[prefID] = true
+					direct = append(direct, ModelEntry{
+						ID:          prefID,
+						Backend:     acct.Backend,
+						AccountID:   acct.ID,
+						AccountName: acct.Name,
+						Upstream:    m,
+						Kind:        acct.Kind,
+						Prefixed:    true,
+						AccountIDs:  []string{acct.ID},
+					})
+				}
+			}
 		}
 	}
 
@@ -107,7 +162,12 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 	for _, e := range pooled {
 		all = append(all, *e)
 	}
-	all = append(all, manual...)
+	for m, e := range bare {
+		if len(bareBackends[m]) == 1 && !seenDirect[m] {
+			all = append(all, *e)
+		}
+	}
+	all = append(all, direct...)
 
 	out := make([]ModelEntry, 0, len(all))
 	for _, e := range all {
@@ -160,7 +220,34 @@ func (r *Router) Resolve(requested string) (*Plan, error) {
 		}
 	}
 
-	// 2. Check explicit manual form: <backend>/<account>/<model...>
+	// 2. Check prefixed account model form: <prefix><model> (e.g. "a-gemini-4-neon")
+	for i := range r.cfg.Accounts {
+		a := &r.cfg.Accounts[i]
+		if a.ExposeMode != config.ExposePrefix && a.ExposeMode != config.ExposeBoth {
+			continue
+		}
+		pref := a.EffectivePrefix()
+		if pref != "" && strings.HasPrefix(canonical, pref) {
+			upstream := strings.TrimPrefix(canonical, pref)
+			if upstream != "" {
+				return &Plan{
+					RequestedModel: requested,
+					CanonicalModel: canonical,
+					UpstreamModel:  upstream,
+					Backend:        a.Backend,
+					Rule: config.RoutingRule{
+						Pattern:  canonical,
+						Accounts: []string{a.ID},
+						Strategy: config.StrategyManual,
+					},
+					CandidateIDs: []string{a.ID},
+					IsManual:     true,
+				}, nil
+			}
+		}
+	}
+
+	// 3. Check explicit manual form: <backend>/<account>/<model...>
 	parts := strings.SplitN(canonical, "/", 3)
 	if len(parts) == 3 {
 		backendID, acctName, upstream := parts[0], parts[1], parts[2]
@@ -183,13 +270,13 @@ func (r *Router) Resolve(requested string) (*Plan, error) {
 		}
 	}
 
-	// 3. Check <backend>/<model...> form.
+	// 4. Check <backend>/<model...> form.
 	if len(parts) >= 2 {
 		backendID := parts[0]
 		upstream := strings.Join(parts[1:], "/")
 		matchedAccounts := r.accountsForBackendLocked(backendID, upstream)
 		if len(matchedAccounts) > 0 {
-			rule := r.matchRuleLocked(canonical, matchedAccounts)
+			rule := r.matchRuleLocked(canonical, backendID, matchedAccounts)
 			candidates := r.orderCandidatesLocked(rule, matchedAccounts)
 			return &Plan{
 				RequestedModel: requested,
@@ -202,10 +289,13 @@ func (r *Router) Resolve(requested string) (*Plan, error) {
 		}
 	}
 
-	// 4. Fallback: match raw model name against accounts that list that model.
+	// 5. Fallback: match bare model name (e.g. "gemini-4-neon") across accounts exposing it in pool/both mode.
 	var matched []*config.AccountConfig
 	for i := range r.cfg.Accounts {
 		a := &r.cfg.Accounts[i]
+		if a.ExposeMode == config.ExposePrefix {
+			continue
+		}
 		for _, m := range a.Models {
 			if m == canonical {
 				matched = append(matched, a)
@@ -214,7 +304,7 @@ func (r *Router) Resolve(requested string) (*Plan, error) {
 		}
 	}
 	if len(matched) > 0 {
-		rule := r.matchRuleLocked(canonical, matched)
+		rule := r.matchRuleLocked(canonical, matched[0].Backend, matched)
 		candidates := r.orderCandidatesLocked(rule, matched)
 		return &Plan{
 			RequestedModel: requested,
@@ -248,32 +338,37 @@ func (r *Router) accountsForBackendLocked(backendID, upstream string) []*config.
 	if len(exact) > 0 {
 		return exact
 	}
-	// Allow pass-through of arbitrary model IDs for a configured backend (e.g. openrouter/any-model or agy/gemini-3.1-pro).
 	return anyInBackend
 }
 
-func (r *Router) matchRuleLocked(model string, accounts []*config.AccountConfig) config.RoutingRule {
-	// Prefer exact match, then longest glob match, then wildcard "*".
+func (r *Router) matchRuleLocked(model, backendID string, accounts []*config.AccountConfig) config.RoutingRule {
+	// Match against both requested model (e.g. "gemini-4-neon") and qualified "<backend>/<model>" (e.g. "agy/gemini-4-neon").
+	targets := []string{model}
+	if backendID != "" && !strings.HasPrefix(model, backendID+"/") {
+		targets = append(targets, backendID+"/"+model)
+	}
+
 	var best *config.RoutingRule
 	bestScore := -1
 	for i := range r.cfg.Routing {
 		rule := &r.cfg.Routing[i]
-		if rule.Pattern == model {
-			return *rule
-		}
-		matched, err := path.Match(rule.Pattern, model)
-		if !matched || err != nil {
-			// Also support simple prefix* matching across slashes (e.g. "agy/*").
-			if strings.HasSuffix(rule.Pattern, "*") {
-				prefix := strings.TrimSuffix(rule.Pattern, "*")
-				matched = strings.HasPrefix(model, prefix)
+		for _, t := range targets {
+			if rule.Pattern == t {
+				return *rule
 			}
-		}
-		if matched {
-			score := len(strings.TrimSuffix(rule.Pattern, "*"))
-			if score > bestScore {
-				bestScore = score
-				best = rule
+			matched, err := path.Match(rule.Pattern, t)
+			if !matched || err != nil {
+				if strings.HasSuffix(rule.Pattern, "*") {
+					prefix := strings.TrimSuffix(rule.Pattern, "*")
+					matched = strings.HasPrefix(t, prefix)
+				}
+			}
+			if matched {
+				score := len(strings.TrimSuffix(rule.Pattern, "*"))
+				if score > bestScore {
+					bestScore = score
+					best = rule
+				}
 			}
 		}
 	}

@@ -20,7 +20,8 @@ func (a *App) filteredAccounts() []config.AccountConfig {
 	for _, acct := range cfg.Accounts {
 		if strings.Contains(strings.ToLower(acct.Name), q) ||
 			strings.Contains(strings.ToLower(acct.Backend), q) ||
-			strings.Contains(strings.ToLower(acct.Kind), q) {
+			strings.Contains(strings.ToLower(acct.Kind), q) ||
+			strings.Contains(strings.ToLower(acct.ModelPrefix), q) {
 			out = append(out, acct)
 		}
 	}
@@ -45,9 +46,6 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		a.openAddAccount()
 		return a, nil
-	case "W":
-		a.openWelcome()
-		return a, nil
 	}
 
 	if len(accts) == 0 {
@@ -56,7 +54,7 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	selected := accts[a.acctCursor]
 
 	switch msg.String() {
-	case "d": // toggle disable/enable
+	case "d":
 		cfg := a.srv.Config()
 		if acct := cfg.FindAccount(selected.ID); acct != nil {
 			acct.Enabled = !acct.Enabled
@@ -71,7 +69,36 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = a.srv.ReloadConfig(cfg)
 		}
 
-	case "r": // rename
+	case "m": // cycle ExposeMode: pool -> prefix -> both
+		cfg := a.srv.Config()
+		if acct := cfg.FindAccount(selected.ID); acct != nil {
+			switch acct.ExposeMode {
+			case config.ExposePool, "":
+				acct.ExposeMode = config.ExposePrefix
+			case config.ExposePrefix:
+				acct.ExposeMode = config.ExposeBoth
+			default:
+				acct.ExposeMode = config.ExposePool
+			}
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus(fmt.Sprintf("%s model exposure: %s (prefix=%q)", acct.Name, acct.ExposeMode, acct.EffectivePrefix()), false)
+		}
+
+	case "P": // edit custom model prefix (e.g. a-, b-)
+		return a, a.openEditModal("Model Prefix", "Prefix for "+selected.Backend+"/"+selected.Name+" (e.g. a- -> a-gemini-4-neon)", selected.EffectivePrefix(), func(val string) error {
+			cfg := a.srv.Config()
+			if acct := cfg.FindAccount(selected.ID); acct != nil {
+				acct.ModelPrefix = val
+				if val != "" && acct.ExposeMode == config.ExposePool {
+					acct.ExposeMode = config.ExposePrefix
+				}
+				_ = a.srv.ReloadConfig(cfg)
+				a.setStatus(fmt.Sprintf("Set %s prefix=%q (mode=%s)", acct.Name, acct.EffectivePrefix(), acct.ExposeMode), false)
+			}
+			return nil
+		})
+
+	case "r":
 		return a, a.openEditModal("Rename Account", "New name for "+selected.Backend+"/"+selected.Name, selected.Name, func(val string) error {
 			if err := config.ValidateName(val); err != nil {
 				return err
@@ -85,7 +112,7 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return nil
 		})
 
-	case "e": // edit base URL / cwd or API key
+	case "e":
 		if selected.Kind == config.KindAPIKey {
 			return a, a.openEditModal("Edit Base URL", "Base URL for "+selected.Backend+"/"+selected.Name, selected.BaseURL, func(val string) error {
 				if val == "" {
@@ -100,17 +127,26 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return nil
 			})
 		}
-		return a, a.openEditModal("Edit Default Cwd", "Default working directory for ACP account "+selected.Name, selected.DefaultCwd, func(val string) error {
+		return a, a.openEditModal("Edit Models", "Comma-separated models for "+selected.Backend+"/"+selected.Name, strings.Join(selected.Models, ","), func(val string) error {
 			cfg := a.srv.Config()
 			if acct := cfg.FindAccount(selected.ID); acct != nil {
-				acct.DefaultCwd = val
+				var ms []string
+				for _, m := range strings.Split(val, ",") {
+					if m = strings.TrimSpace(m); m != "" {
+						ms = append(ms, m)
+					}
+				}
+				if len(ms) == 0 {
+					ms = []string{"default"}
+				}
+				acct.Models = ms
 				_ = a.srv.ReloadConfig(cfg)
-				a.setStatus("Updated default cwd for "+acct.Name, false)
+				a.setStatus("Updated models for "+acct.Name, false)
 			}
 			return nil
 		})
 
-	case "p": // cycle permission mode for ACP accounts
+	case "p":
 		if selected.Kind == config.KindACP {
 			cfg := a.srv.Config()
 			if acct := cfg.FindAccount(selected.ID); acct != nil {
@@ -127,10 +163,10 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case "l": // re-login (ACP) or update API key
+	case "l":
 		if selected.Kind == config.KindACP {
-			a.setStatus("Launching interactive login for "+selected.Backend+"/"+selected.Name+"...", false)
-			return a, a.loginAccountCmd(selected)
+			a.openLoginPrompt(selected)
+			return a, nil
 		}
 		return a, a.openEditModal("Update API Key", "Paste new API key for "+selected.Backend+"/"+selected.Name, "", func(val string) error {
 			if val == "" {
@@ -144,7 +180,7 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return nil
 		})
 
-	case "t": // test account
+	case "t":
 		a.setStatus("Testing "+selected.Backend+"/"+selected.Name+"...", false)
 		return a, a.testAccountCmd(selected)
 
@@ -182,17 +218,23 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		snaps[s.ID] = s
 	}
 
+	fullW := max(a.width-2, 40)
+	innerW := fullW - 4
+
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts)))+"  "+
-		a.styles.Muted.Render("a:add  e:edit  r:rename  d:toggle  l:login/key  t:test  p:perm  x:del"))
-	lines = append(lines, "")
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts)))+"   "+
+		a.styles.Muted.Render("m:pool/prefix  P:prefix  l:login  t:test  p:perm  d:toggle  r:rename  e:edit  x:del"))
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(accts) == 0 {
-		lines = append(lines, a.styles.Muted.Render("No matching accounts. Press 'a' to add one or 'W' to detect ACP CLIs."))
-		return strings.Join(lines, "\n")
+		lines = append(lines, "")
+		lines = append(lines, a.styles.Muted.Render("  No matching accounts. Press 'a' to add one or 'i' to browse & install 45+ ACP tools."))
+		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	maxRows := max(bodyHeight-4, 4)
+	lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("  %-18s %-7s %-11s %-14s %-6s %s", "ACCOUNT", "KIND", "STATE", "EXPOSE", "MODELS", "DETAILS")))
+
+	maxRows := max(bodyHeight-10, 4)
 	start := 0
 	if a.acctCursor >= maxRows {
 		start = a.acctCursor - maxRows + 1
@@ -201,32 +243,49 @@ func (a *App) viewAccounts(bodyHeight int) string {
 	for i := start; i < len(accts) && i < start+maxRows; i++ {
 		acct := accts[i]
 		snap := snaps[acct.ID]
+		expose := acct.ExposeMode
+		if expose == "" {
+			expose = config.ExposePool
+		}
+		if expose == config.ExposePrefix || expose == config.ExposeBoth {
+			expose = fmt.Sprintf("%s:%s", expose, acct.EffectivePrefix())
+		}
 		extra := acct.BaseURL
 		if acct.Kind == config.KindACP {
 			extra = fmt.Sprintf("perm=%s cap=%d", acct.PermissionMode, acct.MaxConcurrency)
 		}
-		row := fmt.Sprintf("%-18s %-7s %-12s %-6s %s",
+		row := fmt.Sprintf("%-18s %-7s %-11s %-14s %-6s %s",
 			truncate(acct.Backend+"/"+acct.Name, 18),
 			acct.Kind,
 			a.renderState(snap),
-			fmt.Sprintf("%dm", len(acct.Models)),
-			truncate(extra, max(a.width-48, 12)),
+			truncate(expose, 14),
+			fmt.Sprintf("%d", len(acct.Models)),
+			truncate(extra, max(innerW-64, 10)),
 		)
 		if i == a.acctCursor {
-			lines = append(lines, a.styles.Selected.Render("> "+row))
+			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
 		} else {
 			lines = append(lines, "  "+row)
 		}
 	}
 
+	// Detail footer inside card for selected account
 	if a.acctCursor >= 0 && a.acctCursor < len(accts) {
 		sel := accts[a.acctCursor]
 		snap := snaps[sel.ID]
+		lines = append(lines, "")
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		if sel.Kind == config.KindACP {
+			pdir, _ := config.ProfileDir(a.srv.DataDir(), sel.Backend, sel.Name)
+			lines = append(lines, a.styles.Muted.Render("Profile: "+truncate(pdir, innerW-10)))
+		} else {
+			lines = append(lines, a.styles.Muted.Render("Base URL: "+truncate(sel.BaseURL, innerW-11)))
+		}
+		lines = append(lines, a.styles.Muted.Render("Models:  "+truncate(strings.Join(sel.Models, ", "), innerW-10)))
 		if snap.LastError != "" {
-			lines = append(lines, "")
-			lines = append(lines, a.styles.StateErr.Render("Last error: "+truncate(snap.LastError, max(a.width-14, 20))))
+			lines = append(lines, a.styles.StateErr.Render("Error:   "+truncate(snap.LastError, innerW-10)))
 		}
 	}
 
-	return strings.Join(lines, "\n")
+	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

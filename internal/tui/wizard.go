@@ -8,39 +8,111 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/acpx/internal/descriptors"
 )
 
 func (a *App) openWelcome() {
 	a.detected = a.srv.Registry().DetectInstalled()
 	a.detectCursor = 0
-	a.detectSelected = make(map[int]bool)
-	for i, d := range a.detected {
+	a.detectSearching = false
+	a.detectSearch.SetValue("")
+	a.detectSearch.Blur()
+	a.detectSelected = make(map[string]bool)
+	for _, d := range a.detected {
 		if d.Found {
-			a.detectSelected[i] = true
+			a.detectSelected[d.Descriptor.ID] = true
 		}
 	}
 	a.modal = modalWelcome
 }
 
+func (a *App) filteredDetected() []descriptors.DetectedCLI {
+	q := strings.ToLower(strings.TrimSpace(a.detectSearch.Value()))
+	if q == "" {
+		return a.detected
+	}
+	var out []descriptors.DetectedCLI
+	for _, d := range a.detected {
+		hay := strings.ToLower(d.Descriptor.ID + " " + d.Descriptor.Name + " " + d.Descriptor.Description + " " + d.Descriptor.Detect)
+		if strings.Contains(hay, q) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.detectSearching {
+		switch msg.String() {
+		case "esc", "enter":
+			a.detectSearching = false
+			a.detectSearch.Blur()
+			a.detectCursor = 0
+			return a, nil
+		default:
+			var cmd tea.Cmd
+			a.detectSearch, cmd = a.detectSearch.Update(msg)
+			a.detectCursor = 0
+			return a, cmd
+		}
+	}
+
+	items := a.filteredDetected()
+	if a.detectCursor >= len(items) && len(items) > 0 {
+		a.detectCursor = len(items) - 1
+	}
+
 	switch msg.String() {
+	case "/":
+		a.detectSearching = true
+		a.detectSearch.Focus()
+		return a, textinput.Blink
 	case "up", "k":
 		if a.detectCursor > 0 {
 			a.detectCursor--
 		}
 	case "down", "j":
-		if a.detectCursor < len(a.detected)-1 {
+		if a.detectCursor < len(items)-1 {
 			a.detectCursor++
 		}
-	case " ":
-		if a.detectCursor >= 0 && a.detectCursor < len(a.detected) && a.detected[a.detectCursor].Found {
-			a.detectSelected[a.detectCursor] = !a.detectSelected[a.detectCursor]
+	case "pgup":
+		a.detectCursor = max(a.detectCursor-8, 0)
+	case "pgdown":
+		if len(items) > 0 {
+			a.detectCursor = min(a.detectCursor+8, len(items)-1)
 		}
+	case " ":
+		if a.detectCursor >= 0 && a.detectCursor < len(items) {
+			d := items[a.detectCursor]
+			if d.Found || d.Descriptor.NPXPackage != "" || d.Descriptor.UVXPackage != "" {
+				a.detectSelected[d.Descriptor.ID] = !a.detectSelected[d.Descriptor.ID]
+			}
+		}
+	case "i":
+		if a.detectCursor >= 0 && a.detectCursor < len(items) {
+			d := items[a.detectCursor]
+			if d.Found {
+				a.setStatus(d.Descriptor.Name+" is already installed at "+d.BinaryPath, false)
+				return a, nil
+			}
+			if !d.Descriptor.CanInstall() {
+				note := d.Descriptor.InstallNote
+				if note == "" {
+					note = "No automatic installer for " + d.Descriptor.Name
+				}
+				a.setStatus(note, true)
+				return a, nil
+			}
+			return a, a.startInstall([]descriptors.ACPDescriptor{d.Descriptor}, modalWelcome)
+		}
+	case "R":
+		a.setStatus("Syncing latest official ACP Registry...", false)
+		return a, a.syncRegistryCmd()
 	case "enter":
 		cfg := a.srv.Config()
 		added := 0
-		for i, d := range a.detected {
-			if !a.detectSelected[i] || !d.Found {
+		for _, d := range a.detected {
+			if !a.detectSelected[d.Descriptor.ID] {
 				continue
 			}
 			id := config.SanitizeSlug(d.Descriptor.ID + "-default")
@@ -55,6 +127,7 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				Backend:        d.Descriptor.ID,
 				Enabled:        true,
 				PermissionMode: config.PermDeny,
+				ExposeMode:     config.ExposePool,
 				Models:         append([]string(nil), d.Descriptor.DefaultModels...),
 				MaxConcurrency: 1,
 			})
@@ -64,15 +137,21 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = a.srv.ReloadConfig(cfg)
 		a.modal = modalNone
 		if added > 0 {
-			a.setStatus(fmt.Sprintf("Added %d detected ACP tool(s). Go to Accounts (2) and press 'l' to log in.", added), false)
+			a.screen = ScreenAccounts
+			a.setStatus(fmt.Sprintf("Added %d ACP account(s). Press 'l' to log in or 't' to test.", added), false)
 		} else {
-			a.setStatus("Welcome complete. Press 'a' to add an API-key or ACP account.", false)
+			a.setStatus("Setup complete. Press 'a' to add an API-key or ACP account.", false)
 		}
 	case "a":
 		cfg := a.srv.Config()
 		cfg.UI.OnboardingComplete = true
 		_ = a.srv.ReloadConfig(cfg)
 		a.openAddAccount()
+	case "C":
+		cfg := a.srv.Config()
+		cfg.UI.OnboardingComplete = true
+		_ = a.srv.ReloadConfig(cfg)
+		a.openConnectModal()
 	case "esc", "q", "s":
 		cfg := a.srv.Config()
 		cfg.UI.OnboardingComplete = true
@@ -83,36 +162,178 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) viewWelcomeModal() string {
+	cardW := clamp(a.width-8, 64, 94)
+	innerW := cardW - 6
+	items := a.filteredDetected()
+
 	var lines []string
-	lines = append(lines, a.styles.Title.Render("Welcome to acpx — Detect ACP Tools"))
-	lines = append(lines, a.styles.Muted.Render("Local OpenAI/Anthropic gateway for ACP subscriptions & API keys."))
-	lines = append(lines, "")
-	if len(a.detected) == 0 {
-		lines = append(lines, a.styles.Muted.Render("No ACP descriptors available."))
-	} else {
-		for i, d := range a.detected {
-			cursor := "  "
-			if i == a.detectCursor {
-				cursor = "> "
-			}
-			mark := "[ ]"
-			if !d.Found {
-				mark = "[-]"
-			} else if a.detectSelected[i] {
-				mark = "[x]"
-			}
-			status := a.styles.Muted.Render("not found")
-			if d.Found {
-				status = a.styles.StateReady.Render("found")
-			} else if d.Hint != "" {
-				status = a.styles.StateWarn.Render(truncate(d.Hint, 40))
-			}
-			lines = append(lines, fmt.Sprintf("%s%s %-20s %s", cursor, mark, d.Descriptor.Name, status))
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("◆ ACP Registry & CLI Installer (%d agents)", len(items))))
+	lines = append(lines, a.styles.Muted.Render("Install adapters right inside acpx without exiting, or press Space + Enter to add agents."))
+	if a.detectSearching {
+		lines = append(lines, a.styles.Highlight.Render("Search: ")+a.detectSearch.View()+" "+a.styles.Muted.Render("(enter/esc)"))
+	} else if q := strings.TrimSpace(a.detectSearch.Value()); q != "" {
+		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Search: %q  (/ edit)", q)))
+	}
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+
+	maxRows := clamp(a.height-16, 6, 15)
+	start := 0
+	if a.detectCursor >= maxRows {
+		start = a.detectCursor - maxRows + 1
+	}
+	end := min(start+maxRows, len(items))
+
+	for i := start; i < end; i++ {
+		d := items[i]
+		mark := "[ ]"
+		if a.detectSelected[d.Descriptor.ID] {
+			mark = "[x]"
+		} else if !d.Found && d.Descriptor.NPXPackage == "" && d.Descriptor.UVXPackage == "" {
+			mark = " · "
+		}
+
+		var status string
+		if d.Found {
+			status = a.styles.StateReady.Render("● installed")
+		} else if d.Descriptor.BinaryArchive != "" {
+			status = a.styles.StateWarn.Render("○ binary (i: install)")
+		} else if d.Descriptor.InstallPackage != "" {
+			status = a.styles.StateWarn.Render("○ npm (i: install)")
+		} else if d.Descriptor.UVXPackage != "" {
+			status = a.styles.StateWarn.Render("○ uvx (i: install)")
+		} else {
+			status = a.styles.Muted.Render("○ manual")
+		}
+
+		desc := d.Descriptor.Description
+		if d.Found && desc == "" {
+			desc = d.BinaryPath
+		}
+		row := fmt.Sprintf("%s %-20s %-22s %s",
+			mark,
+			truncate(d.Descriptor.Name, 20),
+			status,
+			a.styles.Muted.Render(truncate(desc, max(innerW-48, 12))),
+		)
+		if i == a.detectCursor {
+			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+		} else {
+			lines = append(lines, "  "+row)
 		}
 	}
+	for i := end - start; i < maxRows; i++ {
+		lines = append(lines, "")
+	}
+
+	if a.detectCursor >= 0 && a.detectCursor < len(items) {
+		cur := items[a.detectCursor]
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		info := cur.Descriptor.Description
+		if cur.Hint != "" && !cur.Found {
+			info = cur.Hint + " — " + info
+		} else if cur.Found {
+			info = "Binary: " + cur.BinaryPath
+		}
+		lines = append(lines, a.styles.Muted.Render(truncate(info, innerW)))
+	}
+
+	lines = append(lines, strings.Join([]string{
+		a.styles.KeyHint("/", "search"),
+		a.styles.KeyHint("i", "install"),
+		a.styles.KeyHint("space", "select"),
+		a.styles.KeyHint("enter", "add selected"),
+		a.styles.KeyHint("R", "sync registry"),
+		a.styles.KeyHint("a", "API key"),
+		a.styles.KeyHint("C", "connect CLIs"),
+		a.styles.KeyHint("esc", "close"),
+	}, "  "))
+	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
+}
+
+// --- Pre-login Prompt Modal ---
+
+func (a *App) openLoginPrompt(acct config.AccountConfig) {
+	cp := acct
+	a.loginTarget = &cp
+	a.modal = modalLoginPrompt
+}
+
+func (a *App) updateLoginPromptModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.loginTarget == nil {
+		a.modal = modalNone
+		return a, nil
+	}
+	acct := *a.loginTarget
+	switch msg.String() {
+	case "enter", "l", "y":
+		desc, ok := a.srv.Registry().GetACP(acct.Backend)
+		if ok {
+			if _, found := a.srv.Registry().FindLocalBinary(desc); !found && desc.CanInstall() {
+				a.setStatus(desc.Name+" binary not installed yet — press 'i' to install it first.", true)
+				return a, nil
+			}
+		}
+		a.loginTarget = nil
+		a.modal = modalNone
+		a.setStatus("Launching "+acct.Backend+" login (returns to acpx when finished)...", false)
+		return a, a.loginAccountCmd(acct)
+	case "i":
+		if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && desc.CanInstall() {
+			return a, a.startInstall([]descriptors.ACPDescriptor{desc}, modalLoginPrompt)
+		}
+	case "s", "n", "esc", "q":
+		a.loginTarget = nil
+		a.modal = modalNone
+		a.setStatus("Skipped login for now — press 'l' on Accounts anytime.", false)
+	}
+	return a, nil
+}
+
+func (a *App) viewLoginPromptModal() string {
+	if a.loginTarget == nil {
+		return ""
+	}
+	acct := *a.loginTarget
+	cardW := clamp(a.width-12, 56, 80)
+	innerW := cardW - 6
+
+	pdir, _ := config.ProfileDir(a.srv.DataDir(), acct.Backend, acct.Name)
+	desc, _ := a.srv.Registry().GetACP(acct.Backend)
+	loginCmd := strings.Join(desc.ExpandLogin(pdir, acct.CustomLogin), " ")
+
+	_, found := a.srv.Registry().FindLocalBinary(desc)
+	binMissing := !found && desc.Detect != ""
+
+	var lines []string
+	lines = append(lines, a.styles.Title.Render("Sign In to "+acct.Backend+"/"+acct.Name))
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
-	lines = append(lines, a.styles.Muted.Render("Space: toggle  Enter: add selected  a: add API key/account  s: skip"))
-	return a.styles.Modal.Width(min(a.width-4, 74)).Render(strings.Join(lines, "\n"))
+	lines = append(lines, "Profile: "+a.styles.Highlight.Render(truncate(pdir, innerW-10)))
+	if loginCmd != "" {
+		lines = append(lines, "Command: "+a.styles.Muted.Render(truncate(loginCmd, innerW-10)))
+	}
+	lines = append(lines, "")
+	if binMissing {
+		lines = append(lines, a.styles.StateWarn.Render(fmt.Sprintf("Binary %q is not installed yet.", desc.Detect)))
+		if desc.CanInstall() {
+			lines = append(lines, "Press 'i' to install "+desc.Name+" inside acpx first.")
+		}
+	} else {
+		lines = append(lines, "The official CLI login will open in this terminal and automatically")
+		lines = append(lines, "return you right back to acpx once authentication finishes.")
+	}
+	lines = append(lines, "")
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+
+	var hints []string
+	if binMissing && desc.CanInstall() {
+		hints = append(hints, a.styles.KeyHint("i", "install "+desc.Detect))
+	} else {
+		hints = append(hints, a.styles.KeyHint("enter", "launch login"))
+	}
+	hints = append(hints, a.styles.KeyHint("s", "skip for now"))
+	lines = append(lines, strings.Join(hints, "   "))
+	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
 }
 
 // --- Add Account Wizard ---
@@ -139,7 +360,7 @@ func (a *App) initAddInputs() {
 	if a.addKind == config.KindAPIKey {
 		preset, _ := a.srv.Registry().GetPreset(a.addBackend)
 		a.addAuthStyle = preset.AuthStyle
-		a.addInputs[0].Placeholder = "account name (e.g. personal)"
+		a.addInputs[0].Placeholder = "account name (e.g. a, b, personal)"
 		a.addInputs[0].SetValue("default")
 		a.addInputs[1].Placeholder = "API key (paste here)"
 		a.addInputs[1].EchoMode = textinput.EchoPassword
@@ -149,13 +370,13 @@ func (a *App) initAddInputs() {
 		a.addInputs[3].SetValue(strings.Join(preset.DefaultModels, ","))
 	} else {
 		desc, _ := a.srv.Registry().GetACP(a.addBackend)
-		a.addInputs[0].Placeholder = "account name (e.g. work, personal)"
+		a.addInputs[0].Placeholder = "account name (e.g. a, b, work, personal)"
 		a.addInputs[0].SetValue("default")
-		a.addInputs[1].Placeholder = "Custom command (optional, space-separated)"
+		a.addInputs[1].Placeholder = "Custom command (optional)"
 		if a.addBackend == "custom-acp" {
 			a.addInputs[1].Placeholder = "ACP command (e.g. my-agent --acp)"
 		}
-		a.addInputs[2].Placeholder = "Default working directory (optional)"
+		a.addInputs[2].Placeholder = "Model prefix (optional, e.g. a- -> a-gemini-4-neon)"
 		a.addInputs[3].Placeholder = "Models (comma-separated)"
 		a.addInputs[3].SetValue(strings.Join(desc.DefaultModels, ","))
 	}
@@ -173,7 +394,7 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch a.addStep {
-	case 0: // Choose account kind
+	case 0:
 		switch msg.String() {
 		case "up", "k", "down", "j", "tab":
 			if a.addKind == config.KindAPIKey {
@@ -197,7 +418,7 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case 1: // Choose preset or ACP tool
+	case 1:
 		if a.addKind == config.KindAPIKey {
 			presets := a.srv.Registry().ListPresets()
 			switch msg.String() {
@@ -228,6 +449,18 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if a.addListCur < len(descs)-1 {
 					a.addListCur++
 				}
+			case "pgup":
+				a.addListCur = max(a.addListCur-8, 0)
+			case "pgdown":
+				a.addListCur = min(a.addListCur+8, len(descs)-1)
+			case "i":
+				if a.addListCur >= 0 && a.addListCur < len(descs) {
+					d := descs[a.addListCur]
+					if d.CanInstall() {
+						return a, a.startInstall([]descriptors.ACPDescriptor{d}, modalAddAccount)
+					}
+					a.setStatus("No automatic installer for "+d.Name, true)
+				}
 			case "enter":
 				if a.addListCur >= 0 && a.addListCur < len(descs) {
 					a.addBackend = descs[a.addListCur].ID
@@ -239,7 +472,7 @@ func (a *App) updateAddAccountModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
-	case 2: // Enter account details
+	case 2:
 		switch msg.String() {
 		case "tab", "down":
 			a.addInputs[a.addFocus].Blur()
@@ -317,6 +550,7 @@ func (a *App) submitAddAccount() (tea.Model, tea.Cmd) {
 			Enabled:        true,
 			BaseURL:        baseURL,
 			AuthStyle:      a.addAuthStyle,
+			ExposeMode:     config.ExposePool,
 			Models:         models,
 			MaxConcurrency: 8,
 		}
@@ -329,7 +563,6 @@ func (a *App) submitAddAccount() (tea.Model, tea.Cmd) {
 		return a, a.testAccountCmd(acct)
 	}
 
-	// ACP account
 	if _, err := config.EnsureProfileDir(a.srv.DataDir(), a.addBackend, name); err != nil {
 		a.setStatus("Failed to create profile dir: "+err.Error(), true)
 		return a, nil
@@ -345,94 +578,150 @@ func (a *App) submitAddAccount() (tea.Model, tea.Cmd) {
 	if len(models) == 0 {
 		models = []string{"default"}
 	}
+	prefix := strings.TrimSpace(a.addInputs[2].Value())
+	expose := config.ExposePool
+	if prefix != "" {
+		expose = config.ExposePrefix
+	}
 	acct := config.AccountConfig{
 		ID:             id,
 		Name:           name,
 		Kind:           config.KindACP,
 		Backend:        a.addBackend,
 		Enabled:        true,
-		DefaultCwd:     strings.TrimSpace(a.addInputs[2].Value()),
 		PermissionMode: config.PermDeny,
 		CustomCommand:  customCmd,
+		ExposeMode:     expose,
+		ModelPrefix:    prefix,
 		Models:         models,
 		MaxConcurrency: 1,
 	}
 	cfg.Accounts = append(cfg.Accounts, acct)
 	cfg.UI.OnboardingComplete = true
 	_ = a.srv.ReloadConfig(cfg)
-	a.modal = modalNone
-
-	// Offer immediate login in isolated profile pane if descriptor defines a login command.
-	if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && len(desc.Login) > 0 {
-		a.setStatus(fmt.Sprintf("Added %s/%s — launching login...", acct.Backend, acct.Name), false)
-		return a, a.loginAccountCmd(acct)
-	}
 	a.setStatus(fmt.Sprintf("Added ACP account %s/%s", acct.Backend, acct.Name), false)
+
+	if desc, ok := a.srv.Registry().GetACP(acct.Backend); ok && len(desc.Login) > 0 {
+		a.openLoginPrompt(acct)
+		return a, nil
+	}
+	a.modal = modalNone
 	return a, nil
 }
 
 func (a *App) viewAddAccountModal() string {
+	cardW := clamp(a.width-10, 60, 86)
+	innerW := cardW - 6
+
+	stepLabel := func(idx int, text string) string {
+		if idx == a.addStep {
+			return a.styles.Highlight.Render("● " + text)
+		}
+		if idx < a.addStep {
+			return a.styles.StateReady.Render("✓ " + text)
+		}
+		return a.styles.Muted.Render("○ " + text)
+	}
+	stepper := stepLabel(0, "1 Type") + "  " + a.styles.Muted.Render("─") + "  " +
+		stepLabel(1, "2 Provider") + "  " + a.styles.Muted.Render("─") + "  " +
+		stepLabel(2, "3 Configure")
+
 	var lines []string
-	lines = append(lines, a.styles.Title.Render("Add Account"))
+	lines = append(lines, a.styles.Title.Render("Add Account")+"    "+stepper)
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
 
 	switch a.addStep {
 	case 0:
-		k1, k2 := "  ", "  "
+		opt1 := "1. API Key Provider   DeepSeek, OpenRouter, OpenAI, Anthropic, Ollama, Custom"
+		opt2 := "2. ACP Agent (45+)    Antigravity, Codex, Claude, Cursor, Grok, OpenCode, Muse, Pi, Cline..."
 		if a.addKind == config.KindAPIKey {
-			k1 = "> "
+			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+opt1))
+			lines = append(lines, "  "+opt2)
 		} else {
-			k2 = "> "
+			lines = append(lines, "  "+opt1)
+			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+opt2))
 		}
-		lines = append(lines, k1+"1. API Key provider (DeepSeek, OpenRouter, OpenAI, Anthropic, Ollama...)")
-		lines = append(lines, k2+"2. Subscription tool over ACP (agy, Gemini CLI, Codex, Claude, custom)")
 		lines = append(lines, "")
-		lines = append(lines, a.styles.Muted.Render("Enter: next   Esc: cancel"))
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("esc", "cancel"))
 
 	case 1:
+		maxRows := clamp(a.height-16, 6, 13)
 		if a.addKind == config.KindAPIKey {
-			lines = append(lines, a.styles.Subtitle.Render("Select API-Key Provider:"))
 			presets := a.srv.Registry().ListPresets()
-			for i, p := range presets {
-				cur := "  "
-				if i == a.addListCur {
-					cur = "> "
-				}
-				lines = append(lines, fmt.Sprintf("%s%-24s %s", cur, p.Name, a.styles.Muted.Render(p.BaseURL)))
+			start := 0
+			if a.addListCur >= maxRows {
+				start = a.addListCur - maxRows + 1
 			}
+			for i := start; i < min(start+maxRows, len(presets)); i++ {
+				p := presets[i]
+				row := fmt.Sprintf("%-24s %s", p.Name, a.styles.Muted.Render(truncate(p.BaseURL, max(innerW-28, 12))))
+				if i == a.addListCur {
+					lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+				} else {
+					lines = append(lines, "  "+row)
+				}
+			}
+			lines = append(lines, "")
+			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+			lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("esc", "back"))
 		} else {
-			lines = append(lines, a.styles.Subtitle.Render("Select ACP Subscription Tool:"))
 			descs := a.srv.Registry().ListACP()
-			for i, d := range descs {
-				cur := "  "
-				if i == a.addListCur {
-					cur = "> "
+			start := 0
+			if a.addListCur >= maxRows {
+				start = a.addListCur - maxRows + 1
+			}
+			for i := start; i < min(start+maxRows, len(descs)); i++ {
+				d := descs[i]
+				badge := a.styles.Muted.Render("custom")
+				if d.ID != "custom-acp" {
+					if _, found := a.srv.Registry().FindLocalBinary(d); found {
+						badge = a.styles.StateReady.Render("● installed")
+					} else if d.CanInstall() {
+						badge = a.styles.StateWarn.Render("○ i: install")
+					} else {
+						badge = a.styles.Muted.Render("○ manual")
+					}
 				}
-				lines = append(lines, fmt.Sprintf("%s%-24s %s", cur, d.Name, a.styles.Muted.Render(strings.Join(d.Command, " "))))
+				row := fmt.Sprintf("%-22s %-15s %s",
+					truncate(d.Name, 22),
+					badge,
+					a.styles.Muted.Render(truncate(d.Description, max(innerW-41, 10))),
+				)
+				if i == a.addListCur {
+					lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+				} else {
+					lines = append(lines, "  "+row)
+				}
 			}
-			if a.addListCur >= 0 && a.addListCur < len(descs) && descs[a.addListCur].TermsNote != "" {
-				lines = append(lines, "")
-				lines = append(lines, a.styles.Muted.Render(descs[a.addListCur].TermsNote))
-			}
+			lines = append(lines, "")
+			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+			lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("i", "install CLI")+"   "+a.styles.KeyHint("pgup/dn", "scroll")+"   "+a.styles.KeyHint("esc", "back"))
 		}
-		lines = append(lines, "")
-		lines = append(lines, a.styles.Muted.Render("Enter: next   Esc: back"))
 
 	case 2:
-		labels := []string{"Name:", "API Key:", "Base URL:", "Models:"}
+		labels := []string{"Name", "API Key", "Base URL", "Models"}
 		if a.addKind == config.KindACP {
-			labels = []string{"Name:", "Custom Cmd:", "Default Cwd:", "Models:"}
+			labels = []string{"Name", "Custom Cmd", "Model Prefix", "Models"}
 		}
 		for i, lbl := range labels {
 			prefix := "  "
+			lStyle := a.styles.Muted
 			if i == a.addFocus {
-				prefix = "> "
+				prefix = a.styles.Highlight.Render("> ")
+				lStyle = a.styles.Highlight
 			}
-			lines = append(lines, fmt.Sprintf("%s%-12s %s", prefix, lbl, a.addInputs[i].View()))
+			lines = append(lines, fmt.Sprintf("%s%-14s %s", prefix, lStyle.Render(lbl+":"), a.addInputs[i].View()))
+		}
+		if a.addKind == config.KindACP {
+			lines = append(lines, "")
+			lines = append(lines, a.styles.Muted.Render("Leave Model Prefix empty to pool/rotate across accounts, or set e.g. 'a-' to register 'a-<model>'."))
 		}
 		lines = append(lines, "")
-		lines = append(lines, a.styles.Muted.Render("Tab: next field   Enter/Ctrl+S: save & test/login   Esc: back"))
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		lines = append(lines, a.styles.KeyHint("tab", "next field")+"   "+a.styles.KeyHint("enter/ctrl+s", "save")+"   "+a.styles.KeyHint("esc", "back"))
 	}
 
-	return a.styles.Modal.Width(min(a.width-4, 74)).Render(strings.Join(lines, "\n"))
+	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
 }

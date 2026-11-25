@@ -6,11 +6,12 @@ Run `acpx`, add accounts in the TUI (no config files to hand-edit), and point an
 
 ## Features
 
-- **Subscription agents over ACP:** Launches official CLIs (`agy`, Gemini CLI, Codex via `codex-acp`, Claude Code via `claude-agent-acp`, or any custom ACP stdio tool) in isolated per-account profile directories without spoofing client identity.
+- **45+ ACP subscription agents:** Full embedded [Agent Client Protocol Registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json) — Antigravity (`agy`), Codex, Claude, Cursor, Grok, OpenCode, Muse Code, Pi, Cline, Gemini CLI, Agoragentic, Amp, Auggie, Autohand, Bob, Codebuddy, Cortex, Corust, crow-cli, DeepAgents, Devin, DimCode, Dirac, Factory Droid, fast-agent, GitHub Copilot, GLM Agent, goose, Harn, Junie, Kilo, Kimchi, Kimi Code, Kiro, MiniMax, Minion, Mistral Vibe, Nova, Poolside, Qoder, Qwen Code, siGit, Stakpak, VT Code, plus custom ACP commands.
+- **In-app ACP installer:** Install npm/uvx/binary ACP adapters right inside the TUI (`i`) without exiting `acpx`, or via `acpx install <tool>`.
+- **Pooled rotation OR account-prefixed models:** Expose one shared model (`gemini-4-neon`) that rotates threads round-robin/sticky across accounts, OR set per-account prefixes (`a-gemini-4-neon`, `b-gemini-4-neon`) with `m` / `P` in Accounts.
+- **1-click client setup (`acpx connect` & `acpx acp`):** Auto-register `acpx` into **T3 Code** (via native `acpx acp` stdio bridge or OpenAI-compatible URL), **OpenCode**, **Codex**, **Claude Code**, **Pi**, **Grok**, **Cursor**, **Cline**, **Antigravity**, and **Muse Code**.
 - **Plain API-key providers:** Built-in presets for DeepSeek, OpenRouter, OpenAI, Anthropic, Google AI Studio, Groq, Together, Mistral, xAI, local Ollama, and custom OpenAI-compatible URLs.
-- **Unified API surface:** One local endpoint (`127.0.0.1:8787`), one model namespace (`<backend>/<model>`, `<backend>/<account>/<model>`, plus aliases), supporting both `/v1/chat/completions` and `/v1/messages` (streaming & non-streaming).
-- **Routing & account health:** `sticky` (default), `manual`, `failover` (network/5xx only), and opt-in `round-robin`/`least-busy` with explicit subscription warnings, 429 cooldowns, repeated 401/403/restricted auto-disable banners, concurrency caps, and hourly/daily budgets.
-- **Zero-dependency static binary:** Written in Go with Bubble Tea, works over SSH and 80×24 / 16-color terminals, ~9 MB binary, <10 ms startup.
+- **Full-screen OpenCode-style TUI:** Responsive full-terminal layout with centered modals, works over SSH and 80×24 / 16-color terminals, ~9.5 MB static Go binary.
 
 ## Install
 
@@ -20,13 +21,13 @@ Run `acpx`, add accounts in the TUI (no config files to hand-edit), and point an
 go install github.com/bberka/acpx/cmd/acpx@latest
 ```
 
-### Build from source
+### Build & install globally from source
 
 ```sh
 git clone https://github.com/bberka/acpx.git
 cd acpx
-make build
-./acpx
+make install   # builds static binary and installs to ~/.local/bin/acpx
+acpx
 ```
 
 ### Release installer (once a GitHub Release is published)
@@ -62,10 +63,14 @@ See the [Quickstart Guide](docs/quickstart.md) for end-to-end examples with Deep
 
 | Command | Description |
 |---|---|
-| `acpx` | Start the localhost gateway and open the interactive TUI |
+| `acpx` | Start the localhost gateway and open the full-screen interactive TUI |
 | `acpx --no-tui` | Start the gateway without the TUI |
-| `acpx serve [--port N] [--bind ADDR] [--allow-remote]` | Run headless server |
-| `acpx add [flags]` | Add an API-key or ACP account (interactive or flag-based) |
+| `acpx serve [--port N] [--bind ADDR] [--allow-remote]` | Run headless HTTP server |
+| `acpx acp` | Run `acpx` as a native ACP stdio server (register directly in T3 Code / Zed) |
+| `acpx add [--expose pool\|prefix\|both] [--prefix a-]` | Add an API-key or ACP account |
+| `acpx install <tool\|all>` | Install ACP CLI/adapter from the 45+ agent registry |
+| `acpx connect [t3code\|opencode\|codex\|claude\|pi\|grok\|cursor\|cline]` | Register `acpx` into coding CLIs & T3 Code |
+| `acpx registry sync` | Refresh official ACP Registry agent index |
 | `acpx list [--json]` | List configured accounts and merged models |
 | `acpx doctor` | Check data dir, secret store, installed ACP CLIs, and accounts |
 | `acpx export-env [--shell sh\|fish\|powershell]` | Print client environment exports |

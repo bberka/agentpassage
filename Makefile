@@ -1,10 +1,16 @@
 BINARY := acpx
 LDFLAGS := -s -w
+INSTALL_DIR ?= $(HOME)/.local/bin
 
-.PHONY: build test clean size cross
+.PHONY: build install test clean size cross
 
 build:
 	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -o $(BINARY) ./cmd/acpx
+
+install: build
+	mkdir -p $(INSTALL_DIR)
+	install -m 0755 $(BINARY) $(INSTALL_DIR)/$(BINARY)
+	@echo "Installed $(BINARY) -> $(INSTALL_DIR)/$(BINARY)"
 
 test:
 	go test -race ./...

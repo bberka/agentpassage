@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -14,7 +15,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/bberka/acpx/internal/acpbridge"
 	"github.com/bberka/acpx/internal/config"
+	"github.com/bberka/acpx/internal/connect"
 	"github.com/bberka/acpx/internal/descriptors"
 	"github.com/bberka/acpx/internal/doctor"
 	"github.com/bberka/acpx/internal/gateway"
@@ -36,12 +39,20 @@ func run(args []string) error {
 		switch args[0] {
 		case "serve":
 			return cmdServe(args[1:])
+		case "acp":
+			return cmdACPBridge(args[1:])
 		case "add":
 			return cmdAdd(args[1:])
 		case "list", "ls":
 			return cmdList(args[1:])
 		case "doctor":
 			return cmdDoctor(args[1:])
+		case "install":
+			return cmdInstall(args[1:])
+		case "connect":
+			return cmdConnect(args[1:])
+		case "registry":
+			return cmdRegistry(args[1:])
 		case "export-env":
 			return cmdExportEnv(args[1:])
 		case "version":
@@ -80,12 +91,16 @@ func printUsage() {
 	fmt.Println(`acpx - ACP and API-key gateway with a TUI
 
 Usage:
-  acpx [flags]                 Start gateway and open interactive TUI
+  acpx [flags]                 Start gateway and open full-screen TUI
   acpx --no-tui [flags]        Start gateway without TUI
-  acpx serve [flags]           Start headless gateway
+  acpx serve [flags]           Start headless HTTP gateway
+  acpx acp                     Run acpx as an ACP stdio server (for T3 Code, Zed, etc.)
   acpx add [flags]             Add an ACP or API-key account
   acpx list [--json]           List configured accounts and models
   acpx doctor                  Check CLIs, profiles, storage, and config
+  acpx install <tool|all>      Install any ACP tool from the 45+ agent registry
+  acpx connect [client]        Register acpx into T3 Code, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline
+  acpx registry sync           Fetch latest official ACP Registry JSON
   acpx export-env [--shell sh] Print shell exports for OpenAI/Anthropic clients
   acpx version                 Print version
 
@@ -191,10 +206,27 @@ func cmdServe(args []string) error {
 	return startHeadless(*port, *bind, *allowRemote)
 }
 
+func cmdACPBridge(_ []string) error {
+	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	srv := gateway.New(dataDir, cfg, sec, reg, logs)
+	defer srv.ACP().Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	bridge := acpbridge.New(srv)
+	return bridge.Serve(ctx, os.Stdin, os.Stdout)
+}
+
 func cmdAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	kind := fs.String("kind", "", "account kind: api_key or acp")
-	backendID := fs.String("backend", "", "provider preset (e.g. deepseek, openai) or ACP tool (e.g. agy, gemini)")
+	backendID := fs.String("backend", "", "provider preset (e.g. deepseek, openai) or ACP tool (e.g. agy, codex, claude, cursor, opencode)")
 	name := fs.String("name", "default", "account name")
 	apiKey := fs.String("key", "", "API key (for api_key accounts)")
 	baseURL := fs.String("base-url", "", "base URL override (for api_key accounts)")
@@ -202,6 +234,8 @@ func cmdAdd(args []string) error {
 	perm := fs.String("permission", config.PermDeny, "ACP permission mode: deny, auto-approve, ask")
 	customCmd := fs.String("command", "", "custom ACP command (space-separated)")
 	modelsCSV := fs.String("models", "", "comma-separated model IDs")
+	expose := fs.String("expose", config.ExposePool, "model exposure mode: pool, prefix, or both")
+	prefix := fs.String("prefix", "", "model prefix when expose=prefix|both (e.g. a-, b-)")
 	noTest := fs.Bool("no-test", false, "skip live connection test")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -239,7 +273,7 @@ func cmdAdd(args []string) error {
 		if *kind == config.KindAPIKey {
 			*backendID = prompt("Provider preset (deepseek, openrouter, openai, anthropic, google, groq, ollama, custom)", "deepseek")
 		} else {
-			*backendID = prompt("ACP tool (agy, gemini, codex, claude, custom-acp)", "agy")
+			*backendID = prompt("ACP tool (agy, codex, claude, cursor, grok, opencode, muse-code, pi, cline, gemini...)", "agy")
 		}
 	}
 
@@ -256,6 +290,11 @@ func cmdAdd(args []string) error {
 		if m = strings.TrimSpace(m); m != "" {
 			models = append(models, m)
 		}
+	}
+
+	exposeMode := *expose
+	if *prefix != "" && exposeMode == config.ExposePool {
+		exposeMode = config.ExposePrefix
 	}
 
 	var acct config.AccountConfig
@@ -291,15 +330,17 @@ func cmdAdd(args []string) error {
 			Enabled:        true,
 			BaseURL:        url,
 			AuthStyle:      preset.AuthStyle,
+			ExposeMode:     exposeMode,
+			ModelPrefix:    *prefix,
 			Models:         models,
 			MaxConcurrency: 8,
 		}
 	} else {
 		desc, ok := reg.GetACP(*backendID)
 		if !ok {
-			return fmt.Errorf("unknown ACP backend %q", *backendID)
+			return fmt.Errorf("unknown ACP backend %q (run `acpx install` to list all 45+ tools)", *backendID)
 		}
-		if _, err := config.EnsureProfileDir(dataDir, *backendID, *name); err != nil {
+		if _, err := config.EnsureProfileDir(dataDir, desc.ID, *name); err != nil {
 			return err
 		}
 		if len(models) == 0 {
@@ -313,11 +354,13 @@ func cmdAdd(args []string) error {
 			ID:             id,
 			Name:           *name,
 			Kind:           config.KindACP,
-			Backend:        *backendID,
+			Backend:        desc.ID,
 			Enabled:        true,
 			DefaultCwd:     *cwd,
 			PermissionMode: *perm,
 			CustomCommand:  cmdSlice,
+			ExposeMode:     exposeMode,
+			ModelPrefix:    *prefix,
 			Models:         models,
 			MaxConcurrency: 1,
 		}
@@ -343,7 +386,7 @@ func cmdAdd(args []string) error {
 	if err := config.Save(dataDir, cfg); err != nil {
 		return err
 	}
-	fmt.Printf("Added account %s (%s/%s, kind=%s).\n", acct.ID, acct.Backend, acct.Name, acct.Kind)
+	fmt.Printf("Added account %s (%s/%s, kind=%s, expose=%s).\n", acct.ID, acct.Backend, acct.Name, acct.Kind, acct.ExposeMode)
 	return nil
 }
 
@@ -378,7 +421,7 @@ func cmdList(args []string) error {
 		if !a.Enabled {
 			state = "disabled"
 		}
-		fmt.Printf("  %-20s %-8s %-8s models=%d\n", a.Backend+"/"+a.Name, a.Kind, state, len(a.Models))
+		fmt.Printf("  %-20s %-8s %-8s expose=%-8s models=%d\n", a.Backend+"/"+a.Name, a.Kind, state, a.ExposeMode, len(a.Models))
 	}
 
 	fmt.Printf("\nModels (%d):\n", len(models))
@@ -391,7 +434,7 @@ func cmdList(args []string) error {
 	return nil
 }
 
-func cmdDoctor(args []string) error {
+func cmdDoctor(_ []string) error {
 	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
 	if err != nil {
 		return err
@@ -409,6 +452,152 @@ func cmdDoctor(args []string) error {
 	if hasFail {
 		return fmt.Errorf("one or more doctor checks failed")
 	}
+	return nil
+}
+
+func cmdInstall(args []string) error {
+	dataDir, _, _, reg, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	if len(args) == 0 {
+		fmt.Println("ACP tools (45+ from official ACP Registry):")
+		for _, d := range reg.DetectInstalled() {
+			status := "not installed"
+			if d.Found {
+				status = "installed (" + d.BinaryPath + ")"
+			}
+			method := "manual"
+			if d.Descriptor.BinaryArchive != "" {
+				method = "binary"
+			} else if d.Descriptor.InstallPackage != "" {
+				method = "npm:" + d.Descriptor.InstallPackage
+			} else if d.Descriptor.UVXPackage != "" {
+				method = "uvx:" + d.Descriptor.UVXPackage
+			}
+			fmt.Printf("  %-20s %-22s %-34s %s\n", d.Descriptor.ID, d.Descriptor.Name, method, status)
+		}
+		fmt.Println("\nUsage: acpx install <id...>   (e.g. acpx install codex claude cursor opencode cline)")
+		return nil
+	}
+
+	var targets []descriptors.ACPDescriptor
+	if args[0] == "all" {
+		core := map[string]bool{"codex": true, "claude": true, "gemini": true, "opencode": true, "cline": true, "cursor": true, "grok": true, "pi": true, "muse-code": true}
+		for _, d := range reg.DetectInstalled() {
+			if core[d.Descriptor.ID] && !d.Found && d.Descriptor.CanInstall() {
+				targets = append(targets, d.Descriptor)
+			}
+		}
+		if len(targets) == 0 {
+			fmt.Println("All primary installable ACP tools are already installed.")
+			return nil
+		}
+	} else {
+		for _, id := range args {
+			d, ok := reg.GetACP(id)
+			if !ok {
+				return fmt.Errorf("unknown ACP tool %q (run `acpx install` to see all available IDs)", id)
+			}
+			targets = append(targets, d)
+		}
+	}
+
+	for _, d := range targets {
+		argv, err := d.ResolveInstallCommand()
+		if err != nil {
+			return fmt.Errorf("%s: %w", d.Name, err)
+		}
+		if len(argv) == 0 && d.BinaryArchive != "" {
+			fmt.Printf("Downloading %s binary...\n", d.Name)
+			binPath, err := descriptors.InstallBinary(context.Background(), dataDir, d, func(msg string) {
+				fmt.Println(" ", msg)
+			})
+			if err != nil {
+				return fmt.Errorf("install %s failed: %w", d.Name, err)
+			}
+			fmt.Printf("Installed %s -> %s\n", d.Name, binPath)
+			continue
+		}
+		fmt.Printf("Installing %s via: %s\n", d.Name, strings.Join(argv, " "))
+		cmd := exec.Command(argv[0], argv[1:]...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("install %s failed: %w", d.Name, err)
+		}
+		fmt.Printf("Installed %s successfully.\n", d.Name)
+	}
+	return nil
+}
+
+func cmdConnect(args []string) error {
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "print config snippet without writing files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	_, cfg, _, _, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	rest := fs.Args()
+	if len(rest) == 0 {
+		fmt.Println("Connect coding CLIs & T3 Code to acpx:")
+		for _, t := range connect.ListTargets() {
+			det := "not detected"
+			if t.Detected {
+				det = "detected"
+			}
+			fmt.Printf("  %-12s %-24s %-14s %s\n", t.ID, t.Name, det, t.Description)
+		}
+		fmt.Println("\nUsage: acpx connect <t3code|opencode|codex|claude|pi|grok|cursor|cline|agy> [--dry-run]")
+		return nil
+	}
+
+	rtr := router.New(cfg)
+	models := rtr.ListModels(false)
+
+	for _, id := range rest {
+		t, ok := connect.FindTarget(id)
+		if !ok {
+			return fmt.Errorf("unknown client %q (run `acpx connect` to list supported clients)", id)
+		}
+		res, err := connect.Apply(id, cfg, models, t.AutoApply && !*dryRun)
+		if err != nil {
+			return err
+		}
+		if res.Message != "" {
+			fmt.Println(res.Message)
+		}
+		if res.Backup != "" {
+			fmt.Println("Backup saved:", res.Backup)
+		}
+		fmt.Println("\n" + res.Snippet)
+	}
+	return nil
+}
+
+func cmdRegistry(args []string) error {
+	dataDir, _, _, _, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	if len(args) > 0 && args[0] == "sync" {
+		n, err := descriptors.SyncRegistry(context.Background(), dataDir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Synced %d agents from %s\n", n, descriptors.OfficialRegistryURL)
+		return nil
+	}
+	fmt.Println("Usage: acpx registry sync")
 	return nil
 }
 

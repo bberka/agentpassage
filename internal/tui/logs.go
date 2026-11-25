@@ -54,21 +54,25 @@ func (a *App) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (a *App) viewLogs(bodyHeight int) string {
 	entries := a.filteredLogs()
+	fullW := max(a.width-2, 40)
+	innerW := fullW - 4
+
 	lvl := a.logLevel
 	if lvl == "" {
 		lvl = "ALL"
 	}
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Logs (%d, level=%s)", len(entries), lvl))+"  "+
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Logs (%d, level=%s)", len(entries), lvl))+"   "+
 		a.styles.Muted.Render("j/k:scroll  l:level  /:filter  (secrets redacted)"))
-	lines = append(lines, "")
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(entries) == 0 {
-		lines = append(lines, a.styles.Muted.Render("No log entries yet."))
-		return strings.Join(lines, "\n")
+		lines = append(lines, "")
+		lines = append(lines, a.styles.Muted.Render("  No log entries yet."))
+		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	maxRows := max(bodyHeight-3, 4)
+	maxRows := max(bodyHeight-5, 4)
 	end := len(entries) - a.logCursor
 	if end < 0 {
 		end = 0
@@ -86,7 +90,7 @@ func (a *App) viewLogs(bodyHeight int) string {
 		if e.Error != "" {
 			msg += " err=" + e.Error
 		}
-		row := fmt.Sprintf("%s %-5s %s", ts, e.Level, truncate(msg, max(a.width-16, 20)))
+		row := fmt.Sprintf("%s %-5s %s", ts, e.Level, truncate(msg, max(innerW-16, 20)))
 		switch e.Level {
 		case logbuf.LevelError:
 			row = a.styles.StateErr.Render(row)
@@ -95,5 +99,5 @@ func (a *App) viewLogs(bodyHeight int) string {
 		}
 		lines = append(lines, row)
 	}
-	return strings.Join(lines, "\n")
+	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

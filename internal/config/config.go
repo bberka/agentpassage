@@ -35,6 +35,10 @@ const (
 	ToolActivityDrop = "drop"
 	ToolActivityText = "text"
 
+	ExposePool   = "pool"
+	ExposePrefix = "prefix"
+	ExposeBoth   = "both"
+
 	DefaultBind = "127.0.0.1"
 	DefaultPort = 8787
 )
@@ -81,9 +85,19 @@ type AccountConfig struct {
 	CustomLogin    []string          `toml:"custom_login,omitempty"`
 	CustomEnv      map[string]string `toml:"custom_env,omitempty"`
 	Models         []string          `toml:"models,omitempty"`
+	ExposeMode     string            `toml:"expose_mode,omitempty"`  // "pool" (default), "prefix", "both"
+	ModelPrefix    string            `toml:"model_prefix,omitempty"` // e.g. "a-", "b-" (defaults to "<name>-")
 	MaxConcurrency int               `toml:"max_concurrency"`
 	HourlyLimit    int               `toml:"hourly_limit,omitempty"`
 	DailyLimit     int               `toml:"daily_limit,omitempty"`
+}
+
+// EffectivePrefix returns the model prefix used when ExposeMode is "prefix" or "both".
+func (a AccountConfig) EffectivePrefix() string {
+	if strings.TrimSpace(a.ModelPrefix) != "" {
+		return a.ModelPrefix
+	}
+	return a.Name + "-"
 }
 
 type ModelOverride struct {
@@ -235,6 +249,9 @@ func (c *Config) Normalize() {
 		a := &c.Accounts[i]
 		if a.ID == "" {
 			a.ID = SanitizeSlug(a.Backend + "-" + a.Name)
+		}
+		if a.ExposeMode != ExposePool && a.ExposeMode != ExposePrefix && a.ExposeMode != ExposeBoth {
+			a.ExposeMode = ExposePool
 		}
 		if a.Kind == KindACP {
 			if a.MaxConcurrency <= 0 {
