@@ -121,9 +121,10 @@ type App struct {
 	routingCursor int
 	logCursor     int
 	logLevel      string
-	usageShow14d  bool
-	usagePeriod   string
-	settingCursor int
+	usageShow14d     bool
+	usagePeriod      string
+	usageQuotaOffset int
+	settingCursor    int
 
 	// Welcome / ACP Registry Detect & Install modal
 	detected       []descriptors.DetectedCLI
@@ -849,10 +850,11 @@ func (a *App) renderFooter() string {
 			}
 		case ScreenUsage:
 			hints = []string{
+				a.styles.KeyHint("j/k", "scroll"),
 				a.styles.KeyHint("R", "refresh limits"),
-				a.styles.KeyHint("o", "open web hub"),
-				a.styles.KeyHint("u", "copy hub URL"),
+				a.styles.KeyHint("p", "period"),
 				a.styles.KeyHint("t", "24h / 14d"),
+				a.styles.KeyHint("o", "web hub"),
 				a.styles.KeyHint("q", "back"),
 			}
 		case ScreenSettings:

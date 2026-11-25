@@ -302,3 +302,44 @@ func TestAPISetupAndModelsPickerAutoFetch(t *testing.T) {
 		t.Fatalf("expected zed from connect search, got %+v", got)
 	}
 }
+
+func TestUsageScreenShowsAllAndScrolls(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.UI.OnboardingComplete = true
+	for i := 1; i <= 12; i++ {
+		name := string(rune('a' + i - 1))
+		cfg.Accounts = append(cfg.Accounts, config.AccountConfig{
+			ID:      "agy-" + name,
+			Name:    name,
+			Kind:    config.KindACP,
+			Backend: "agy",
+			Enabled: true,
+		})
+	}
+	sec := secrets.NewFileOnly(dir)
+	reg, _ := descriptors.LoadRegistry(dir)
+	logs := logbuf.New(20, dir, sec.KnownSecrets)
+	defer logs.Close()
+	srv := gateway.New(dir, cfg, sec, reg, logs)
+	app := New(srv)
+	defer app.Close()
+
+	// Tall terminal should display all 12 accounts with no truncation
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 38})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("6")})
+	view := app.View()
+	if !strings.Contains(view, "agy/l") {
+		t.Fatalf("expected 12th account agy/l visible on tall terminal")
+	}
+
+	// Short terminal should allow scrolling down to reveal the last account
+	app.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	for i := 0; i < 10; i++ {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	}
+	scrolled := app.View()
+	if !strings.Contains(scrolled, "agy/l") {
+		t.Fatalf("expected scrolled usage screen to reveal agy/l")
+	}
+}

@@ -16,6 +16,20 @@ import (
 
 func (a *App) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "up", "k":
+		if a.usageQuotaOffset > 0 {
+			a.usageQuotaOffset--
+		}
+	case "down", "j":
+		total := len(a.srv.LiveQuota().Accounts)
+		if a.usageQuotaOffset < max(total-1, 0) {
+			a.usageQuotaOffset++
+		}
+	case "pgup":
+		a.usageQuotaOffset = max(a.usageQuotaOffset-6, 0)
+	case "pgdown":
+		total := len(a.srv.LiveQuota().Accounts)
+		a.usageQuotaOffset = min(a.usageQuotaOffset+6, max(total-1, 0))
 	case "u":
 		a.copyToClipboard("Usage Hub URL", a.srv.UsageHubURL(true))
 	case "o":
@@ -192,12 +206,36 @@ func (a *App) viewUsage(bodyHeight int) string {
 	topCard := a.styles.Card.Width(fullW).Render(strings.Join(topLines, "\n"))
 
 	// Subscription Limits card (Hourly / Weekly remaining quota)
+	minBottomH := 7
+	if a.width < 104 {
+		minBottomH = 10
+	}
+	availForQuota := max(bodyHeight-lipgloss.Height(topCard)-minBottomH-4, 4)
+
 	var qLines []string
 	qMeta := "press R to refresh live limits"
 	if !qRep.UpdatedAt.IsZero() {
 		qMeta = "updated " + qRep.UpdatedAt.Format("15:04:05")
 	}
-	qLines = append(qLines, a.styles.Subtitle.Render("Subscription Limits (Hourly / Weekly)")+a.styles.ColGap(3)+a.styles.Muted.Render(qMeta))
+	totalQ := len(qRep.Accounts)
+	maxQ := availForQuota
+	startQ := 0
+	if totalQ > maxQ {
+		// Reserve 1 line for scroll indicator
+		maxQ = max(availForQuota-1, 3)
+		maxStart := max(totalQ-maxQ, 0)
+		startQ = clamp(a.usageQuotaOffset, 0, maxStart)
+		a.usageQuotaOffset = startQ
+	} else {
+		a.usageQuotaOffset = 0
+	}
+	endQ := min(startQ+maxQ, totalQ)
+
+	qHeader := a.styles.Subtitle.Render(fmt.Sprintf("Subscription Limits (Hourly / Weekly) (%d)", totalQ)) + a.styles.ColGap(3) + a.styles.Muted.Render(qMeta)
+	if totalQ > maxQ {
+		qHeader += a.styles.ColGap(2) + a.styles.Highlight.Render(fmt.Sprintf("[%d–%d of %d · j/k scroll]", startQ+1, endQ, totalQ))
+	}
+	qLines = append(qLines, qHeader)
 	qLines = append(qLines, a.styles.JoinRow(2,
 		a.styles.TableHeader.Render(fmt.Sprintf("%-16s", "ACCOUNT")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "PLAN")),
@@ -205,15 +243,10 @@ func (a *App) viewUsage(bodyHeight int) string {
 		a.styles.TableHeader.Render(fmt.Sprintf("%-26s", "WEEKLY / SECONDARY")),
 		a.styles.TableHeader.Render("APX 5h/7d"),
 	))
-	if len(qRep.Accounts) == 0 {
+	if totalQ == 0 {
 		qLines = append(qLines, a.styles.Muted.Render("No accounts configured yet."))
 	} else {
-		maxQ := clamp(bodyHeight/3, 3, 8)
-		for i, q := range qRep.Accounts {
-			if i >= maxQ {
-				qLines = append(qLines, a.styles.Muted.Render(fmt.Sprintf("... +%d more (open web hub with 'o')", len(qRep.Accounts)-maxQ)))
-				break
-			}
+		for _, q := range qRep.Accounts[startQ:endQ] {
 			plan := q.PlanType
 			if plan == "" {
 				switch q.Source {
@@ -245,6 +278,16 @@ func (a *App) viewUsage(bodyHeight int) string {
 				a.styles.PadCell(sec, 26),
 				a.styles.Muted.Render(truncate(localCol, max(innerW-94, 8))),
 			))
+		}
+		if totalQ > maxQ {
+			var navParts []string
+			if startQ > 0 {
+				navParts = append(navParts, fmt.Sprintf("↑ %d above", startQ))
+			}
+			if endQ < totalQ {
+				navParts = append(navParts, fmt.Sprintf("↓ %d more", totalQ-endQ))
+			}
+			qLines = append(qLines, a.styles.Muted.Render("  "+strings.Join(navParts, " · ")+"  (j/k or pgup/pgdn to scroll)"))
 		}
 	}
 	quotaCard := a.styles.Card.Width(fullW).Render(strings.Join(qLines, "\n"))
