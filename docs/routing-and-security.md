@@ -14,13 +14,15 @@ Configured per model pattern (`agy/*`, `deepseek/deepseek-chat`, or `*`) on the 
 
 | Strategy | Behavior | Subscription Accounts |
 |---|---|---|
-| `failover` **(default)** | Uses the primary account fully and switches to the next account only when the active one hits quota/429, cooldown, concurrency cap, or outage. | Enabled by default |
+| `failover` **(default)** | Uses the primary account fully and switches to the next account only when the active one hits quota/429, cooldown, concurrency cap, or outage. | Recommended default |
 | `sticky` | Keeps a session (`X-Acpx-Session` or `user`) pinned to one account; new sessions start on the primary account (never alternating/rotating). | Enabled by default |
 | `manual` | Routes to the exact account named in `<backend>/<account>/<model>` or `<prefix><model>`. | Enabled by default |
+| `round-robin` | Rotates new threads/requests across eligible accounts. Intended for **API-key** pools. | **Blocked unless explicitly opted in** (ban-risk confirmation required) |
+| `least-busy` | Picks the eligible account with the fewest in-flight requests. Intended for **API-key** pools. | **Blocked unless explicitly opted in** (ban-risk confirmation required) |
 
-### Why `round-robin` and `least-busy` Are Disabled
+### Why `round-robin` and `least-busy` Require Explicit Confirmation
 
-Spreading or alternating traffic across multiple subscription accounts can trigger automated multi-account detection and result in bans. `acpx` disables `round-robin` and `least-busy` completely (legacy configs containing them are normalized to `failover`) so you exhaust one account naturally before switching to the next.
+Spreading or alternating traffic across multiple subscription (ACP/CLI) accounts can violate provider Terms of Service and cause account bans. Both strategies work freely for **API-key** pools, while `acpx` prompts with a ban-risk warning in the TUI and blocks subscription accounts at runtime unless `subscription_warning_acked = true` is explicitly confirmed on that rule. For subscriptions, stick with the default primary-first `failover`.
 
 ## Health & Protection Rules
 

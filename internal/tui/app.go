@@ -60,6 +60,7 @@ const (
 	modalAPIKeys
 	modalRemoteGuide
 	modalConfirmDelete
+	modalSubStrategyWarn
 	modalEditText
 	modalPermission
 )
@@ -170,6 +171,11 @@ type App struct {
 
 	// Delete confirmation target
 	deleteTarget *config.AccountConfig
+
+	// Load-balancing strategy confirmation / subscription ban-risk warning
+	warnRuleIdx  int
+	warnStrategy string
+	warnHasSub   bool
 
 	// Live permission approval prompt
 	activePerm *backend.PermissionRequest
@@ -597,6 +603,36 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 
+	case modalSubStrategyWarn:
+		switch msg.String() {
+		case "y", "Y":
+			cfg := a.srv.Config()
+			if a.warnRuleIdx >= 0 && a.warnRuleIdx < len(cfg.Routing) {
+				cfg.Routing[a.warnRuleIdx].Strategy = a.warnStrategy
+				if a.warnHasSub {
+					cfg.Routing[a.warnRuleIdx].SubscriptionWarningAcked = true
+				}
+				_ = a.srv.ReloadConfig(cfg)
+				if a.warnHasSub {
+					a.setStatus("Enabled "+a.warnStrategy+" (subscription ban-risk warning acknowledged)", false)
+				} else {
+					a.setStatus("Enabled "+a.warnStrategy+" for API-key rule", false)
+				}
+			}
+			a.modal = modalNone
+		case "f", "F":
+			cfg := a.srv.Config()
+			if a.warnRuleIdx >= 0 && a.warnRuleIdx < len(cfg.Routing) {
+				cfg.Routing[a.warnRuleIdx].Strategy = config.StrategyFailover
+				_ = a.srv.ReloadConfig(cfg)
+				a.setStatus("Kept primary-first failover strategy", false)
+			}
+			a.modal = modalNone
+		case "n", "N", "q", "esc":
+			a.modal = modalNone
+		}
+		return a, nil
+
 	case modalEditText:
 		switch msg.String() {
 		case "esc":
@@ -849,7 +885,7 @@ func (a *App) viewModal() string {
 			"",
 			a.styles.Subtitle.Render("Models & Routing"),
 			"  Models:  space Toggle   E Enable all   X Disable all   H Show disabled   v Names   / Filter   f Fetch",
-			"  Routing: a Add rule   s Cycle strategy (failover/sticky/manual)   4 429-retry",
+			"  Routing: a Add rule   s Cycle strategy (failover/sticky/manual/round-robin/least-busy)   4 429-retry",
 			"",
 			a.styles.KeyHint("?", "close") + "   " + a.styles.KeyHint("esc", "close"),
 		}, "\n"))
@@ -900,6 +936,33 @@ func (a *App) viewModal() string {
 			fmt.Sprintf("Delete account %q?%s", name, extra),
 			"",
 			a.styles.KeyHint("y", "delete permanently") + "   " + a.styles.KeyHint("n", "cancel"),
+		}, "\n"))
+
+	case modalSubStrategyWarn:
+		cardW := clamp(a.width-14, 54, 76)
+		if a.warnHasSub {
+			return a.styles.ModalDanger.Width(cardW).Render(strings.Join([]string{
+				a.styles.StateErr.Render("Subscription Ban-Risk Warning"),
+				"",
+				fmt.Sprintf("Strategy %q spreads traffic across multiple accounts.", a.warnStrategy),
+				"This rule includes subscription-based (ACP/CLI) accounts.",
+				"Enabling round-robin or least-busy on subscription accounts can",
+				"violate provider Terms of Service and cause account bans.",
+				"",
+				"Recommended for subscriptions: primary-first failover (press f).",
+				"",
+				a.styles.KeyHint("y", "enable anyway (accept risk)") + "   " + a.styles.KeyHint("f", "use failover") + "   " + a.styles.KeyHint("n", "cancel"),
+			}, "\n"))
+		}
+		return a.styles.ModalWarn.Width(cardW).Render(strings.Join([]string{
+			a.styles.StateWarn.Render("Confirm Load-Balancing Strategy (" + a.warnStrategy + ")"),
+			"",
+			fmt.Sprintf("Strategy %q is intended for API-key accounts.", a.warnStrategy),
+			"WARNING: If used on subscription-based (ACP/CLI) accounts,",
+			"spreading requests across accounts can cause provider bans.",
+			"acpx blocks subscription accounts unless you explicitly opt in.",
+			"",
+			a.styles.KeyHint("y", "enable "+a.warnStrategy) + "   " + a.styles.KeyHint("f", "use failover") + "   " + a.styles.KeyHint("n", "cancel"),
 		}, "\n"))
 
 	case modalEditText:

@@ -23,6 +23,7 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	}
 	cfg.Routing = []config.RoutingRule{
 		{Pattern: "agy/*", Strategy: config.StrategyFailover, AllowCrossAccountRetryOn429: true},
+		{Pattern: "deepseek/*", Strategy: config.StrategyManual, AllowCrossAccountRetryOn429: true},
 	}
 
 	sec := secrets.NewFileOnly(dir)
@@ -68,16 +69,33 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
-	// Go to Routing (4), press 's' to cycle failover -> sticky -> manual -> failover (no round-robin/warning modal).
+	// Go to Routing (4): failover -> sticky -> manual cycle freely, then round-robin prompts with ban-risk warning!
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
-	for _, want := range []string{config.StrategySticky, config.StrategyManual, config.StrategyFailover} {
+	for _, want := range []string{config.StrategySticky, config.StrategyManual} {
 		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-		if app.modal != modalNone {
-			t.Fatalf("expected no modal while cycling strategies, got modal=%v", app.modal)
+		if app.modal != modalNone || app.srv.Config().Routing[0].Strategy != want {
+			t.Fatalf("expected clean switch to %q, got modal=%v strategy=%q", want, app.modal, app.srv.Config().Routing[0].Strategy)
 		}
-		if got := app.srv.Config().Routing[0].Strategy; got != want {
-			t.Fatalf("expected strategy %q, got %q", want, got)
-		}
+	}
+	// Next 's' on subscription rule (agy/*) -> round-robin triggers Subscription Ban-Risk Warning!
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if app.modal != modalSubStrategyWarn || !strings.Contains(app.View(), "Subscription Ban-Risk Warning") {
+		t.Fatalf("expected Subscription Ban-Risk Warning modal on agy/* round-robin, got modal=%v", app.modal)
+	}
+	// Pressing 'f' returns safely to primary-first failover.
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("f")})
+	if app.modal != modalNone || app.srv.Config().Routing[0].Strategy != config.StrategyFailover {
+		t.Fatalf("expected 'f' to keep failover, got modal=%v strategy=%q", app.modal, app.srv.Config().Routing[0].Strategy)
+	}
+	// Move to API-key rule (deepseek/*): pressing 's' from manual -> round-robin asks confirmation & reminds about subscription bans.
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if app.modal != modalSubStrategyWarn || !strings.Contains(app.View(), "API-key accounts") {
+		t.Fatalf("expected API-key confirmation modal with subscription warning, got modal=%v", app.modal)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	if app.modal != modalNone || app.srv.Config().Routing[1].Strategy != config.StrategyRoundRobin || app.srv.Config().Routing[1].SubscriptionWarningAcked {
+		t.Fatalf("expected deepseek/* enabled as round-robin without setting SubscriptionWarningAcked, got %+v", app.srv.Config().Routing[1])
 	}
 
 	// Open Accounts (2) -> e opens structured Account Editor modal (not comma-separated model text!)
