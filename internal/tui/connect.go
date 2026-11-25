@@ -30,6 +30,12 @@ func (a *App) updateConnectModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if a.connectCursor < len(a.connectTargets)-1 {
 			a.connectCursor++
 		}
+	case "pgup":
+		a.connectCursor = max(a.connectCursor-6, 0)
+	case "pgdown":
+		if len(a.connectTargets) > 0 {
+			a.connectCursor = min(a.connectCursor+6, len(a.connectTargets)-1)
+		}
 	case "enter":
 		if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
 			t := a.connectTargets[a.connectCursor]
@@ -39,11 +45,39 @@ func (a *App) updateConnectModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.setStatus("Connect failed: "+err.Error(), true)
 				return a, nil
 			}
+			a.connectTargets = connect.ListTargets()
 			if res.Applied {
 				a.setStatus(res.Message, false)
 			} else {
 				a.copyToClipboard(t.Name+" config", res.Snippet)
 			}
+		}
+	case "u", "x", "delete":
+		if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
+			t := a.connectTargets[a.connectCursor]
+			res, err := connect.Disconnect(t.ID)
+			if err != nil {
+				a.setStatus("Disconnect failed: "+err.Error(), true)
+				return a, nil
+			}
+			a.connectTargets = connect.ListTargets()
+			a.setStatus(res.Message, false)
+		}
+	case "U":
+		results, errs := connect.DisconnectAll()
+		a.connectTargets = connect.ListTargets()
+		removed := 0
+		for _, r := range results {
+			if r.Removed {
+				removed++
+			}
+		}
+		if len(errs) > 0 {
+			a.setStatus(fmt.Sprintf("Disconnected %d client(s) with %d error(s)", removed, len(errs)), true)
+		} else if removed == 0 {
+			a.setStatus("No connected IDEs or CLIs found to disconnect", false)
+		} else {
+			a.setStatus(fmt.Sprintf("Disconnected acpx from all %d connected IDE/CLI(s)", removed), false)
 		}
 	case "c":
 		if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
@@ -59,29 +93,49 @@ func (a *App) updateConnectModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) viewConnectModal() string {
-	cardW := clamp(a.width-8, 64, 92)
+	cardW := clamp(a.width-8, 66, 96)
 	innerW := cardW - 6
 
-	var lines []string
-	lines = append(lines, a.styles.Title.Render("◆ Connect Coding CLIs & T3 Code to acpx"))
-	lines = append(lines, a.styles.Muted.Render("Register your local acpx gateway & models into T3 Code, Zed, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline."))
-	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-	lines = append(lines, "")
+	connectedCount := 0
+	for _, t := range a.connectTargets {
+		if t.Connected {
+			connectedCount++
+		}
+	}
 
-	for i, t := range a.connectTargets {
-		badge := a.styles.Muted.Render("○ not detected")
-		if t.Detected {
-			badge = a.styles.StateReady.Render("● detected")
+	var lines []string
+	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("◆ Connect IDEs & Coding CLIs (%d connected)", connectedCount)))
+	lines = append(lines, a.styles.Muted.Render("T3 Code, Zed, VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude, Pi, Grok, Aider, Cursor..."))
+	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+
+	maxRows := clamp(a.height-18, 6, 12)
+	start := 0
+	if a.connectCursor >= maxRows {
+		start = a.connectCursor - maxRows + 1
+	}
+	end := min(start+maxRows, len(a.connectTargets))
+
+	for i := start; i < end; i++ {
+		t := a.connectTargets[i]
+		badge := a.styles.Muted.Render("○ not found ")
+		if t.Connected {
+			badge = a.styles.StateReady.Render("● connected ")
+		} else if t.Detected {
+			badge = a.styles.StateWarn.Render("◐ detected  ")
 		}
-		mode := a.styles.Muted.Render("copy snippet")
+		mode := a.styles.Muted.Render("manual")
 		if t.AutoApply {
-			mode = a.styles.Highlight.Render("auto-configure")
+			mode = a.styles.Highlight.Render("auto  ")
 		}
-		row := fmt.Sprintf("%-22s %-16s %-16s %s",
-			truncate(t.Name, 22),
+		pathOrDesc := t.ConfigPath
+		if pathOrDesc == "" {
+			pathOrDesc = t.Description
+		}
+		row := fmt.Sprintf("%-18s %-14s %-8s %s",
+			truncate(t.Name, 18),
 			badge,
 			mode,
-			a.styles.Muted.Render(truncate(t.ConfigPath, max(innerW-60, 10))),
+			a.styles.Muted.Render(truncate(pathOrDesc, max(innerW-46, 12))),
 		)
 		if i == a.connectCursor {
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
@@ -89,18 +143,20 @@ func (a *App) viewConnectModal() string {
 			lines = append(lines, "  "+row)
 		}
 	}
+	for i := end - start; i < maxRows; i++ {
+		lines = append(lines, "")
+	}
 
 	if a.connectCursor >= 0 && a.connectCursor < len(a.connectTargets) {
 		sel := a.connectTargets[a.connectCursor]
 		models := a.srv.Router().ListModels(false)
 		res, _ := connect.Apply(sel.ID, a.srv.Config(), models, false)
 
-		lines = append(lines, "")
 		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 		lines = append(lines, a.styles.Subtitle.Render("Preview — "+sel.Name))
 		if res != nil {
 			snipLines := strings.Split(strings.TrimSpace(res.Snippet), "\n")
-			maxSnip := clamp(a.height-len(a.connectTargets)-16, 4, 9)
+			maxSnip := clamp(a.height-maxRows-15, 4, 7)
 			for idx, sl := range snipLines {
 				if idx >= maxSnip {
 					lines = append(lines, a.styles.Muted.Render("  ..."))
@@ -111,11 +167,12 @@ func (a *App) viewConnectModal() string {
 		}
 	}
 
-	lines = append(lines, "")
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, a.styles.JoinHints(
-		a.styles.KeyHint("enter", "apply / copy"),
-		a.styles.KeyHint("c", "copy snippet"),
+		a.styles.KeyHint("enter", "connect"),
+		a.styles.KeyHint("u", "disconnect"),
+		a.styles.KeyHint("U", "disconnect all"),
+		a.styles.KeyHint("c", "copy"),
 		a.styles.KeyHint("esc", "close"),
 	))
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/bberka/acpx/internal/config"
@@ -19,15 +20,17 @@ type Target struct {
 	ConfigPath  string
 	AutoApply   bool // true if acpx can safely write/merge its config file directly
 	Detected    bool
+	Connected   bool // true if acpx is currently registered in ConfigPath
 }
 
 type Result struct {
-	Target   Target
-	Applied  bool
-	Path     string
-	Backup   string
-	Snippet  string
-	Message  string
+	Target  Target
+	Applied bool
+	Removed bool
+	Path    string
+	Backup  string
+	Snippet string
+	Message string
 }
 
 func homeDir() string {
@@ -45,10 +48,67 @@ func acpxBinaryPath() string {
 	return "acpx"
 }
 
-// ListTargets returns all supported client CLIs and IDEs that acpx can register itself into.
+func vscodeUserDir(appName string) string {
+	home := homeDir()
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", appName, "User")
+	case "windows":
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, appName, "User")
+		}
+		return filepath.Join(home, "AppData", "Roaming", appName, "User")
+	default:
+		return filepath.Join(home, ".config", appName, "User")
+	}
+}
+
+func zedSettingsPath() string {
+	home := homeDir()
+	if runtime.GOOS == "windows" {
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, "Zed", "settings.json")
+		}
+		return filepath.Join(home, "AppData", "Roaming", "Zed", "settings.json")
+	}
+	return filepath.Join(home, ".config", "zed", "settings.json")
+}
+
+func detectJetBrains(home string) bool {
+	if _, err := os.Stat(filepath.Join(home, ".jetbrains")); err == nil {
+		return true
+	}
+	switch runtime.GOOS {
+	case "darwin":
+		if _, err := os.Stat(filepath.Join(home, "Library", "Application Support", "JetBrains")); err == nil {
+			return true
+		}
+	case "windows":
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			if _, err := os.Stat(filepath.Join(appData, "JetBrains")); err == nil {
+				return true
+			}
+		}
+	default:
+		if _, err := os.Stat(filepath.Join(home, ".config", "JetBrains")); err == nil {
+			return true
+		}
+	}
+	for _, bin := range []string{"idea", "rider", "pycharm", "webstorm", "goland", "rustrover", "clion", "phpstorm"} {
+		if _, err := exec.LookPath(bin); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// ListTargets returns all supported IDEs, editors, and coding CLIs that acpx can connect/disconnect.
 func ListTargets() []Target {
 	home := homeDir()
 	exists := func(p string) bool {
+		if p == "" {
+			return false
+		}
 		_, err := os.Stat(p)
 		return err == nil
 	}
@@ -57,11 +117,16 @@ func ListTargets() []Target {
 		return err == nil
 	}
 
-	return []Target{
+	codeDir := vscodeUserDir("Code")
+	insidersDir := vscodeUserDir("Code - Insiders")
+	codiumDir := vscodeUserDir("VSCodium")
+	zedPath := zedSettingsPath()
+
+	targets := []Target{
 		{
 			ID:          "t3code",
 			Name:        "T3 Code",
-			Description: "Register acpx as a native ACP agent (`acpx acp`) in ~/.t3/userdata/settings.json",
+			Description: "Native ACP agent (`acpx acp`) in ~/.t3/userdata/settings.json",
 			ConfigPath:  filepath.Join(home, ".t3", "userdata", "settings.json"),
 			AutoApply:   true,
 			Detected:    exists(filepath.Join(home, ".t3")),
@@ -69,15 +134,63 @@ func ListTargets() []Target {
 		{
 			ID:          "zed",
 			Name:        "Zed",
-			Description: "Register acpx as a native ACP agent_server (`acpx acp`) in ~/.config/zed/settings.json",
-			ConfigPath:  filepath.Join(home, ".config", "zed", "settings.json"),
+			Description: "Native ACP agent_server (`acpx acp`) in Zed settings.json",
+			ConfigPath:  zedPath,
 			AutoApply:   true,
-			Detected:    hasBin("zed") || hasBin("zeditor") || exists(filepath.Join(home, ".config", "zed")),
+			Detected:    hasBin("zed") || hasBin("zeditor") || exists(filepath.Dir(zedPath)),
+		},
+		{
+			ID:          "vscode",
+			Name:        "VS Code",
+			Description: "Copilot BYOK OpenAI-compatible gateway in chatLanguageModels.json",
+			ConfigPath:  filepath.Join(codeDir, "chatLanguageModels.json"),
+			AutoApply:   true,
+			Detected:    hasBin("code") || exists(codeDir),
+		},
+		{
+			ID:          "vscode-insiders",
+			Name:        "VS Code Insiders",
+			Description: "Copilot BYOK OpenAI-compatible gateway in Code Insiders chatLanguageModels.json",
+			ConfigPath:  filepath.Join(insidersDir, "chatLanguageModels.json"),
+			AutoApply:   true,
+			Detected:    hasBin("code-insiders") || exists(insidersDir),
+		},
+		{
+			ID:          "vscodium",
+			Name:        "VSCodium",
+			Description: "OpenAI-compatible gateway in VSCodium chatLanguageModels.json",
+			ConfigPath:  filepath.Join(codiumDir, "chatLanguageModels.json"),
+			AutoApply:   true,
+			Detected:    hasBin("codium") || exists(codiumDir),
+		},
+		{
+			ID:          "jetbrains",
+			Name:        "JetBrains IDEs",
+			Description: "Native ACP agent (`acpx acp`) in ~/.jetbrains/acp.json (IntelliJ, Rider, PyCharm, GoLand...)",
+			ConfigPath:  filepath.Join(home, ".jetbrains", "acp.json"),
+			AutoApply:   true,
+			Detected:    detectJetBrains(home),
+		},
+		{
+			ID:          "continue",
+			Name:        "Continue.dev",
+			Description: "OpenAI-compatible models in ~/.continue/config.yaml (VS Code & JetBrains)",
+			ConfigPath:  filepath.Join(home, ".continue", "config.yaml"),
+			AutoApply:   true,
+			Detected:    exists(filepath.Join(home, ".continue")),
+		},
+		{
+			ID:          "neovim",
+			Name:        "Neovim",
+			Description: "ACP + OpenAI Lua helper module at ~/.config/nvim/acpx.lua (codecompanion/avante)",
+			ConfigPath:  filepath.Join(home, ".config", "nvim", "acpx.lua"),
+			AutoApply:   true,
+			Detected:    hasBin("nvim") || exists(filepath.Join(home, ".config", "nvim")),
 		},
 		{
 			ID:          "opencode",
 			Name:        "OpenCode",
-			Description: "Add/merge `acpx` OpenAI-compatible provider with all your models into opencode.json",
+			Description: "OpenAI-compatible `acpx` provider in ~/.config/opencode/opencode.json",
 			ConfigPath:  filepath.Join(home, ".config", "opencode", "opencode.json"),
 			AutoApply:   true,
 			Detected:    hasBin("opencode") || exists(filepath.Join(home, ".config", "opencode")),
@@ -85,7 +198,7 @@ func ListTargets() []Target {
 		{
 			ID:          "codex",
 			Name:        "Codex CLI",
-			Description: "Append/update `[model_providers.acpx]` in ~/.codex/config.toml",
+			Description: "`[model_providers.acpx]` block in ~/.codex/config.toml",
 			ConfigPath:  filepath.Join(home, ".codex", "config.toml"),
 			AutoApply:   true,
 			Detected:    hasBin("codex") || exists(filepath.Join(home, ".codex")),
@@ -93,7 +206,7 @@ func ListTargets() []Target {
 		{
 			ID:          "claude",
 			Name:        "Claude Code",
-			Description: "Configure ANTHROPIC_BASE_URL & ANTHROPIC_AUTH_TOKEN in ~/.claude/settings.json",
+			Description: "ANTHROPIC_BASE_URL & ANTHROPIC_AUTH_TOKEN in ~/.claude/settings.json",
 			ConfigPath:  filepath.Join(home, ".claude", "settings.json"),
 			AutoApply:   true,
 			Detected:    hasBin("claude") || exists(filepath.Join(home, ".claude")),
@@ -101,7 +214,7 @@ func ListTargets() []Target {
 		{
 			ID:          "pi",
 			Name:        "Pi Coding Agent",
-			Description: "Add/merge `acpx` provider & models in ~/.pi/agent/models.json",
+			Description: "`acpx` provider in ~/.pi/agent/models.json",
 			ConfigPath:  filepath.Join(home, ".pi", "agent", "models.json"),
 			AutoApply:   true,
 			Detected:    hasBin("pi") || exists(filepath.Join(home, ".pi")),
@@ -109,40 +222,89 @@ func ListTargets() []Target {
 		{
 			ID:          "grok",
 			Name:        "Grok CLI",
-			Description: "Configure baseURL & apiKey in ~/.grok/user-settings.json",
+			Description: "baseURL & apiKey in ~/.grok/user-settings.json",
 			ConfigPath:  filepath.Join(home, ".grok", "user-settings.json"),
 			AutoApply:   true,
 			Detected:    hasBin("grok") || exists(filepath.Join(home, ".grok")),
 		},
 		{
+			ID:          "aider",
+			Name:        "Aider",
+			Description: "OpenAI base URL & API key block in ~/.aider.conf.yml",
+			ConfigPath:  filepath.Join(home, ".aider.conf.yml"),
+			AutoApply:   true,
+			Detected:    hasBin("aider") || exists(filepath.Join(home, ".aider.conf.yml")),
+		},
+		{
+			ID:          "cursor",
+			Name:        "Cursor",
+			Description: "OpenAI Base URL override + API key for Cursor Settings",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("cursor") || hasBin("agent") || exists(vscodeUserDir("Cursor")),
+		},
+		{
+			ID:          "windsurf",
+			Name:        "Windsurf",
+			Description: "OpenAI-compatible endpoint + API key for Windsurf Settings",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("windsurf") || exists(vscodeUserDir("Windsurf")),
+		},
+		{
 			ID:          "cline",
-			Name:        "Cline",
-			Description: "Generate OpenAI-compatible provider settings for Cline (VS Code & CLI)",
+			Name:        "Cline / Roo / Kilo",
+			Description: "OpenAI-compatible provider settings for Cline, Roo Code & Kilo Code",
 			ConfigPath:  "",
 			AutoApply:   false,
 			Detected:    hasBin("cline"),
 		},
 		{
-			ID:          "cursor",
-			Name:        "Cursor",
-			Description: "Generate OpenAI Base URL override + API key + custom models for Cursor Settings",
-			ConfigPath:  "",
-			AutoApply:   false,
-			Detected:    hasBin("cursor") || hasBin("agent"),
-		},
-		{
 			ID:          "agy",
-			Name:        "Antigravity / Muse Code",
-			Description: "Shell exports (OPENAI_BASE_URL / ANTHROPIC_BASE_URL) & ACP bridge command",
+			Name:        "Shell / Env",
+			Description: "Shell exports (OPENAI_BASE_URL / ANTHROPIC_BASE_URL) & `acpx acp`",
 			ConfigPath:  "",
 			AutoApply:   false,
-			Detected:    hasBin("agy") || hasBin("muse-code"),
+			Detected:    true,
 		},
 	}
+
+	for i := range targets {
+		if targets[i].AutoApply && targets[i].ConfigPath != "" {
+			targets[i].Connected = IsConnectedAtPath(targets[i].ID, targets[i].ConfigPath)
+		}
+	}
+	return targets
+}
+
+// targetAliases allows convenient shorthand names (e.g. "code" -> "vscode", "rider" -> "jetbrains", "nvim" -> "neovim").
+var targetAliases = map[string]string{
+	"code":          "vscode",
+	"code-insiders": "vscode-insiders",
+	"insiders":      "vscode-insiders",
+	"codium":        "vscodium",
+	"jb":            "jetbrains",
+	"intellij":      "jetbrains",
+	"idea":          "jetbrains",
+	"rider":         "jetbrains",
+	"pycharm":       "jetbrains",
+	"webstorm":      "jetbrains",
+	"goland":        "jetbrains",
+	"rustrover":     "jetbrains",
+	"clion":         "jetbrains",
+	"nvim":          "neovim",
+	"roo":           "cline",
+	"roocode":       "cline",
+	"kilo":          "cline",
+	"t3":            "t3code",
+	"shell":         "agy",
 }
 
 func FindTarget(id string) (Target, bool) {
 	id = strings.ToLower(strings.TrimSpace(id))
+	if alias, ok := targetAliases[id]; ok {
+		id = alias
+	}
 	for _, t := range ListTargets() {
 		if t.ID == id {
 			return t, true
@@ -151,8 +313,79 @@ func FindTarget(id string) (Target, bool) {
 	return Target{}, false
 }
 
+// IsConnectedAtPath reports whether acpx is currently registered in the given target config file.
+func IsConnectedAtPath(targetID, path string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil || len(strings.TrimSpace(string(raw))) == 0 {
+		return false
+	}
+	switch targetID {
+	case "t3code":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if provs, ok := root["providerInstances"].(map[string]any); ok {
+				_, exists := provs["acpx"]
+				return exists
+			}
+		}
+	case "zed", "jetbrains":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if servers, ok := root["agent_servers"].(map[string]any); ok {
+				_, exists := servers["acpx"]
+				return exists
+			}
+		}
+	case "vscode", "vscode-insiders", "vscodium":
+		var arr []map[string]any
+		if json.Unmarshal(stripJSONC(raw), &arr) == nil {
+			for _, item := range arr {
+				if name, _ := item["name"].(string); strings.EqualFold(name, "acpx") {
+					return true
+				}
+			}
+		}
+	case "opencode":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if prov, ok := root["provider"].(map[string]any); ok {
+				_, exists := prov["acpx"]
+				return exists
+			}
+		}
+	case "pi":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if provs, ok := root["providers"].(map[string]any); ok {
+				_, exists := provs["acpx"]
+				return exists
+			}
+		}
+	case "claude":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if env, ok := root["env"].(map[string]any); ok {
+				tok, _ := env["ANTHROPIC_AUTH_TOKEN"].(string)
+				key, _ := env["ANTHROPIC_API_KEY"].(string)
+				return strings.HasPrefix(tok, "acpx_") || strings.HasPrefix(key, "acpx_")
+			}
+		}
+	case "grok":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			key, _ := root["apiKey"].(string)
+			return strings.HasPrefix(key, "acpx_")
+		}
+	case "codex", "continue", "aider":
+		return strings.Contains(string(raw), "# --- acpx begin ---")
+	case "neovim":
+		return strings.Contains(string(raw), "acpx")
+	}
+	return false
+}
+
 // Apply registers acpx into the target client's config file (if apply==true and supported)
-// and always returns a clean human-readable snippet.
+// and always returns a clean, concise human-readable snippet.
 func Apply(targetID string, cfg *config.Config, models []router.ModelEntry, apply bool) (*Result, error) {
 	t, ok := FindTarget(targetID)
 	if !ok {
@@ -171,16 +404,20 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 	modelIDs := make([]string, 0, len(models))
 	excludedSelf := 0
 	for _, m := range models {
-		// Loop prevention: never register a client's own backend models back into that same client
-		// (e.g. `acpx connect pi` excludes `pi` backend models so pi cannot recurse into acpx -> pi).
-		if t.ID != "t3code" && m.Backend != "" && m.Backend == t.ID {
+		// Loop prevention: never register a client's own backend models back into that same client.
+		if t.ID != "t3code" && t.ID != "zed" && t.ID != "jetbrains" &&
+			t.ID != "vscode" && t.ID != "vscode-insiders" && t.ID != "vscodium" &&
+			t.ID != "continue" && t.ID != "neovim" && t.ID != "aider" &&
+			m.Backend != "" && m.Backend == t.ID {
 			excludedSelf++
 			continue
 		}
 		modelIDs = append(modelIDs, m.ID)
 	}
-	if len(modelIDs) == 0 {
-		modelIDs = []string{"default"}
+	enabledCount := len(modelIDs)
+	effectiveModels := modelIDs
+	if len(effectiveModels) == 0 {
+		effectiveModels = []string{"default"}
 	}
 	loopNote := ""
 	if excludedSelf > 0 {
@@ -200,7 +437,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				"OpenAI-compatible endpoint (optional):\n"+
 				"    Base URL: %s\n"+
 				"    API Key:  %s\n",
-			acpxBin, len(modelIDs), baseURL, key,
+			acpxBin, enabledCount, baseURL, key,
 		)
 		if apply && path != "" {
 			bak, err := mergeJSONFile(path, func(root map[string]any) {
@@ -238,7 +475,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered ACPX provider (%s + [acp]) in %s — reload T3 Code to activate", acpxBin, path)
+			res.Message = fmt.Sprintf("Registered ACPX (%d models) in %s — reload T3 Code to activate", enabledCount, path)
 		}
 
 	case "zed":
@@ -251,7 +488,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				"acpx": agentEntry,
 			},
 		}, "", "  ")
-		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# %d models auto-discovered via ACP\n", len(modelIDs))
+		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# %d models auto-discovered via ACP\n", enabledCount)
 
 		if apply && path != "" {
 			bak, err := mergeJSONFile(path, func(root map[string]any) {
@@ -267,12 +504,147 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx ACP agent_server in %s (%d models auto-discovered)", path, len(modelIDs))
+			res.Message = fmt.Sprintf("Registered acpx ACP agent_server (%d models) in %s", enabledCount, path)
+		}
+
+	case "jetbrains":
+		agentEntry := map[string]any{
+			"type":    "custom",
+			"command": acpxBin,
+			"args":    []string{"acp"},
+		}
+		snipRaw, _ := json.MarshalIndent(map[string]any{
+			"agent_servers": map[string]any{
+				"acpx": agentEntry,
+			},
+		}, "", "  ")
+		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# JetBrains AI Chat -> %d models auto-discovered via ACP\n", enabledCount)
+
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				servers, _ := root["agent_servers"].(map[string]any)
+				if servers == nil {
+					servers = make(map[string]any)
+				}
+				servers["acpx"] = agentEntry
+				root["agent_servers"] = servers
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered acpx in JetBrains %s (%d models) — reopen AI Chat to reload", path, enabledCount)
+		}
+
+	case "vscode", "vscode-insiders", "vscodium":
+		vsModels := make([]map[string]any, 0, len(effectiveModels))
+		for _, id := range effectiveModels {
+			vsModels = append(vsModels, map[string]any{
+				"id":     id,
+				"name":   id,
+				"url":    baseURL + "/chat/completions",
+				"tokens": 128000,
+				"capabilities": map[string]any{
+					"toolCalling": true,
+					"imageInput":  false,
+				},
+			})
+		}
+		vsEntry := map[string]any{
+			"name":    "acpx",
+			"vendor":  "customendpoint",
+			"apiKey":  key,
+			"apiType": "chat-completions",
+			"models":  vsModels,
+		}
+		res.Snippet = fmt.Sprintf(
+			"%s — Copilot BYOK (chatLanguageModels.json):\n"+
+				"  Endpoint: %s/chat/completions\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled (open Chat -> Manage Language Models -> acpx)\n",
+			t.Name, baseURL, key, enabledCount,
+		)
+
+		if apply && path != "" {
+			bak, err := mergeJSONArrayFile(path, func(items []map[string]any) []map[string]any {
+				for i, item := range items {
+					if name, _ := item["name"].(string); strings.EqualFold(name, "acpx") {
+						items[i] = vsEntry
+						return items
+					}
+				}
+				return append(items, vsEntry)
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s", enabledCount, path)
+		}
+
+	case "continue":
+		var sb strings.Builder
+		sb.WriteString("# --- acpx begin ---\n")
+		sb.WriteString("models:\n")
+		for _, id := range effectiveModels {
+			sb.WriteString(fmt.Sprintf("  - name: acpx / %s\n", id))
+			sb.WriteString("    provider: openai\n")
+			sb.WriteString(fmt.Sprintf("    model: %s\n", id))
+			sb.WriteString(fmt.Sprintf("    apiBase: %s\n", baseURL))
+			sb.WriteString(fmt.Sprintf("    apiKey: %s\n", key))
+			sb.WriteString("    roles:\n      - chat\n      - edit\n      - apply\n")
+		}
+		sb.WriteString("# --- acpx end ---\n")
+		res.Snippet = fmt.Sprintf(
+			"Continue.dev (~/.continue/config.yaml):\n"+
+				"  Provider: openai\n"+
+				"  API Base: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			baseURL, key, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := upsertTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---", sb.String())
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s", enabledCount, path)
+		}
+
+	case "neovim":
+		lua := fmt.Sprintf(`-- Generated by acpx (disconnect anytime with: acpx disconnect neovim)
+-- Works with codecompanion.nvim (native ACP or OpenAI) and avante.nvim
+return {
+  acp = {
+    command = %q,
+    args = { "acp" },
+  },
+  openai = {
+    endpoint = %q,
+    api_key = %q,
+    model = %q,
+  },
+}
+`, acpxBin, baseURL, key, effectiveModels[0])
+		res.Snippet = lua + fmt.Sprintf("-- %d models available via acpx\n", enabledCount)
+		if apply && path != "" {
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(path, []byte(lua), 0o600); err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Message = fmt.Sprintf("Wrote Neovim helper module (%d models) to %s", enabledCount, path)
 		}
 
 	case "opencode":
-		modelMap := make(map[string]any, len(modelIDs))
-		for _, id := range modelIDs {
+		modelMap := make(map[string]any, len(effectiveModels))
+		for _, id := range effectiveModels {
 			modelMap[id] = map[string]any{"name": id}
 		}
 		providerObj := map[string]any{
@@ -292,8 +664,8 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				"  Base URL: %s\n"+
 				"  API Key:  %s\n"+
 				"  Header:   X-Acpx-Client: opencode\n"+
-				"  Models:   %d configured%s (run `acpx list` to view)\n",
-			baseURL, key, len(modelIDs), loopNote,
+				"  Models:   %d enabled%s\n",
+			baseURL, key, enabledCount, loopNote,
 		)
 
 		if apply && path != "" {
@@ -313,7 +685,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", len(modelIDs), path, loopNote)
+			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", enabledCount, path, loopNote)
 		}
 
 	case "codex":
@@ -327,10 +699,10 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				"# --- acpx end ---\n",
 			baseURL,
 		)
-		res.Snippet = block + fmt.Sprintf("\n# Run Codex with acpx:\nexport ACPX_API_KEY=%q\ncodex -c model_provider=acpx -m %s\n", key, modelIDs[0])
+		res.Snippet = block + fmt.Sprintf("\n# Run Codex with acpx (%d models):\nexport ACPX_API_KEY=%q\ncodex -c model_provider=acpx -m %s\n", enabledCount, key, effectiveModels[0])
 
 		if apply && path != "" {
-			bak, err := upsertTOMLBlock(path, "# --- acpx begin ---", "# --- acpx end ---", block)
+			bak, err := upsertTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---", block)
 			if err != nil {
 				return nil, err
 			}
@@ -346,7 +718,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			"ANTHROPIC_API_KEY":    key,
 		}
 		snipRaw, _ := json.MarshalIndent(map[string]any{"env": envObj}, "", "  ")
-		res.Snippet = string(snipRaw)
+		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# %d models available\n", enabledCount)
 
 		if apply && path != "" {
 			bak, err := mergeJSONFile(path, func(root map[string]any) {
@@ -368,8 +740,8 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 		}
 
 	case "pi":
-		piModels := make([]map[string]any, 0, len(modelIDs))
-		for _, id := range modelIDs {
+		piModels := make([]map[string]any, 0, len(effectiveModels))
+		for _, id := range effectiveModels {
 			piModels = append(piModels, map[string]any{
 				"id":   id,
 				"name": id,
@@ -389,8 +761,8 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				"  Base URL: %s\n"+
 				"  API Key:  %s\n"+
 				"  Header:   X-Acpx-Client: pi\n"+
-				"  Models:   %d configured%s (run `acpx list` to view)\n",
-			baseURL, key, len(modelIDs), loopNote,
+				"  Models:   %d enabled%s\n",
+			baseURL, key, enabledCount, loopNote,
 		)
 
 		if apply && path != "" {
@@ -407,23 +779,23 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			}
 			res.Applied = true
 			res.Backup = bak
-			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", len(modelIDs), path, loopNote)
+			res.Message = fmt.Sprintf("Registered acpx (%d models) in %s%s", enabledCount, path, loopNote)
 		}
 
 	case "grok":
 		snipRaw, _ := json.MarshalIndent(map[string]any{
 			"baseURL": baseURL,
 			"apiKey":  key,
-			"model":   modelIDs[0],
+			"model":   effectiveModels[0],
 		}, "", "  ")
-		res.Snippet = string(snipRaw)
+		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# %d models available\n", enabledCount)
 
 		if apply && path != "" {
 			bak, err := mergeJSONFile(path, func(root map[string]any) {
 				root["baseURL"] = baseURL
 				root["apiKey"] = key
 				if _, ok := root["model"]; !ok {
-					root["model"] = modelIDs[0]
+					root["model"] = effectiveModels[0]
 				}
 			})
 			if err != nil {
@@ -434,25 +806,55 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			res.Message = "Configured Grok CLI in " + path
 		}
 
+	case "aider":
+		block := fmt.Sprintf(
+			"# --- acpx begin ---\n"+
+				"openai-api-base: %s\n"+
+				"openai-api-key: %s\n"+
+				"model: openai/%s\n"+
+				"# --- acpx end ---\n",
+			baseURL, key, effectiveModels[0],
+		)
+		res.Snippet = block + fmt.Sprintf("# %d models available\n", enabledCount)
+		if apply && path != "" {
+			bak, err := upsertTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---", block)
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = "Configured Aider in " + path
+		}
+
 	case "cursor":
 		res.Snippet = fmt.Sprintf(
 			"Cursor Settings -> Models -> OpenAI API Key:\n"+
 				"  Override OpenAI Base URL: %s\n"+
 				"  OpenAI API Key:           %s\n"+
-				"  Models:                   %d enabled (run `acpx list` or GET %s/models)\n",
-			baseURL, key, len(modelIDs), baseURL,
+				"  Models:                   %d enabled\n",
+			baseURL, key, enabledCount,
 		)
 		res.Message = "Copy Cursor settings above (Cursor stores settings in its GUI)."
 
-	case "cline":
+	case "windsurf":
 		res.Snippet = fmt.Sprintf(
-			"Cline Settings -> API Provider -> OpenAI Compatible:\n"+
+			"Windsurf Settings -> Custom OpenAI-compatible Provider:\n"+
 				"  Base URL: %s\n"+
 				"  API Key:  %s\n"+
-				"  Model ID: %s\n",
-			baseURL, key, modelIDs[0],
+				"  Models:   %d enabled\n",
+			baseURL, key, enabledCount,
 		)
-		res.Message = "Copy Cline settings above."
+		res.Message = "Copy Windsurf settings above."
+
+	case "cline":
+		res.Snippet = fmt.Sprintf(
+			"Cline / Roo Code / Kilo Code -> API Provider -> OpenAI Compatible:\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled (default: %s)\n",
+			baseURL, key, enabledCount, effectiveModels[0],
+		)
+		res.Message = "Copy Cline / Roo / Kilo settings above."
 
 	default:
 		res.Snippet = fmt.Sprintf(
@@ -460,13 +862,204 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 				"export OPENAI_API_KEY=%q\n"+
 				"export ANTHROPIC_BASE_URL=%q\n"+
 				"export ANTHROPIC_API_KEY=%q\n"+
-				"# Or connect any ACP client via stdio:\n"+
+				"# Native ACP stdio server (%d models):\n"+
 				"# %s acp\n",
-			baseURL, key, anthURL, key, acpxBin,
+			baseURL, key, anthURL, key, enabledCount, acpxBin,
 		)
 		res.Message = "Shell exports ready."
 	}
 
+	return res, nil
+}
+
+// Disconnect cleanly removes acpx's registration from a target client without touching other settings.
+func Disconnect(targetID string) (*Result, error) {
+	t, ok := FindTarget(targetID)
+	if !ok {
+		return nil, fmt.Errorf("unknown client %q", targetID)
+	}
+	return DisconnectAtPath(t, t.ConfigPath)
+}
+
+// DisconnectAll cleanly removes acpx from every auto-configured IDE & CLI where it is currently registered.
+func DisconnectAll() ([]Result, []error) {
+	var results []Result
+	var errs []error
+	for _, t := range ListTargets() {
+		if !t.AutoApply || t.ConfigPath == "" || !t.Connected {
+			continue
+		}
+		res, err := DisconnectAtPath(t, t.ConfigPath)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", t.ID, err))
+			continue
+		}
+		if res != nil {
+			results = append(results, *res)
+		}
+	}
+	return results, errs
+}
+
+// DisconnectAtPath removes acpx's registration from the specified config path (useful for tests).
+func DisconnectAtPath(t Target, path string) (*Result, error) {
+	res := &Result{Target: t, Path: path}
+	if !t.AutoApply || path == "" {
+		res.Message = fmt.Sprintf("%s is configured manually in its GUI — remove the acpx Base URL there.", t.Name)
+		return res, nil
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		res.Message = fmt.Sprintf("%s is not connected (%s not found)", t.Name, path)
+		return res, nil
+	}
+
+	switch t.ID {
+	case "t3code":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if provs, ok := root["providerInstances"].(map[string]any); ok {
+				if _, exists := provs["acpx"]; exists {
+					delete(provs, "acpx")
+					removed = true
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "zed", "jetbrains":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if servers, ok := root["agent_servers"].(map[string]any); ok {
+				if _, exists := servers["acpx"]; exists {
+					delete(servers, "acpx")
+					removed = true
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "vscode", "vscode-insiders", "vscodium":
+		removed := false
+		bak, err := mergeJSONArrayFile(path, func(items []map[string]any) []map[string]any {
+			kept := make([]map[string]any, 0, len(items))
+			for _, item := range items {
+				if name, _ := item["name"].(string); strings.EqualFold(name, "acpx") {
+					removed = true
+					continue
+				}
+				kept = append(kept, item)
+			}
+			return kept
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "opencode":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if prov, ok := root["provider"].(map[string]any); ok {
+				if _, exists := prov["acpx"]; exists {
+					delete(prov, "acpx")
+					removed = true
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "pi":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if provs, ok := root["providers"].(map[string]any); ok {
+				if _, exists := provs["acpx"]; exists {
+					delete(provs, "acpx")
+					removed = true
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "claude":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if env, ok := root["env"].(map[string]any); ok {
+				tok, _ := env["ANTHROPIC_AUTH_TOKEN"].(string)
+				key, _ := env["ANTHROPIC_API_KEY"].(string)
+				base, _ := env["ANTHROPIC_BASE_URL"].(string)
+				if strings.HasPrefix(tok, "acpx_") || strings.HasPrefix(key, "acpx_") || strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") {
+					if strings.HasPrefix(tok, "acpx_") {
+						delete(env, "ANTHROPIC_AUTH_TOKEN")
+						removed = true
+					}
+					if strings.HasPrefix(key, "acpx_") {
+						delete(env, "ANTHROPIC_API_KEY")
+						removed = true
+					}
+					if strings.Contains(base, "127.0.0.1") || strings.Contains(base, "localhost") {
+						delete(env, "ANTHROPIC_BASE_URL")
+						removed = true
+					}
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "grok":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if key, _ := root["apiKey"].(string); strings.HasPrefix(key, "acpx_") {
+				delete(root, "apiKey")
+				delete(root, "baseURL")
+				removed = true
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "codex", "continue", "aider":
+		removed, bak, err := removeTextBlock(path, "# --- acpx begin ---", "# --- acpx end ---")
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "neovim":
+		if err := os.Remove(path); err == nil {
+			res.Removed = true
+		}
+	}
+
+	if res.Removed {
+		res.Message = fmt.Sprintf("Disconnected acpx from %s (%s)", t.Name, path)
+	} else {
+		res.Message = fmt.Sprintf("No acpx entry found in %s (%s)", t.Name, path)
+	}
 	return res, nil
 }
 
@@ -501,8 +1094,42 @@ func mergeJSONFile(path string, mutate func(map[string]any)) (string, error) {
 	return backupPath, nil
 }
 
+func mergeJSONArrayFile(path string, mutate func([]map[string]any) []map[string]any) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	var items []map[string]any
+	var backupPath string
+	if existing, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(existing))) > 0 {
+		clean := stripJSONC(existing)
+		if err := json.Unmarshal(clean, &items); err != nil {
+			return "", fmt.Errorf("existing %s is not a valid JSON array: %w", path, err)
+		}
+		backupPath = path + ".acpx.bak"
+		_ = os.WriteFile(backupPath, existing, 0o600)
+	}
+	items = mutate(items)
+	if items == nil {
+		items = []map[string]any{}
+	}
+	out, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	out = append(out, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return "", err
+	}
+	return backupPath, nil
+}
+
 // stripJSONC removes // and /* */ comments and trailing commas outside string literals
-// so JSONC config files (e.g. Zed's settings.json) parse cleanly with encoding/json.
+// so JSONC config files (e.g. Zed / VS Code settings) parse cleanly with encoding/json.
 func stripJSONC(src []byte) []byte {
 	var noComments []byte
 	inStr := false
@@ -545,7 +1172,6 @@ func stripJSONC(src []byte) []byte {
 		noComments = append(noComments, c)
 	}
 
-	// Second pass: strip trailing commas immediately before '}' or ']' (outside strings).
 	out := make([]byte, 0, len(noComments))
 	inStr = false
 	escaped = false
@@ -581,7 +1207,7 @@ func stripJSONC(src []byte) []byte {
 	return out
 }
 
-func upsertTOMLBlock(path, startMarker, endMarker, block string) (string, error) {
+func upsertTextBlock(path, startMarker, endMarker, block string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
@@ -622,4 +1248,41 @@ func upsertTOMLBlock(path, startMarker, endMarker, block string) (string, error)
 		return "", err
 	}
 	return backupPath, nil
+}
+
+func removeTextBlock(path, startMarker, endMarker string) (bool, string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, "", err
+	}
+	existing := string(raw)
+	sIdx := strings.Index(existing, startMarker)
+	if sIdx < 0 {
+		return false, "", nil
+	}
+	eIdx := strings.Index(existing[sIdx:], endMarker)
+	if eIdx < 0 {
+		return false, "", nil
+	}
+	backupPath := path + ".acpx.bak"
+	_ = os.WriteFile(backupPath, raw, 0o600)
+
+	endPos := sIdx + eIdx + len(endMarker)
+	if endPos < len(existing) && existing[endPos] == '\n' {
+		endPos++
+	}
+	// Trim one extra leading blank line if present.
+	if sIdx > 0 && existing[sIdx-1] == '\n' && (sIdx == 1 || existing[sIdx-2] == '\n') {
+		sIdx--
+	}
+	updated := existing[:sIdx] + existing[endPos:]
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(updated), 0o600); err != nil {
+		return false, "", err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return false, "", err
+	}
+	return true, backupPath, nil
 }

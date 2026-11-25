@@ -62,6 +62,10 @@ func run(args []string) error {
 			return cmdInstall(args[1:])
 		case "connect":
 			return cmdConnect(args[1:])
+		case "disconnect":
+			return cmdDisconnect(args[1:])
+		case "uninstall":
+			return cmdUninstall(args[1:])
 		case "registry":
 			return cmdRegistry(args[1:])
 		case "export-env":
@@ -114,7 +118,9 @@ Usage:
   acpx health [--json] [acct]  Run live health probes across configured accounts
   acpx doctor                  Check CLIs, profiles, storage, and config
   acpx install <tool|all>      Install any ACP tool from the 45+ agent registry
-  acpx connect [client]        Register acpx into T3 Code, Zed, OpenCode, Codex, Claude, Pi, Grok, Cursor, Cline
+  acpx connect [client...]     Connect T3 Code, Zed, VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude, Pi, Grok, Aider...
+  acpx disconnect <client|all> Cleanly remove acpx from one or all connected IDEs & CLIs
+  acpx uninstall [--yes]       Disconnect all IDEs/CLIs and uninstall the background service
   acpx registry sync           Fetch latest official ACP Registry JSON
   acpx export-env [--shell sh] Print shell exports for OpenAI/Anthropic clients
   acpx version                 Print version
@@ -1018,15 +1024,19 @@ func cmdConnect(args []string) error {
 	defer logs.Close()
 
 	if len(rest) == 0 {
-		fmt.Println("Connect coding CLIs & T3 Code to acpx:")
+		fmt.Println("Connect IDEs, editors & coding CLIs to acpx:")
 		for _, t := range connect.ListTargets() {
-			det := "not detected"
-			if t.Detected {
-				det = "detected"
+			state := "not found"
+			if t.Connected {
+				state = "connected"
+			} else if t.Detected {
+				state = "detected"
 			}
-			fmt.Printf("  %-12s %-24s %-14s %s\n", t.ID, t.Name, det, t.Description)
+			fmt.Printf("  %-16s %-18s %-11s %s\n", t.ID, t.Name, state, t.Description)
 		}
-		fmt.Println("\nUsage: acpx connect <t3code|zed|opencode|codex|claude|pi|grok|cursor|cline|agy> [--dry-run]")
+		fmt.Println("\nUsage:")
+		fmt.Println("  acpx connect <client...> [--dry-run]   (e.g. t3code, zed, vscode, jetbrains, continue, neovim, opencode, codex, claude, pi, grok, aider)")
+		fmt.Println("  acpx disconnect <client...|all>        (cleanly remove acpx from connected IDEs & CLIs)")
 		return nil
 	}
 
@@ -1049,6 +1059,104 @@ func cmdConnect(args []string) error {
 			fmt.Println("Backup saved:", res.Backup)
 		}
 		fmt.Println("\n" + res.Snippet)
+	}
+	return nil
+}
+
+func cmdDisconnect(args []string) error {
+	if len(args) == 0 {
+		connected := 0
+		fmt.Println("Currently connected IDEs & CLIs:")
+		for _, t := range connect.ListTargets() {
+			if t.Connected {
+				connected++
+				fmt.Printf("  %-16s %-18s %s\n", t.ID, t.Name, t.ConfigPath)
+			}
+		}
+		if connected == 0 {
+			fmt.Println("  (none)")
+		}
+		fmt.Println("\nUsage: acpx disconnect <client...|all>")
+		return nil
+	}
+
+	if len(args) == 1 && strings.EqualFold(args[0], "all") {
+		results, errs := connect.DisconnectAll()
+		if len(results) == 0 && len(errs) == 0 {
+			fmt.Println("No connected IDEs or CLIs found.")
+			return nil
+		}
+		for _, r := range results {
+			fmt.Println(r.Message)
+		}
+		if len(errs) > 0 {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "  error: %v\n", e)
+			}
+			return fmt.Errorf("%d disconnect error(s)", len(errs))
+		}
+		return nil
+	}
+
+	for _, id := range args {
+		res, err := connect.Disconnect(id)
+		if err != nil {
+			return err
+		}
+		fmt.Println(res.Message)
+	}
+	return nil
+}
+
+func cmdUninstall(args []string) error {
+	dataDir, _, _, _, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	// 1. Disconnect all registered IDEs & CLIs cleanly.
+	results, errs := connect.DisconnectAll()
+	if len(results) == 0 {
+		fmt.Println("Connections: no connected IDEs/CLIs found.")
+	} else {
+		for _, r := range results {
+			fmt.Println("Connections:", r.Message)
+		}
+	}
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "Connections warning: %v\n", e)
+	}
+
+	// 2. Stop & remove OS background service if installed.
+	st := service.Status()
+	if st.Installed || st.Running {
+		if err := service.Uninstall(); err != nil {
+			fmt.Fprintf(os.Stderr, "Service uninstall warning: %v\n", err)
+		} else {
+			fmt.Println("Service: stopped and uninstalled background service.")
+		}
+	} else {
+		fmt.Println("Service: not installed.")
+	}
+
+	// 3. Report remaining local binary & config paths without deleting user data unless requested.
+	purge := false
+	for _, a := range args {
+		if a == "--purge" {
+			purge = true
+		}
+	}
+	if purge && dataDir != "" {
+		if err := os.RemoveAll(dataDir); err != nil {
+			return fmt.Errorf("remove data dir %s: %w", dataDir, err)
+		}
+		fmt.Printf("Purged config & profiles directory: %s\n", dataDir)
+	} else if dataDir != "" {
+		fmt.Printf("\nConfig & profiles kept at: %s (pass --purge to delete)\n", dataDir)
+	}
+	if exe, err := os.Executable(); err == nil {
+		fmt.Printf("To remove the binary itself: rm %s\n", exe)
 	}
 	return nil
 }

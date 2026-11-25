@@ -153,4 +153,89 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 	if !strings.Contains(string(piRaw), `"X-Acpx-Client": "pi"`) || !strings.Contains(resPi.Message, "loop guard") {
 		t.Fatalf("expected X-Acpx-Client header and loop guard note, msg=%q raw=%s", resPi.Message, piRaw)
 	}
+
+	// 6. VS Code chatLanguageModels.json merge + disconnect preserves existing entries
+	vsPath := filepath.Join(dir, "chatLanguageModels.json")
+	if err := os.WriteFile(vsPath, []byte(`[{"name":"existing-local","vendor":"customendpoint","models":[]}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tVS, ok := FindTarget("vscode")
+	if !ok {
+		t.Fatalf("expected vscode target")
+	}
+	if _, err := ApplyAtPath(tVS, vsPath, cfg, models, true); err != nil {
+		t.Fatalf("vscode connect failed: %v", err)
+	}
+	if !IsConnectedAtPath("vscode", vsPath) {
+		t.Fatalf("expected IsConnectedAtPath(vscode) == true")
+	}
+	// Disconnect VS Code -> removes acpx, keeps existing-local
+	dVS, err := DisconnectAtPath(tVS, vsPath)
+	if err != nil || !dVS.Removed {
+		t.Fatalf("vscode disconnect failed: res=%+v err=%v", dVS, err)
+	}
+	if IsConnectedAtPath("vscode", vsPath) {
+		t.Fatalf("expected IsConnectedAtPath(vscode) == false after disconnect")
+	}
+	vsRaw, _ := os.ReadFile(vsPath)
+	if !strings.Contains(string(vsRaw), "existing-local") || strings.Contains(string(vsRaw), `"acpx"`) {
+		t.Fatalf("unexpected vscode file after disconnect: %s", vsRaw)
+	}
+
+	// 7. JetBrains ~/.jetbrains/acp.json connect + disconnect (and alias "rider")
+	jbPath := filepath.Join(dir, "acp.json")
+	tJB, ok := FindTarget("rider")
+	if !ok || tJB.ID != "jetbrains" {
+		t.Fatalf("expected rider alias -> jetbrains, got ok=%v id=%q", ok, tJB.ID)
+	}
+	if _, err := ApplyAtPath(tJB, jbPath, cfg, models, true); err != nil {
+		t.Fatalf("jetbrains connect failed: %v", err)
+	}
+	if !IsConnectedAtPath("jetbrains", jbPath) {
+		t.Fatalf("expected jetbrains connected")
+	}
+	dJB, err := DisconnectAtPath(tJB, jbPath)
+	if err != nil || !dJB.Removed || IsConnectedAtPath("jetbrains", jbPath) {
+		t.Fatalf("jetbrains disconnect failed: res=%+v err=%v", dJB, err)
+	}
+
+	// 8. Continue.dev YAML block + Aider YAML block + Neovim Lua connect & disconnect
+	contPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(contPath, []byte("name: My Config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tCont, _ := FindTarget("continue")
+	if _, err := ApplyAtPath(tCont, contPath, cfg, models, true); err != nil {
+		t.Fatal(err)
+	}
+	if !IsConnectedAtPath("continue", contPath) {
+		t.Fatalf("expected continue connected")
+	}
+	if d, err := DisconnectAtPath(tCont, contPath); err != nil || !d.Removed || IsConnectedAtPath("continue", contPath) {
+		t.Fatalf("continue disconnect failed: %+v %v", d, err)
+	}
+	contRaw, _ := os.ReadFile(contPath)
+	if !strings.Contains(string(contRaw), "name: My Config") {
+		t.Fatalf("expected user continue config preserved, got: %s", contRaw)
+	}
+
+	// 9. Disconnect T3 Code, Zed, Codex, Claude, OpenCode, Pi preserves all other keys
+	if d, err := DisconnectAtPath(tT3, t3Path); err != nil || !d.Removed || IsConnectedAtPath("t3code", t3Path) {
+		t.Fatalf("t3code disconnect failed: %+v %v", d, err)
+	}
+	if d, err := DisconnectAtPath(tZed, zedPath); err != nil || !d.Removed || IsConnectedAtPath("zed", zedPath) {
+		t.Fatalf("zed disconnect failed: %+v %v", d, err)
+	}
+	if d, err := DisconnectAtPath(tCodex, codexPath); err != nil || !d.Removed || IsConnectedAtPath("codex", codexPath) {
+		t.Fatalf("codex disconnect failed: %+v %v", d, err)
+	}
+	if d, err := DisconnectAtPath(tCl, clPath); err != nil || !d.Removed || IsConnectedAtPath("claude", clPath) {
+		t.Fatalf("claude disconnect failed: %+v %v", d, err)
+	}
+	if d, err := DisconnectAtPath(tOC, ocPath); err != nil || !d.Removed || IsConnectedAtPath("opencode", ocPath) {
+		t.Fatalf("opencode disconnect failed: %+v %v", d, err)
+	}
+	if d, err := DisconnectAtPath(tPi, piPath); err != nil || !d.Removed || IsConnectedAtPath("pi", piPath) {
+		t.Fatalf("pi disconnect failed: %+v %v", d, err)
+	}
 }
