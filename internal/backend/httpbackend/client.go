@@ -215,6 +215,9 @@ func buildOpenAIPayload(req backend.ChatRequest, stream bool) ([]byte, error) {
 	if req.MaxTokens > 0 {
 		payload["max_tokens"] = req.MaxTokens
 	}
+	if req.ReasoningEffort != "" {
+		payload["reasoning_effort"] = req.ReasoningEffort
+	}
 	return json.Marshal(payload)
 }
 

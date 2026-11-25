@@ -202,7 +202,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	}
 
 	promptText := formatPrompt(req.Messages, existingSID != "")
-	argv, err := buildCLIArgs(desc, acct, req.UpstreamModel, promptText, existingSID, cwd, profileDir)
+	argv, err := buildCLIArgs(desc, acct, req.UpstreamModel, req.ReasoningEffort, promptText, existingSID, cwd, profileDir)
 	if err != nil {
 		return err
 	}
@@ -287,7 +287,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	})
 }
 
-func buildCLIArgs(desc descriptors.CLIDescriptor, acct config.AccountConfig, model, prompt, sessionID, cwd, profileDir string) ([]string, error) {
+func buildCLIArgs(desc descriptors.CLIDescriptor, acct config.AccountConfig, model, effort, prompt, sessionID, cwd, profileDir string) ([]string, error) {
 	if len(acct.CustomCommand) > 0 {
 		out := make([]string, 0, len(acct.CustomCommand)+1)
 		hasPromptPlaceholder := false
@@ -297,6 +297,7 @@ func buildCLIArgs(desc descriptors.CLIDescriptor, acct config.AccountConfig, mod
 			}
 			tok = strings.ReplaceAll(tok, "{prompt}", prompt)
 			tok = strings.ReplaceAll(tok, "{model}", model)
+			tok = strings.ReplaceAll(tok, "{effort}", effort)
 			tok = strings.ReplaceAll(tok, "{session}", sessionID)
 			tok = strings.ReplaceAll(tok, "{profile}", profileDir)
 			tok = strings.ReplaceAll(tok, "{cwd}", cwd)
@@ -329,6 +330,9 @@ func buildCLIArgs(desc descriptors.CLIDescriptor, acct config.AccountConfig, mod
 	}
 	if desc.ModelFlag != "" && model != "" && model != "default" {
 		args = append(args, desc.ModelFlag, model)
+	}
+	if desc.EffortFlag != "" && effort != "" {
+		args = append(args, desc.EffortFlag, effort)
 	}
 	if acct.PermissionMode == config.PermAutoApprove && len(desc.AutoApproveArgs) > 0 {
 		args = append(args, desc.AutoApproveArgs...)

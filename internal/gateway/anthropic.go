@@ -15,14 +15,21 @@ import (
 )
 
 type anthropicRequest struct {
-	Model       string            `json:"model"`
-	System      json.RawMessage   `json:"system,omitempty"`
-	Messages    []openAIMessage   `json:"messages"`
-	MaxTokens   int               `json:"max_tokens"`
-	Temperature *float64          `json:"temperature,omitempty"`
-	Stream      bool              `json:"stream"`
-	Tools       []json.RawMessage `json:"tools,omitempty"`
-	Metadata    struct {
+	Model        string            `json:"model"`
+	System       json.RawMessage   `json:"system,omitempty"`
+	Messages     []openAIMessage   `json:"messages"`
+	MaxTokens    int               `json:"max_tokens"`
+	Temperature  *float64          `json:"temperature,omitempty"`
+	Stream       bool              `json:"stream"`
+	Tools        []json.RawMessage `json:"tools,omitempty"`
+	Thinking     *struct {
+		Type         string `json:"type"`
+		BudgetTokens int    `json:"budget_tokens"`
+	} `json:"thinking,omitempty"`
+	OutputConfig *struct {
+		Effort string `json:"effort"`
+	} `json:"output_config,omitempty"`
+	Metadata struct {
 		UserID string `json:"user_id"`
 	} `json:"metadata,omitempty"`
 }
@@ -58,9 +65,17 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		sessionKey = strings.TrimSpace(req.Metadata.UserID)
 	}
 
+	effort := ""
+	if req.OutputConfig != nil && req.OutputConfig.Effort != "" {
+		effort = router.NormalizeEffort(req.OutputConfig.Effort)
+	} else if req.Thinking != nil && req.Thinking.Type == "enabled" {
+		effort = router.BudgetToEffort(req.Thinking.BudgetTokens)
+	}
+
 	chatReq := backend.ChatRequest{
-		Model:       req.Model,
-		Messages:    msgs,
+		Model:           req.Model,
+		ReasoningEffort: effort,
+		Messages:        msgs,
 		Stream:      req.Stream,
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
@@ -228,15 +243,18 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 			return nil
 		}
 
+		acctReq := req
+		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, req.ReasoningEffort)
+
 		var streamErr error
 		switch acct.Kind {
 		case config.KindACP:
-			streamErr = s.acpBE.Stream(r.Context(), acct, req, cb)
+			streamErr = s.acpBE.Stream(r.Context(), acct, acctReq, cb)
 		case config.KindCLI:
-			streamErr = s.cliBE.Stream(r.Context(), acct, req, cb)
+			streamErr = s.cliBE.Stream(r.Context(), acct, acctReq, cb)
 		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
-			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, req, cb)
+			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, acctReq, cb)
 		}
 		lease.Release()
 

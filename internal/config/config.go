@@ -63,8 +63,9 @@ type HealthConfig struct {
 }
 
 type CatalogConfig struct {
-	ExposeDirectModels     bool `toml:"expose_direct_models"`     // show <backend>/<account>/<model> in /v1/models (default false)
-	HideBackendQualified   bool `toml:"hide_backend_qualified"`   // hide <backend>/<model> when bare <model> exists (default false)
+	ExposeDirectModels   bool `toml:"expose_direct_models"`             // show <backend>/<account>/<model> in /v1/models (default false)
+	HideBackendQualified bool `toml:"hide_backend_qualified"`           // hide <backend>/<model> when bare <model> exists (default false)
+	ShowEffortVariants   bool `toml:"show_effort_variants,omitempty"`   // expand -low/-medium/-high/[xhigh] as separate models (default false = grouped into thinking effort levels)
 }
 
 type ServerConfig struct {

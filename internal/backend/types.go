@@ -13,16 +13,17 @@ type Message struct {
 }
 
 type ChatRequest struct {
-	Model          string
-	UpstreamModel  string
-	Messages       []Message
-	Stream         bool
-	Temperature    *float64
-	MaxTokens      int
-	SessionKey     string
-	Cwd            string
-	HasTools       bool
-	RawOpenAIBody  []byte // preserved for transparent OpenAI HTTP pass-through
+	Model           string
+	UpstreamModel   string
+	ReasoningEffort string // optional thinking/effort level: minimal, low, medium, high, xhigh, max, ultra
+	Messages        []Message
+	Stream          bool
+	Temperature     *float64
+	MaxTokens       int
+	SessionKey      string
+	Cwd             string
+	HasTools        bool
+	RawOpenAIBody   []byte // preserved for transparent OpenAI HTTP pass-through
 }
 
 type Usage struct {

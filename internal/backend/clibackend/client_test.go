@@ -100,7 +100,7 @@ func TestBuildCLIArgsAndModelsParsing(t *testing.T) {
 	codex, _ := reg.GetCLI("codex")
 	acct := config.AccountConfig{Kind: config.KindCLI, Backend: "codex", PermissionMode: config.PermAutoApprove}
 
-	args1, err := buildCLIArgs(codex, acct, "o4-mini", "hello", "", "/repo", "")
+	args1, err := buildCLIArgs(codex, acct, "o4-mini", "", "hello", "", "/repo", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +109,21 @@ func TestBuildCLIArgsAndModelsParsing(t *testing.T) {
 		t.Fatalf("unexpected codex args: %s", joined1)
 	}
 
-	args2, err := buildCLIArgs(codex, acct, "o4-mini", "followup", "cx-thread-99", "/repo", "")
+	args2, err := buildCLIArgs(codex, acct, "o4-mini", "", "followup", "cx-thread-99", "/repo", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(strings.Join(args2, " "), "codex exec resume cx-thread-99") {
 		t.Fatalf("expected codex exec resume, got: %v", args2)
+	}
+
+	agy, _ := reg.GetCLI("agy")
+	args3, err := buildCLIArgs(agy, config.AccountConfig{Kind: config.KindCLI, Backend: "agy"}, "gemini-4-neon", "high", "think", "", "/repo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(args3, " "), "--effort high") {
+		t.Fatalf("expected --effort high in agy CLI args, got: %v", args3)
 	}
 
 	models := parseModelsCLIOutput("Fetching available models...\n  gemini-4-neon  (default)\n• gemini-3.1-pro\n")

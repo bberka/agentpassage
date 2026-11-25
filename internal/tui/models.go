@@ -106,6 +106,16 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v", "D", "Q": // cycle simple naming mode: Clean -> + Provider -> + Per-account
 		a.cycleModelNamingMode()
 		return a, nil
+	case "t": // toggle grouping -low/-medium/-high/[xhigh] into Thinking Effort levels
+		cfg := a.srv.Config()
+		cfg.Catalog.ShowEffortVariants = !cfg.Catalog.ShowEffortVariants
+		_ = a.srv.ReloadConfig(cfg)
+		if cfg.Catalog.ShowEffortVariants {
+			a.setStatus("Thinking variants: expanded (showing separate -low/-high entries)", false)
+		} else {
+			a.setStatus("Thinking variants: grouped into effort levels (low/medium/high/xhigh)", false)
+		}
+		return a, nil
 	case "X": // bulk disable all matching models
 		if len(models) > 0 {
 			cfg := a.srv.Config()
@@ -203,8 +213,12 @@ func (a *App) viewModels(bodyHeight int) string {
 	innerW := fullW - 4
 
 	cfg := a.srv.Config()
+	thinkLabel := "Thinking: grouped"
+	if cfg.Catalog.ShowEffortVariants {
+		thinkLabel = "Thinking: expanded"
+	}
 	header := a.styles.Title.Render(fmt.Sprintf("Models (%d enabled / %d total)", enabledTotal, allTotal)) +
-		"   " + a.styles.Highlight.Render("["+modelNamingLabel(cfg)+"]")
+		"   " + a.styles.Highlight.Render("["+modelNamingLabel(cfg)+" · "+thinkLabel+"]")
 	if a.showHidden {
 		header += "   " + a.styles.Muted.Render("(showing disabled)")
 	}
@@ -244,6 +258,9 @@ func (a *App) viewModels(bodyHeight int) string {
 			routing = "1 account"
 		}
 		var flags []string
+		if len(m.Efforts) > 0 {
+			flags = append(flags, "thinking:"+strings.Join(m.Efforts, "/"))
+		}
 		if m.Alias != "" {
 			flags = append(flags, "alias:"+m.Alias)
 		}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/bberka/acpx/internal/backend"
 	"github.com/bberka/acpx/internal/gateway"
+	"github.com/bberka/acpx/internal/router"
 )
 
 type rpcMsg struct {
@@ -32,6 +33,7 @@ type bridgeSession struct {
 	id      string
 	cwd     string
 	model   string
+	effort  string
 	history []backend.Message
 }
 
@@ -117,14 +119,15 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 			_ = json.Unmarshal(msg.Params, &p)
 
-			configOpts, availModels, defaultModel := s.buildModelOptions("")
+			configOpts, availModels, defaultModel, defaultEffort := s.buildModelOptions("", "")
 
 			sid := fmt.Sprintf("acpx-sess-%d", s.nextID.Add(1))
 			s.sessMu.Lock()
 			s.sess[sid] = &bridgeSession{
-				id:    sid,
-				cwd:   p.Cwd,
-				model: defaultModel,
+				id:     sid,
+				cwd:    p.Cwd,
+				model:  defaultModel,
+				effort: defaultEffort,
 			}
 			s.sessMu.Unlock()
 
@@ -144,16 +147,28 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				Value     string `json:"value"`
 			}
 			_ = json.Unmarshal(msg.Params, &p)
-			curModel := p.Value
+			curModel := ""
+			curEffort := ""
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
-				if p.ConfigID == "model" || p.ConfigID == "" {
+				switch strings.ToLower(p.ConfigID) {
+				case "thought_level", "reasoning_effort", "effort", "thinking":
+					bs.effort = router.NormalizeEffort(p.Value)
+				default: // "model" or empty
 					bs.model = p.Value
 				}
 				curModel = bs.model
+				curEffort = bs.effort
+			} else if p.ConfigID == "model" || p.ConfigID == "" {
+				curModel = p.Value
 			}
 			s.sessMu.Unlock()
-			configOpts, _, _ := s.buildModelOptions(curModel)
+			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort)
+			s.sessMu.Lock()
+			if bs, ok := s.sess[p.SessionID]; ok {
+				bs.effort = resolvedEffort
+			}
+			s.sessMu.Unlock()
 			replyOK(msg.ID, map[string]any{
 				"configOptions": configOpts,
 			})
@@ -220,11 +235,12 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 			var replySB strings.Builder
 			_, err := s.gw.StreamDirect(ctx, backend.ChatRequest{
-				Model:      bs.model,
-				Messages:   append([]backend.Message(nil), bs.history...),
-				Stream:     true,
-				SessionKey: bs.id,
-				Cwd:        bs.cwd,
+				Model:           bs.model,
+				ReasoningEffort: bs.effort,
+				Messages:        append([]backend.Message(nil), bs.history...),
+				Stream:          true,
+				SessionKey:      bs.id,
+				Cwd:             bs.cwd,
 			}, func(ch backend.StreamChunk) error {
 				if ch.Delta != "" {
 					replySB.WriteString(ch.Delta)
@@ -260,18 +276,20 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	return scanner.Err()
 }
 
-func (s *Server) buildModelOptions(selected string) ([]map[string]any, []map[string]string, string) {
+func (s *Server) buildModelOptions(selectedModel, selectedEffort string) ([]map[string]any, []map[string]string, string, string) {
 	models := s.gw.Router().ListModels(false)
 	opts := make([]map[string]string, 0, len(models)+1)
 	availModels := make([]map[string]string, 0, len(models)+1)
 	defaultModel := ""
 	hasSelected := false
+	var selectedEfforts []string
 	for _, m := range models {
 		if defaultModel == "" {
 			defaultModel = m.ID
 		}
-		if m.ID == selected {
+		if m.ID == selectedModel {
 			hasSelected = true
+			selectedEfforts = m.Efforts
 		}
 		label := m.ID
 		if m.DisplayName != "" {
@@ -280,13 +298,20 @@ func (s *Server) buildModelOptions(selected string) ([]map[string]any, []map[str
 		opts = append(opts, map[string]string{"value": m.ID, "name": label})
 		availModels = append(availModels, map[string]string{"modelId": m.ID, "name": label})
 	}
-	cur := selected
+	cur := selectedModel
 	if cur == "" {
 		cur = defaultModel
+		for _, m := range models {
+			if m.ID == cur {
+				selectedEfforts = m.Efforts
+				break
+			}
+		}
 	} else if !hasSelected {
 		opts = append(opts, map[string]string{"value": cur, "name": cur})
 		availModels = append(availModels, map[string]string{"modelId": cur, "name": cur})
 	}
+
 	configOpts := []map[string]any{
 		{
 			"id":           "model",
@@ -297,5 +322,63 @@ func (s *Server) buildModelOptions(selected string) ([]map[string]any, []map[str
 			"options":      opts,
 		},
 	}
-	return configOpts, availModels, cur
+
+	// Expose ACP v1 `thought_level` configOption when the selected model has effort levels
+	// (or a non-empty effort was explicitly requested).
+	resolvedEffort := router.NormalizeEffort(selectedEffort)
+	if len(selectedEfforts) > 0 {
+		effortOpts := []map[string]string{
+			{"value": "default", "name": "Default"},
+		}
+		effortValid := resolvedEffort == ""
+		for _, eff := range selectedEfforts {
+			if eff == resolvedEffort {
+				effortValid = true
+			}
+			effortOpts = append(effortOpts, map[string]string{
+				"value": eff,
+				"name":  formatEffortLabel(eff),
+			})
+		}
+		if !effortValid {
+			resolvedEffort = ""
+		}
+		curEffortVal := resolvedEffort
+		if curEffortVal == "" {
+			curEffortVal = "default"
+		}
+		configOpts = append(configOpts, map[string]any{
+			"id":           "thought_level",
+			"name":         "Thinking Effort",
+			"category":     "thought_level",
+			"type":         "select",
+			"currentValue": curEffortVal,
+			"options":      effortOpts,
+		})
+	} else {
+		resolvedEffort = ""
+	}
+
+	return configOpts, availModels, cur, resolvedEffort
+}
+
+func formatEffortLabel(eff string) string {
+	switch eff {
+	case "minimal":
+		return "Minimal"
+	case "low":
+		return "Low"
+	case "medium":
+		return "Medium"
+	case "high":
+		return "High"
+	case "xhigh":
+		return "Extra High"
+	case "max":
+		return "Max"
+	case "ultra":
+		return "Ultra"
+	default:
+		return eff
+	}
 }

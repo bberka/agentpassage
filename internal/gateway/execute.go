@@ -6,6 +6,7 @@ import (
 	"github.com/bberka/acpx/internal/backend"
 	"github.com/bberka/acpx/internal/config"
 	"github.com/bberka/acpx/internal/pool"
+	"github.com/bberka/acpx/internal/router"
 )
 
 // StreamDirect executes a chat completion directly through the router, pool, and backend
@@ -50,15 +51,18 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 			return cb(ch)
 		}
 
+		acctReq := req
+		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, req.ReasoningEffort)
+
 		var streamErr error
 		switch acct.Kind {
 		case config.KindACP:
-			streamErr = s.acpBE.Stream(ctx, acct, req, wrapped)
+			streamErr = s.acpBE.Stream(ctx, acct, acctReq, wrapped)
 		case config.KindCLI:
-			streamErr = s.cliBE.Stream(ctx, acct, req, wrapped)
+			streamErr = s.cliBE.Stream(ctx, acct, acctReq, wrapped)
 		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
-			streamErr = s.httpBE.Stream(ctx, acct, apiKey, req, wrapped)
+			streamErr = s.httpBE.Stream(ctx, acct, apiKey, acctReq, wrapped)
 		}
 		lease.Release()
 

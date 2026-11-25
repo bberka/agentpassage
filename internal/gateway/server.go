@@ -832,12 +832,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if m.AccountName != "" {
 			owner = m.Backend + "/" + m.AccountName
 		}
-		data = append(data, map[string]any{
+		entry := map[string]any{
 			"id":       m.ID,
 			"object":   "model",
 			"created":  now,
 			"owned_by": owner,
-		})
+		}
+		if len(m.Efforts) > 0 {
+			entry["reasoning_efforts"] = m.Efforts
+		}
+		data = append(data, entry)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
@@ -846,15 +850,16 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 }
 
 type openAIChatRequest struct {
-	Model       string            `json:"model"`
-	Messages    []openAIMessage   `json:"messages"`
-	Stream      bool              `json:"stream"`
-	Temperature *float64          `json:"temperature,omitempty"`
-	MaxTokens   int               `json:"max_tokens,omitempty"`
-	MaxCompTok  int               `json:"max_completion_tokens,omitempty"`
-	User        string            `json:"user,omitempty"`
-	Tools       []json.RawMessage `json:"tools,omitempty"`
-	Functions   []json.RawMessage `json:"functions,omitempty"`
+	Model           string            `json:"model"`
+	Messages        []openAIMessage   `json:"messages"`
+	Stream          bool              `json:"stream"`
+	Temperature     *float64          `json:"temperature,omitempty"`
+	MaxTokens       int               `json:"max_tokens,omitempty"`
+	MaxCompTok      int               `json:"max_completion_tokens,omitempty"`
+	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
+	User            string            `json:"user,omitempty"`
+	Tools           []json.RawMessage `json:"tools,omitempty"`
+	Functions       []json.RawMessage `json:"functions,omitempty"`
 }
 
 type openAIMessage struct {
@@ -916,8 +921,9 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chatReq := backend.ChatRequest{
-		Model:         req.Model,
-		Messages:      msgs,
+		Model:           req.Model,
+		ReasoningEffort: router.NormalizeEffort(req.ReasoningEffort),
+		Messages:        msgs,
 		Stream:        req.Stream,
 		Temperature:   req.Temperature,
 		MaxTokens:     maxTok,
@@ -1028,16 +1034,19 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 		lastAcct = &acct
 		tried[acct.ID] = true
 
+		acctReq := req
+		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, req.ReasoningEffort)
+
 		var resp *backend.ChatResponse
 		var callErr error
 		switch acct.Kind {
 		case config.KindACP:
-			resp, callErr = s.acpBE.Complete(ctx, acct, req)
+			resp, callErr = s.acpBE.Complete(ctx, acct, acctReq)
 		case config.KindCLI:
-			resp, callErr = s.cliBE.Complete(ctx, acct, req)
+			resp, callErr = s.cliBE.Complete(ctx, acct, acctReq)
 		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
-			resp, callErr = s.httpBE.Complete(ctx, acct, apiKey, req)
+			resp, callErr = s.httpBE.Complete(ctx, acct, apiKey, acctReq)
 		}
 		lease.Release()
 
@@ -1164,15 +1173,18 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 			return nil
 		}
 
+		acctReq := req
+		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, req.ReasoningEffort)
+
 		var streamErr error
 		switch acct.Kind {
 		case config.KindACP:
-			streamErr = s.acpBE.Stream(r.Context(), acct, req, cb)
+			streamErr = s.acpBE.Stream(r.Context(), acct, acctReq, cb)
 		case config.KindCLI:
-			streamErr = s.cliBE.Stream(r.Context(), acct, req, cb)
+			streamErr = s.cliBE.Stream(r.Context(), acct, acctReq, cb)
 		default:
 			apiKey, _ := s.secrets.Get(acct.ID)
-			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, req, cb)
+			streamErr = s.httpBE.Stream(r.Context(), acct, apiKey, acctReq, cb)
 		}
 		lease.Release()
 

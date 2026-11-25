@@ -748,6 +748,7 @@ func (a *App) renderFooter() string {
 				a.styles.KeyHint("X", "disable all"),
 				a.styles.KeyHint("H", "show off"),
 				a.styles.KeyHint("v", "names"),
+				a.styles.KeyHint("t", "thinking"),
 				a.styles.KeyHint("/", "filter"),
 				a.styles.KeyHint("f", "fetch"),
 			}

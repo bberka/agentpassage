@@ -15,6 +15,7 @@ type CLIDescriptor struct {
 	Binary          string            `yaml:"binary" json:"binary"`
 	BaseArgs        []string          `yaml:"base_args,omitempty" json:"base_args,omitempty"`
 	ModelFlag       string            `yaml:"model_flag,omitempty" json:"model_flag,omitempty"`
+	EffortFlag      string            `yaml:"effort_flag,omitempty" json:"effort_flag,omitempty"`
 	ResumeFlag      string            `yaml:"resume_flag,omitempty" json:"resume_flag,omitempty"`
 	ResumeSubcmd    bool              `yaml:"resume_subcmd,omitempty" json:"resume_subcmd,omitempty"` // true for `codex exec resume <sid>`
 	CwdFlag         string            `yaml:"cwd_flag,omitempty" json:"cwd_flag,omitempty"`
@@ -36,6 +37,7 @@ func BuiltInCLI() []CLIDescriptor {
 			Binary:          "agy",
 			BaseArgs:        []string{"--print", "--output-format", "stream-json"},
 			ModelFlag:       "--model",
+			EffortFlag:      "--effort",
 			ResumeFlag:      "--conversation",
 			AutoApproveArgs: []string{"--dangerously-skip-permissions"},
 			OutputFormat:    "stream-json",
@@ -54,6 +56,7 @@ func BuiltInCLI() []CLIDescriptor {
 			Binary:          "claude",
 			BaseArgs:        []string{"--print", "--output-format", "stream-json", "--verbose", "--include-partial-messages"},
 			ModelFlag:       "--model",
+			EffortFlag:      "--effort",
 			ResumeFlag:      "--resume",
 			AutoApproveArgs: []string{"--dangerously-skip-permissions"},
 			OutputFormat:    "stream-json",
@@ -120,6 +123,7 @@ func BuiltInCLI() []CLIDescriptor {
 			Description:     "Direct `grok -p` proxy",
 			Binary:          "grok",
 			ModelFlag:       "--model",
+			EffortFlag:      "--reasoning-effort",
 			PromptFlag:      "-p",
 			AutoApproveArgs: []string{"--always-approve"},
 			OutputFormat:    "text",

@@ -22,16 +22,18 @@ type ModelEntry struct {
 	Hidden      bool     `json:"hidden,omitempty"`
 	Prefixed    bool     `json:"prefixed,omitempty"`
 	AccountIDs  []string `json:"account_ids,omitempty"`
+	Efforts     []string `json:"efforts,omitempty"` // supported thinking/effort levels (e.g. low, medium, high, xhigh)
 }
 
 type Plan struct {
-	RequestedModel string
-	CanonicalModel string
-	UpstreamModel  string
-	Backend        string
-	Rule           config.RoutingRule
-	CandidateIDs   []string
-	IsManual       bool
+	RequestedModel  string
+	CanonicalModel  string
+	UpstreamModel   string
+	ReasoningEffort string
+	Backend         string
+	Rule            config.RoutingRule
+	CandidateIDs    []string
+	IsManual        bool
 }
 
 type Router struct {
@@ -80,6 +82,10 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 		if len(models) == 0 && acct.Kind == config.KindACP {
 			models = []string{"default"}
 		}
+		var effortsByBase map[string][]string
+		if !r.cfg.Catalog.ShowEffortVariants {
+			models, effortsByBase = GroupEffortVariants(models)
+		}
 		mode := acct.ExposeMode
 		if mode == "" {
 			mode = config.ExposePool
@@ -90,11 +96,13 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 			if m == "" {
 				continue
 			}
+			efforts := effortsByBase[m]
 
 			if mode == config.ExposePool || mode == config.ExposeBoth {
 				poolID := acct.Backend + "/" + m
 				if entry, ok := pooled[poolID]; ok {
 					entry.AccountIDs = append(entry.AccountIDs, acct.ID)
+					entry.Efforts = mergeEfforts(entry.Efforts, efforts)
 				} else {
 					pooled[poolID] = &ModelEntry{
 						ID:         poolID,
@@ -102,6 +110,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 						Upstream:   m,
 						Kind:       acct.Kind,
 						AccountIDs: []string{acct.ID},
+						Efforts:    append([]string(nil), efforts...),
 					}
 				}
 
@@ -113,6 +122,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 					bareBackends[m][acct.Backend] = true
 					if entry, ok := bare[m]; ok {
 						entry.AccountIDs = append(entry.AccountIDs, acct.ID)
+						entry.Efforts = mergeEfforts(entry.Efforts, efforts)
 					} else {
 						bare[m] = &ModelEntry{
 							ID:         m,
@@ -120,6 +130,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 							Upstream:   m,
 							Kind:       acct.Kind,
 							AccountIDs: []string{acct.ID},
+							Efforts:    append([]string(nil), efforts...),
 						}
 					}
 				}
@@ -136,6 +147,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 							Upstream:    m,
 							Kind:        acct.Kind,
 							AccountIDs:  []string{acct.ID},
+							Efforts:     append([]string(nil), efforts...),
 						})
 					}
 				}
@@ -154,6 +166,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 						Kind:        acct.Kind,
 						Prefixed:    true,
 						AccountIDs:  []string{acct.ID},
+						Efforts:     append([]string(nil), efforts...),
 					})
 				}
 			}
@@ -303,11 +316,20 @@ func (r *Router) Resolve(requested string) (*Plan, error) {
 		if a.ExposeMode == config.ExposePrefix {
 			continue
 		}
+		found := false
 		for _, m := range a.Models {
 			if m == canonical {
-				matched = append(matched, a)
+				found = true
 				break
 			}
+			// Also match collapsed base model when only effort variants were listed.
+			if base, eff, _ := SplitModelEffort(m); eff != "" && base == canonical {
+				found = true
+				break
+			}
+		}
+		if found {
+			matched = append(matched, a)
 		}
 	}
 	if len(matched) > 0 {
