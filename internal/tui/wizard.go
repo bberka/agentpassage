@@ -833,18 +833,21 @@ func (a *App) viewAddAccountModal() string {
 	switch a.addStep {
 	case 0:
 		opts := []struct {
-			kind string
-			text string
+			kind  string
+			label string
+			desc  string
 		}{
-			{config.KindAPIKey, "1. API Key Provider   DeepSeek, OpenRouter, OpenAI, Anthropic, Ollama, Custom"},
-			{config.KindACP, "2. ACP Agent (45+)    Persistent JSON-RPC: agy, Codex, Claude, Cursor, OpenCode, Pi..."},
-			{config.KindCLI, "3. Direct CLI Proxy   No adapter needed: claude -p, codex exec, agy --print, opencode run"},
+			{config.KindAPIKey, "1. API Key Provider", "DeepSeek, OpenRouter, OpenAI, Anthropic, Ollama, Custom"},
+			{config.KindACP, "2. ACP Agent (45+)", "ACP JSON-RPC: agy, Codex, Claude, Cursor, OpenCode, Pi"},
+			{config.KindCLI, "3. Direct CLI Proxy", "No adapter: claude -p, codex exec, agy, opencode run"},
 		}
+		descW := max(innerW-25, 16)
 		for _, o := range opts {
+			row := fmt.Sprintf("%-21s %s", o.label, truncate(o.desc, descW))
 			if a.addKind == o.kind {
-				lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+o.text))
+				lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+truncate(row, innerW-2)))
 			} else {
-				lines = append(lines, "  "+o.text)
+				lines = append(lines, "  "+truncate(row, innerW-2))
 			}
 		}
 		lines = append(lines, "")

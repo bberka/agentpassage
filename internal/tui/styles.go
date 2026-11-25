@@ -170,11 +170,21 @@ func NewStyles(theme string) Styles {
 		Padding(1, 2)
 
 	if hasBg {
+		// Use one unified surfaceBg across cards, modals, and inner text spans so ANSI resets
+		// never poke transparent holes in the surface background.
+		modalBg = surfaceBg
 		card = card.Background(surfaceBg).BorderBackground(surfaceBg)
-		cardAccent = cardAccent.Background(modalBg).BorderBackground(modalBg)
-		modal = modal.Background(modalBg).BorderBackground(modalBg)
-		modalWarn = modalWarn.Background(modalBg).BorderBackground(modalBg)
-		modalDanger = modalDanger.Background(modalBg).BorderBackground(modalBg)
+		cardAccent = cardAccent.Background(surfaceBg).BorderBackground(surfaceBg)
+		modal = modal.Background(surfaceBg).BorderBackground(surfaceBg)
+		modalWarn = modalWarn.Background(surfaceBg).BorderBackground(surfaceBg)
+		modalDanger = modalDanger.Background(surfaceBg).BorderBackground(surfaceBg)
+	}
+
+	withSurf := func(st lipgloss.Style) lipgloss.Style {
+		if hasBg {
+			return st.Background(surfaceBg)
+		}
+		return st
 	}
 
 	return Styles{
@@ -190,9 +200,9 @@ func NewStyles(theme string) Styles {
 		PillRunning: lipgloss.NewStyle().Bold(true).Foreground(ok).Background(barBg),
 		PillStopped: lipgloss.NewStyle().Bold(true).Foreground(errCol).Background(barBg),
 		FooterBar:   lipgloss.NewStyle().Background(barBg).Foreground(fg).Padding(0, 1),
-		KeyCap:      lipgloss.NewStyle().Bold(true).Foreground(keyCapFg),
-		KeyDesc:     lipgloss.NewStyle().Foreground(muted),
-		Divider:     lipgloss.NewStyle().Foreground(border),
+		KeyCap:      withSurf(lipgloss.NewStyle().Bold(true).Foreground(keyCapFg)),
+		KeyDesc:     withSurf(lipgloss.NewStyle().Foreground(muted)),
+		Divider:     withSurf(lipgloss.NewStyle().Foreground(border)),
 
 		Card:        card,
 		CardAccent:  cardAccent,
@@ -200,18 +210,18 @@ func NewStyles(theme string) Styles {
 		ModalWarn:   modalWarn,
 		ModalDanger: modalDanger,
 
-		Title:       lipgloss.NewStyle().Bold(true).Foreground(fg),
-		Subtitle:    lipgloss.NewStyle().Bold(true).Foreground(accent),
-		TableHeader: lipgloss.NewStyle().Bold(true).Foreground(muted),
-		Muted:       lipgloss.NewStyle().Foreground(muted),
+		Title:       withSurf(lipgloss.NewStyle().Bold(true).Foreground(fg)),
+		Subtitle:    withSurf(lipgloss.NewStyle().Bold(true).Foreground(accent)),
+		TableHeader: withSurf(lipgloss.NewStyle().Bold(true).Foreground(muted)),
+		Muted:       withSurf(lipgloss.NewStyle().Foreground(muted)),
 		Selected:    lipgloss.NewStyle().Bold(true).Foreground(selFg).Background(selBg),
-		Highlight:   lipgloss.NewStyle().Bold(true).Foreground(accent),
+		Highlight:   withSurf(lipgloss.NewStyle().Bold(true).Foreground(accent)),
 
-		StateReady: lipgloss.NewStyle().Bold(true).Foreground(ok),
-		StateBusy:  lipgloss.NewStyle().Bold(true).Foreground(accent),
-		StateCool:  lipgloss.NewStyle().Bold(true).Foreground(warn),
-		StateWarn:  lipgloss.NewStyle().Bold(true).Foreground(warn),
-		StateErr:   lipgloss.NewStyle().Bold(true).Foreground(errCol),
+		StateReady: withSurf(lipgloss.NewStyle().Bold(true).Foreground(ok)),
+		StateBusy:  withSurf(lipgloss.NewStyle().Bold(true).Foreground(accent)),
+		StateCool:  withSurf(lipgloss.NewStyle().Bold(true).Foreground(warn)),
+		StateWarn:  withSurf(lipgloss.NewStyle().Bold(true).Foreground(warn)),
+		StateErr:   withSurf(lipgloss.NewStyle().Bold(true).Foreground(errCol)),
 		BannerCrit: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ffffff")).Background(errCol).Padding(0, 1),
 		BannerWarn: lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#0d1117")).Background(warn).Padding(0, 1),
 	}
