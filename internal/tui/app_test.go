@@ -47,11 +47,18 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 		}
 	}
 
-	// Open ACP Registry & Installer modal (i)
+	// Open ACP Registry & Installer modal (i) and verify moving cursor never wraps a row to 2 lines!
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
 	if app.modal != modalWelcome || !strings.Contains(app.View(), "ACP Registry") {
 		t.Fatalf("expected ACP Registry modal on 'i'")
+	}
+	baseH := strings.Count(app.viewWelcomeModal(), "\n")
+	for step := 0; step < 12; step++ {
+		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+		if gotH := strings.Count(app.viewWelcomeModal(), "\n"); gotH != baseH {
+			t.Fatalf("welcome modal height changed at row %d: got %d lines, want %d (row wrapped!)", step+1, gotH, baseH)
+		}
 	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 

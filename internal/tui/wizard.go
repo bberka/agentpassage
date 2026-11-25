@@ -183,6 +183,10 @@ func (a *App) viewWelcomeModal() string {
 	}
 	end := min(start+maxRows, len(items))
 
+	nameW := 18
+	statW := 21
+	descW := max(innerW-2-3-2-nameW-2-statW-2, 10)
+
 	for i := start; i < end; i++ {
 		d := items[i]
 		mark := "[ ]"
@@ -192,33 +196,45 @@ func (a *App) viewWelcomeModal() string {
 			mark = " · "
 		}
 
-		var status string
+		statusPlain := "○ manual"
+		statusStyle := a.styles.Muted
 		if d.Found {
-			status = a.styles.StateReady.Render("● installed")
+			statusPlain = "● installed"
+			statusStyle = a.styles.StateReady
 		} else if d.Descriptor.BinaryArchive != "" {
-			status = a.styles.StateWarn.Render("○ binary (i: install)")
+			statusPlain = "○ binary (i: install)"
+			statusStyle = a.styles.StateWarn
 		} else if d.Descriptor.InstallPackage != "" {
-			status = a.styles.StateWarn.Render("○ npm (i: install)")
+			statusPlain = "○ npm (i: install)"
+			statusStyle = a.styles.StateWarn
 		} else if d.Descriptor.UVXPackage != "" {
-			status = a.styles.StateWarn.Render("○ uvx (i: install)")
-		} else {
-			status = a.styles.Muted.Render("○ manual")
+			statusPlain = "○ uvx (i: install)"
+			statusStyle = a.styles.StateWarn
 		}
 
 		desc := d.Descriptor.Description
 		if d.Found && desc == "" {
 			desc = d.BinaryPath
 		}
-		row := fmt.Sprintf("%s %-20s %-22s %s",
-			mark,
-			truncate(d.Descriptor.Name, 20),
-			status,
-			a.styles.Muted.Render(truncate(desc, max(innerW-48, 12))),
-		)
+		nameStr := truncate(d.Descriptor.Name, nameW)
+		descStr := truncate(desc, descW)
+
 		if i == a.detectCursor {
-			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+			plainRow := fmt.Sprintf("> %s  %-*s  %-*s  %s",
+				mark,
+				nameW, nameStr,
+				statW, truncate(statusPlain, statW),
+				descStr,
+			)
+			lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plainRow, innerW)))
 		} else {
-			lines = append(lines, "  "+row)
+			row := a.styles.JoinRow(2,
+				a.surfaceText("  "+mark),
+				a.styles.PadCell(a.surfaceText(nameStr), nameW),
+				a.styles.PadCell(statusStyle.Render(truncate(statusPlain, statW)), statW),
+				a.styles.Muted.Render(descStr),
+			)
+			lines = append(lines, row)
 		}
 	}
 	for i := end - start; i < maxRows; i++ {
@@ -237,16 +253,18 @@ func (a *App) viewWelcomeModal() string {
 		lines = append(lines, a.styles.Muted.Render(truncate(info, innerW)))
 	}
 
-	lines = append(lines, strings.Join([]string{
+	lines = append(lines, a.styles.JoinHints(
 		a.styles.KeyHint("/", "search"),
 		a.styles.KeyHint("i", "install"),
 		a.styles.KeyHint("space", "select"),
 		a.styles.KeyHint("enter", "add selected"),
+	))
+	lines = append(lines, a.styles.JoinHints(
 		a.styles.KeyHint("R", "sync registry"),
 		a.styles.KeyHint("a", "API key"),
 		a.styles.KeyHint("C", "connect CLIs"),
 		a.styles.KeyHint("esc", "close"),
-	}, "  "))
+	))
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
 }
 
@@ -905,75 +923,103 @@ func (a *App) viewAddAccountModal() string {
 			if a.addListCur >= maxRows {
 				start = a.addListCur - maxRows + 1
 			}
+			nameW := 22
+			urlW := max(innerW-2-nameW-2, 12)
 			for i := start; i < min(start+maxRows, len(presets)); i++ {
 				p := presets[i]
-				row := fmt.Sprintf("%-24s %s", p.Name, a.styles.Muted.Render(truncate(p.BaseURL, max(innerW-28, 12))))
+				nStr := truncate(p.Name, nameW)
+				uStr := truncate(p.BaseURL, urlW)
 				if i == a.addListCur {
-					lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+					plain := fmt.Sprintf("> %-*s  %s", nameW, nStr, uStr)
+					lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
 				} else {
-					lines = append(lines, "  "+row)
+					lines = append(lines, a.styles.JoinRow(2,
+						a.styles.PadCell(a.surfaceText("  "+nStr), nameW+2),
+						a.styles.Muted.Render(uStr),
+					))
 				}
 			}
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-			lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("esc", "back"))
+			lines = append(lines, a.styles.JoinHints(a.styles.KeyHint("enter", "next"), a.styles.KeyHint("esc", "back")))
 		} else if a.addKind == config.KindCLI {
 			clis := a.srv.Registry().ListCLI()
+			nameW := 22
+			badgeW := 10
+			descW := max(innerW-2-nameW-2-badgeW-2, 10)
 			for i, c := range clis {
-				badge := a.styles.Muted.Render("custom")
+				badgePlain := "custom"
+				badgeStyle := a.styles.Muted
 				if c.Binary != "" {
 					if _, found := c.FoundOnPath(); found {
-						badge = a.styles.StateReady.Render("● found")
+						badgePlain = "● found"
+						badgeStyle = a.styles.StateReady
 					} else {
-						badge = a.styles.StateWarn.Render("○ missing")
+						badgePlain = "○ missing"
+						badgeStyle = a.styles.StateWarn
 					}
 				}
-				row := fmt.Sprintf("%-25s %-11s %s",
-					truncate(c.Name, 25),
-					badge,
-					a.styles.Muted.Render(truncate(c.Description, max(innerW-40, 10))),
-				)
+				nStr := truncate(c.Name, nameW)
+				dStr := truncate(c.Description, descW)
 				if i == a.addListCur {
-					lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+					plain := fmt.Sprintf("> %-*s  %-*s  %s", nameW, nStr, badgeW, badgePlain, dStr)
+					lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
 				} else {
-					lines = append(lines, "  "+row)
+					lines = append(lines, a.styles.JoinRow(2,
+						a.styles.PadCell(a.surfaceText("  "+nStr), nameW+2),
+						a.styles.PadCell(badgeStyle.Render(badgePlain), badgeW),
+						a.styles.Muted.Render(dStr),
+					))
 				}
 			}
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-			lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("esc", "back"))
+			lines = append(lines, a.styles.JoinHints(a.styles.KeyHint("enter", "next"), a.styles.KeyHint("esc", "back")))
 		} else {
 			descs := a.srv.Registry().ListACP()
 			start := 0
 			if a.addListCur >= maxRows {
 				start = a.addListCur - maxRows + 1
 			}
+			nameW := 20
+			badgeW := 13
+			descW := max(innerW-2-nameW-2-badgeW-2, 10)
 			for i := start; i < min(start+maxRows, len(descs)); i++ {
 				d := descs[i]
-				badge := a.styles.Muted.Render("custom")
+				badgePlain := "custom"
+				badgeStyle := a.styles.Muted
 				if d.ID != "custom-acp" {
 					if _, found := a.srv.Registry().FindLocalBinary(d); found {
-						badge = a.styles.StateReady.Render("● installed")
+						badgePlain = "● installed"
+						badgeStyle = a.styles.StateReady
 					} else if d.CanInstall() {
-						badge = a.styles.StateWarn.Render("○ i: install")
+						badgePlain = "○ i: install"
+						badgeStyle = a.styles.StateWarn
 					} else {
-						badge = a.styles.Muted.Render("○ manual")
+						badgePlain = "○ manual"
 					}
 				}
-				row := fmt.Sprintf("%-22s %-15s %s",
-					truncate(d.Name, 22),
-					badge,
-					a.styles.Muted.Render(truncate(d.Description, max(innerW-41, 10))),
-				)
+				nStr := truncate(d.Name, nameW)
+				dStr := truncate(d.Description, descW)
 				if i == a.addListCur {
-					lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+row))
+					plain := fmt.Sprintf("> %-*s  %-*s  %s", nameW, nStr, badgeW, badgePlain, dStr)
+					lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
 				} else {
-					lines = append(lines, "  "+row)
+					lines = append(lines, a.styles.JoinRow(2,
+						a.styles.PadCell(a.surfaceText("  "+nStr), nameW+2),
+						a.styles.PadCell(badgeStyle.Render(badgePlain), badgeW),
+						a.styles.Muted.Render(dStr),
+					))
 				}
 			}
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-			lines = append(lines, a.styles.KeyHint("enter", "next")+"   "+a.styles.KeyHint("i", "install CLI")+"   "+a.styles.KeyHint("pgup/dn", "scroll")+"   "+a.styles.KeyHint("esc", "back"))
+			lines = append(lines, a.styles.JoinHints(
+				a.styles.KeyHint("enter", "next"),
+				a.styles.KeyHint("i", "install CLI"),
+				a.styles.KeyHint("pgup/dn", "scroll"),
+				a.styles.KeyHint("esc", "back"),
+			))
 		}
 
 	case 2:
