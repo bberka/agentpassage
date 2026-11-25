@@ -22,6 +22,7 @@ func (s *Server) registerCLIProxyCompatRoutes(mux *http.ServeMux) {
 	for _, prefix := range []string{"/v0/management", "/v8/management"} {
 		mux.HandleFunc("GET "+prefix+"/auth-files", s.withAdminAuth(s.handleCLIProxyAuthFiles))
 		mux.HandleFunc("GET "+prefix+"/auth-files/models", s.withAdminAuth(s.handleCLIProxyAuthFileModels))
+		mux.HandleFunc("GET "+prefix+"/auth-files/download", s.withAdminAuth(s.handleCLIProxyAuthFileDownload))
 		mux.HandleFunc("POST "+prefix+"/api-call", s.withAdminAuth(s.handleCLIProxyAPICall))
 		mux.HandleFunc("GET "+prefix+"/usage", s.withAdminAuth(s.handleCLIProxyUsage))
 		mux.HandleFunc("GET "+prefix+"/usage-queue", s.withAdminAuth(s.handleCLIProxyUsageQueue))
@@ -30,6 +31,23 @@ func (s *Server) registerCLIProxyCompatRoutes(mux *http.ServeMux) {
 		mux.HandleFunc(prefix+"/", s.withAdminAuth(s.handleCLIProxyUnknown))
 	}
 	mux.HandleFunc("GET /usage-queue", s.withAdminAuth(s.handleCLIProxyUsageQueue))
+}
+
+func cliProxyProjectID(acct config.AccountConfig) string {
+	var b strings.Builder
+	b.WriteString("apx-")
+	for _, r := range strings.ToLower(acct.Backend + "-" + acct.Name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if len(out) < 6 {
+		out += "-proj"
+	}
+	return out
 }
 
 func cliProxyProviderName(backend string) string {
@@ -90,6 +108,39 @@ func (s *Server) handleCLIProxyAuthFileModels(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// handleCLIProxyAuthFileDownload returns safe synthetic auth-file metadata (never raw tokens)
+// for clients that inspect auth-file fields such as project_id or email via /auth-files/download.
+func (s *Server) handleCLIProxyAuthFileDownload(w http.ResponseWriter, r *http.Request) {
+	cfg := s.Config()
+	target := strings.TrimSpace(r.URL.Query().Get("name"))
+	if target == "" {
+		target = strings.TrimSpace(r.URL.Query().Get("auth_index"))
+	}
+	for _, acct := range cfg.Accounts {
+		prov := cliProxyProviderName(acct.Backend)
+		fileName := fmt.Sprintf("%s-%s.json", prov, acct.Name)
+		if target != fileName && target != acct.ID && target != acct.Backend+"/"+acct.Name {
+			continue
+		}
+		out := map[string]any{
+			"type":       prov,
+			"provider":   prov,
+			"email":      acct.Backend + "/" + acct.Name,
+			"account_id": acct.ID,
+			"label":      acct.Backend + "/" + acct.Name,
+		}
+		if prov == "antigravity" || prov == "gemini-cli" {
+			projID := cliProxyProjectID(acct)
+			out["project_id"] = projID
+			out["project"] = projID
+			out["cloudaicompanionProject"] = projID
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+	writeOpenAIError(w, http.StatusNotFound, "not_found", "auth file not found")
+}
+
 func (s *Server) handleCLIProxyAuthFiles(w http.ResponseWriter, r *http.Request) {
 	cfg := s.Config()
 	qRep := s.LiveQuota()
@@ -134,6 +185,17 @@ func (s *Server) handleCLIProxyAuthFiles(w http.ResponseWriter, r *http.Request)
 			updatedAt = q.CheckedAt.UTC().Format(time.RFC3339)
 		}
 
+		meta := map[string]any{
+			"account_id": acct.ID,
+			"email":      acct.Backend + "/" + acct.Name,
+			"plan_type":  plan,
+			"backend":    acct.Backend,
+		}
+		attrs := map[string]any{
+			"account_id": acct.ID,
+			"email":      acct.Backend + "/" + acct.Name,
+			"plan_type":  plan,
+		}
 		entry := map[string]any{
 			"id":             acct.ID,
 			"auth_index":     acct.ID,
@@ -154,17 +216,25 @@ func (s *Server) handleCLIProxyAuthFiles(w http.ResponseWriter, r *http.Request)
 			"created_at":     now,
 			"updated_at":     updatedAt,
 			"modtime":        updatedAt,
-			"metadata": map[string]any{
-				"account_id": acct.ID,
-				"email":      acct.Backend + "/" + acct.Name,
-				"plan_type":  plan,
-				"backend":    acct.Backend,
-			},
+			"metadata":       meta,
+			"attributes":     attrs,
 			"id_token": map[string]any{
 				"chatgpt_account_id": acct.ID,
 				"email":              acct.Backend + "/" + acct.Name,
 				"plan_type":          plan,
 			},
+		}
+		if prov == "antigravity" || prov == "gemini-cli" {
+			projID := cliProxyProjectID(acct)
+			entry["project_id"] = projID
+			entry["project"] = projID
+			entry["cloudaicompanionProject"] = projID
+			meta["project_id"] = projID
+			meta["project"] = projID
+			meta["cloudaicompanionProject"] = projID
+			attrs["project_id"] = projID
+			attrs["project"] = projID
+			attrs["cloudaicompanionProject"] = projID
 		}
 		files = append(files, entry)
 	}
@@ -277,13 +347,16 @@ func synthesizeCLIProxyUpstreamResponse(acct config.AccountConfig, aq quota.Acco
 		if aq.PlanType != "" {
 			tierName = aq.PlanType
 		}
+		projID := cliProxyProjectID(acct)
 		return http.StatusOK, map[string]any{
-			"currentTier":            map[string]any{"id": tierID, "name": tierName},
-			"paidTier":               map[string]any{"id": tierID, "name": tierName},
-			"cloudaicompanionProject": "apx-" + acct.Name,
+			"currentTier":             map[string]any{"id": tierID, "name": tierName},
+			"paidTier":                map[string]any{"id": tierID, "name": tierName},
+			"cloudaicompanionProject": projID,
+			"project_id":              projID,
+			"project":                 projID,
 		}
 
-	case strings.Contains(lowerURL, "fetchavailablemodels") || strings.Contains(lowerURL, "retrieveuserquotasummary") || backend == "agy":
+	case strings.Contains(lowerURL, "fetchavailablemodels") || strings.Contains(lowerURL, "retrieveuserquota") || backend == "agy":
 		return http.StatusOK, buildAntigravityQuotaPayload(acct, aq, now)
 
 	case strings.Contains(lowerURL, "user/balance") || backend == "deepseek":
@@ -446,13 +519,15 @@ func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuo
 	pick(aq.Secondary)
 
 	modelsMap := make(map[string]any, max(len(acct.Models), 1))
+	quotaBuckets := make([]map[string]any, 0, max(len(acct.Models), 1))
 	modelList := acct.Models
 	if len(modelList) == 0 {
 		modelList = []string{"gemini-4-hydrogen", "gemini-3.8-flash"}
 	}
+	remRounded := math.Round(remFrac*1000) / 1000
 	for _, m := range modelList {
 		qi := map[string]any{
-			"remainingFraction": math.Round(remFrac*1000) / 1000,
+			"remainingFraction": remRounded,
 		}
 		if resetStr != "" {
 			qi["resetTime"] = resetStr
@@ -465,6 +540,15 @@ func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuo
 			"displayName": display,
 			"quotaInfo":   qi,
 		}
+		qb := map[string]any{
+			"modelId":           m,
+			"remainingFraction": remRounded,
+			"tokenType":         "REQUESTS",
+		}
+		if resetStr != "" {
+			qb["resetTime"] = resetStr
+		}
+		quotaBuckets = append(quotaBuckets, qb)
 	}
 
 	var buckets []map[string]any
@@ -485,8 +569,12 @@ func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuo
 	addBucket("5h", aq.Primary)
 	addBucket("7d", aq.Secondary)
 
+	projID := cliProxyProjectID(acct)
 	return map[string]any{
-		"models": modelsMap,
+		"cloudaicompanionProject": projID,
+		"project_id":              projID,
+		"models":                  modelsMap,
+		"buckets":                 quotaBuckets,
 		"quota_summary": map[string]any{
 			"plan_tier": aq.PlanType,
 			"groups": []map[string]any{

@@ -45,6 +45,7 @@ func TestCLIProxyCompatManagementEndpoints(t *testing.T) {
 			AuthIndex string `json:"auth_index"`
 			Provider  string `json:"provider"`
 			Name      string `json:"name"`
+			ProjectID string `json:"project_id"`
 		} `json:"files"`
 		Total int `json:"total"`
 	}
@@ -54,8 +55,8 @@ func TestCLIProxyCompatManagementEndpoints(t *testing.T) {
 	if af.Total != 4 || len(af.Files) != 4 {
 		t.Fatalf("expected 4 auth files, got %+v", af)
 	}
-	if af.Files[0].Provider != "antigravity" || af.Files[0].AuthIndex != "agy-bb" {
-		t.Fatalf("expected agy mapped to antigravity, got %+v", af.Files[0])
+	if af.Files[0].Provider != "antigravity" || af.Files[0].AuthIndex != "agy-bb" || af.Files[0].ProjectID == "" {
+		t.Fatalf("expected agy mapped to antigravity with project_id, got %+v", af.Files[0])
 	}
 
 	// 2. Unauthorized without management key
@@ -105,13 +106,14 @@ func TestCLIProxyCompatManagementEndpoints(t *testing.T) {
 		}
 	}
 
-	// 4. GET /v0/management/usage, /v0/management/usage-queue, /v0/management/config, /v0/management/auth-files/models, /v8/management/auth-files
+	// 4. GET /v0/management/usage, /v0/management/usage-queue, /v0/management/config, /v0/management/auth-files/models, /v0/management/auth-files/download, /v8/management/auth-files
 	for _, path := range []string{
 		"/v0/management/usage",
 		"/v0/management/usage-queue",
 		"/v0/management/config",
 		"/v0/management/latest-version",
 		"/v0/management/auth-files/models?name=antigravity-bb.json",
+		"/v0/management/auth-files/download?name=antigravity-bb.json",
 		"/v8/management/auth-files",
 	} {
 		r2 := httptest.NewRequest(http.MethodGet, path, nil)
