@@ -112,11 +112,16 @@ func makeHTTPError(resp *http.Response, body []byte) *backend.BackendError {
 	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error.Message != "" {
 		msg = parsed.Error.Message
 	}
+	kind := backend.ClassifyHTTPStatus(resp.StatusCode, string(body))
+	retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+	if retryAfter == 0 && kind == backend.ErrKindRateLimit {
+		retryAfter = backend.ParseResetDurationSeconds(msg)
+	}
 	return &backend.BackendError{
-		Kind:       backend.ClassifyHTTPStatus(resp.StatusCode, string(body)),
+		Kind:       kind,
 		StatusCode: resp.StatusCode,
 		Message:    msg,
-		RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
+		RetryAfter: retryAfter,
 	}
 }
 

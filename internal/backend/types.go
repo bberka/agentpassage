@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -130,6 +132,83 @@ func AsBackendError(err error) (*BackendError, bool) {
 		return be, true
 	}
 	return nil, false
+}
+
+const maxParsedRetryAfterSeconds = 6 * 3600 // cap parsed cooldowns at 6 hours
+
+var (
+	resetCueRe = regexp.MustCompile(`(?i)(?:resets?\s+in|try\s+again\s+(?:in|after)|retry[- ]?after|retry\s+in|available\s+(?:in|again\s+in)|please\s+wait(?:\s+for)?|wait\s+(?:for\s+)?|cooldown(?:\s+of)?)\s*:?\s*`)
+	durPartRe  = regexp.MustCompile(`(?i)^\s*(?:(?:and|,)\s*)?(\d+)\s*([a-z]+)`)
+	bareSecRe  = regexp.MustCompile(`^\s*(\d+)\b`)
+)
+
+// ParseResetDurationSeconds extracts a rate-limit/quota reset countdown from an error message
+// (e.g. "Resets in 48m24s", "try again in 2h 15m", "retry after 90s", "wait 5 minutes") and
+// returns the duration in seconds, capped at 6 hours. Returns 0 if no reset duration is found.
+func ParseResetDurationSeconds(msg string) int {
+	if strings.TrimSpace(msg) == "" {
+		return 0
+	}
+	locs := resetCueRe.FindAllStringIndex(msg, -1)
+	for _, loc := range locs {
+		cue := strings.ToLower(msg[loc[0]:loc[1]])
+		rest := msg[loc[1]:]
+		if secs := parseLeadingDuration(rest); secs > 0 {
+			if secs > maxParsedRetryAfterSeconds {
+				return maxParsedRetryAfterSeconds
+			}
+			return secs
+		}
+		// Bare integer seconds right after "retry-after:" / "retry after "
+		if strings.Contains(cue, "retry") {
+			if m := bareSecRe.FindStringSubmatch(rest); len(m) == 2 {
+				if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+					if n > maxParsedRetryAfterSeconds {
+						return maxParsedRetryAfterSeconds
+					}
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func parseLeadingDuration(s string) int {
+	total := 0
+	matched := false
+	for {
+		loc := durPartRe.FindStringSubmatchIndex(s)
+		if loc == nil {
+			break
+		}
+		n, err := strconv.Atoi(s[loc[2]:loc[3]])
+		if err != nil {
+			break
+		}
+		unit := strings.ToLower(s[loc[4]:loc[5]])
+		switch unit {
+		case "d", "day", "days":
+			total += n * 86400
+		case "h", "hr", "hrs", "hour", "hours":
+			total += n * 3600
+		case "m", "min", "mins", "minute", "minutes":
+			total += n * 60
+		case "s", "sec", "secs", "second", "seconds":
+			total += n
+		default:
+			if !matched {
+				return 0
+			}
+			return total
+		}
+		matched = true
+		s = s[loc[1]:]
+	}
+	if !matched {
+		return 0
+	}
+	return total
 }
 
 // StreamCallback receives streaming deltas. Returning an error stops streaming.

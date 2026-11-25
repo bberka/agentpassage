@@ -29,11 +29,9 @@ const (
 	PermAutoApprove = "auto-approve"
 	PermAsk         = "ask"
 
-	StrategySticky     = "sticky"
-	StrategyManual     = "manual"
-	StrategyFailover   = "failover"
-	StrategyRoundRobin = "round-robin"
-	StrategyLeastBusy  = "least-busy"
+	StrategyFailover = "failover"
+	StrategySticky   = "sticky"
+	StrategyManual   = "manual"
 
 	ToolActivityDrop = "drop"
 	ToolActivityText = "text"
@@ -292,8 +290,7 @@ type RoutingRule struct {
 	Pattern                     string   `toml:"pattern"` // exact model id, prefix glob like "agy/*", or "*"
 	Accounts                    []string `toml:"accounts"`
 	Strategy                    string   `toml:"strategy"`
-	AllowCrossAccountRetryOn429 bool     `toml:"allow_cross_account_retry_on_429,omitempty"`
-	SubscriptionWarningAcked    bool     `toml:"subscription_warning_acked,omitempty"`
+	AllowCrossAccountRetryOn429 bool     `toml:"allow_cross_account_retry_on_429"`
 }
 
 // DataDir resolves the acpx storage directory.
@@ -467,8 +464,15 @@ func (c *Config) Normalize() {
 		}
 	}
 	for i := range c.Routing {
-		if c.Routing[i].Strategy == "" {
-			c.Routing[i].Strategy = StrategySticky
+		switch c.Routing[i].Strategy {
+		case StrategyFailover, StrategySticky, StrategyManual:
+			// valid
+		case "round-robin", "least-busy":
+			// Disabled to avoid multi-account ban risk: use primary-first failover instead.
+			c.Routing[i].Strategy = StrategyFailover
+			c.Routing[i].AllowCrossAccountRetryOn429 = true
+		default:
+			c.Routing[i].Strategy = StrategyFailover
 		}
 	}
 }

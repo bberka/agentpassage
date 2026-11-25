@@ -3,6 +3,7 @@ package router
 import (
 	"testing"
 
+	"github.com/bberka/acpx/internal/backend"
 	"github.com/bberka/acpx/internal/config"
 	"github.com/bberka/acpx/internal/pool"
 )
@@ -89,7 +90,7 @@ func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
 	}
 }
 
-func TestPrefixedModelRegistrationAndThreadRoundRobin(t *testing.T) {
+func TestPrefixedModelRegistrationAndPrimaryFirstFailover(t *testing.T) {
 	// Case 1: Account prefix mode ("a-gemini-4-neon", "b-gemini-4-neon")
 	cfgPrefix := config.Default()
 	cfgPrefix.Accounts = []config.AccountConfig{
@@ -118,48 +119,60 @@ func TestPrefixedModelRegistrationAndThreadRoundRobin(t *testing.T) {
 		t.Fatalf("unexpected planB: %+v err=%v", planB, err)
 	}
 
-	// Case 2: Pooled mode with round-robin rotating different threads across accounts a and b
+	// Case 2: Pooled mode defaults to primary-first failover with 429 retry enabled.
 	cfgPool := config.Default()
 	cfgPool.Accounts = []config.AccountConfig{
 		{ID: "agy-a", Name: "a", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"gemini-4-neon"}, MaxConcurrency: 1},
 		{ID: "agy-b", Name: "b", Kind: config.KindACP, Backend: "agy", Enabled: true, ExposeMode: config.ExposePool, Models: []string{"gemini-4-neon"}, MaxConcurrency: 1},
-	}
-	cfgPool.Routing = []config.RoutingRule{
-		{Pattern: "agy/*", Strategy: config.StrategyRoundRobin, SubscriptionWarningAcked: true},
 	}
 	rPool := New(cfgPool)
 	plan, err := rPool.Resolve("gemini-4-neon")
 	if err != nil {
 		t.Fatalf("resolve bare gemini-4-neon failed: %v", err)
 	}
-	if plan.Rule.Strategy != config.StrategyRoundRobin || len(plan.CandidateIDs) != 2 {
-		t.Fatalf("expected round-robin across 2 accounts, got %+v", plan)
+	if plan.Rule.Strategy != config.StrategyFailover || !plan.Rule.AllowCrossAccountRetryOn429 || len(plan.CandidateIDs) != 2 {
+		t.Fatalf("expected default primary-first failover with 429 retry across 2 accounts, got %+v", plan)
+	}
+
+	// Legacy round-robin/least-busy rules normalize to failover with 429 retry enabled.
+	cfgPool.Routing = []config.RoutingRule{
+		{Pattern: "agy/*", Strategy: "round-robin"},
+		{Pattern: "codex/*", Strategy: "least-busy"},
+	}
+	cfgPool.Normalize()
+	for _, r := range cfgPool.Routing {
+		if r.Strategy != config.StrategyFailover || !r.AllowCrossAccountRetryOn429 {
+			t.Fatalf("expected legacy rule %q normalized to failover with 429 retry, got %+v", r.Pattern, r)
+		}
 	}
 
 	pm := pool.NewManager(cfgPool.Accounts)
-	l1, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-1", SubscriptionWarningAcked: true})
+	l1, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	l1.Release()
 
-	l2, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-2", SubscriptionWarningAcked: true})
+	l2, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	l2.Release()
 
-	if l1.Account.ID == l2.Account.ID {
-		t.Fatalf("expected thread-1 and thread-2 to rotate across accounts, both got %s", l1.Account.ID)
+	if l1.Account.ID != "agy-a" || l2.Account.ID != "agy-a" {
+		t.Fatalf("expected both threads to stay on primary agy-a while healthy, got %s and %s", l1.Account.ID, l2.Account.ID)
 	}
 
-	// Follow-up in thread-1 stays pinned to thread-1's account!
-	l3, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-1", SubscriptionWarningAcked: true})
+	// Exhaust primary agy-a with 429 -> seamlessly switches to agy-b.
+	if !pm.RecordError("agy-a", &backend.BackendError{Kind: backend.ErrKindRateLimit, StatusCode: 429, RetryAfter: 300}, plan.Rule) {
+		t.Fatalf("expected failover allowed on 429")
+	}
+	l3, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-2"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	l3.Release()
-	if l3.Account.ID != l1.Account.ID {
-		t.Fatalf("expected follow-up in thread-1 to stay on %s, got %s", l1.Account.ID, l3.Account.ID)
+	if l3.Account.ID != "agy-b" {
+		t.Fatalf("expected failover to agy-b after agy-a 429, got %s", l3.Account.ID)
 	}
 }

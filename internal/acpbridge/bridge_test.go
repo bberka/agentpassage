@@ -37,7 +37,7 @@ func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
 		{ID: "mock-b", Name: "b", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, BaseURL: upB.URL + "/v1", AuthStyle: config.AuthNone, ExposeMode: config.ExposeBoth, ModelPrefix: "b-", Models: []string{"gemini-4-neon"}, MaxConcurrency: 8},
 	}
 	cfg.Routing = []config.RoutingRule{
-		{Pattern: "*", Strategy: config.StrategyRoundRobin},
+		{Pattern: "*", Strategy: config.StrategyFailover, AllowCrossAccountRetryOn429: true},
 	}
 	sec := secrets.NewFileOnly(dir)
 	reg, _ := descriptors.LoadRegistry(dir)

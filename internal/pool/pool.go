@@ -22,8 +22,7 @@ const (
 )
 
 var (
-	ErrNoAvailableAccount  = errors.New("no available account for request")
-	ErrStrategyOptInNeeded = errors.New("round-robin and least-busy strategies are disabled by default for subscription accounts; opt in explicitly in routing settings")
+	ErrNoAvailableAccount = errors.New("no available account for request")
 )
 
 type HealthBanner struct {
@@ -73,12 +72,11 @@ type runtimeState struct {
 
 // Manager tracks health, concurrency, rate-limit cooldowns, budgets, and selection state across all accounts.
 type Manager struct {
-	mu           sync.Mutex
-	now          func() time.Time
-	accounts     map[string]*config.AccountConfig
-	states       map[string]*runtimeState
-	stickyMap    map[string]string // sessionKey -> accountID
-	rrCursor     map[string]int    // ruleKey -> round-robin index
+	mu            sync.Mutex
+	now           func() time.Time
+	accounts      map[string]*config.AccountConfig
+	states        map[string]*runtimeState
+	stickyMap     map[string]string // sessionKey -> accountID
 	onAutoDisable func(accountID, reason string)
 }
 
@@ -88,7 +86,6 @@ func NewManager(accounts []config.AccountConfig) *Manager {
 		accounts:  make(map[string]*config.AccountConfig),
 		states:    make(map[string]*runtimeState),
 		stickyMap: make(map[string]string),
-		rrCursor:  make(map[string]int),
 	}
 	m.SyncAccounts(accounts)
 	return m
@@ -197,12 +194,11 @@ func (m *Manager) isEligibleLocked(a *config.AccountConfig, st *runtimeState, no
 }
 
 type SelectRequest struct {
-	RuleKey                  string
-	Strategy                 string
-	CandidateIDs             []string
-	SessionKey               string
-	SubscriptionWarningAcked bool
-	ExcludeIDs               map[string]bool
+	RuleKey      string
+	Strategy     string
+	CandidateIDs []string
+	SessionKey   string
+	ExcludeIDs   map[string]bool
 }
 
 type Lease struct {
@@ -218,28 +214,20 @@ func (l *Lease) Release() {
 }
 
 // Acquire picks an eligible account according to the strategy and reserves one concurrency slot.
+// Traffic always prefers the first eligible account (primary-first failover) and never rotates
+// or spreads requests across subscription accounts while the primary account is healthy.
 func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
 
 	strategy := req.Strategy
-	if strategy == "" {
-		strategy = config.StrategySticky
-	}
-
-	// Enforce opt-in guard for round-robin and least-busy on subscription (ACP / CLI) accounts.
-	if strategy == config.StrategyRoundRobin || strategy == config.StrategyLeastBusy {
-		hasSub := false
-		for _, id := range req.CandidateIDs {
-			if a, ok := m.accounts[id]; ok && (a.Kind == config.KindACP || a.Kind == config.KindCLI) {
-				hasSub = true
-				break
-			}
-		}
-		if hasSub && !req.SubscriptionWarningAcked {
-			return nil, ErrStrategyOptInNeeded
-		}
+	switch strategy {
+	case config.StrategyFailover, config.StrategySticky, config.StrategyManual:
+		// valid
+	default:
+		// Empty or disabled legacy strategies (e.g. round-robin, least-busy) normalize to failover.
+		strategy = config.StrategyFailover
 	}
 
 	eligible := make([]*config.AccountConfig, 0, len(req.CandidateIDs))
@@ -270,12 +258,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	var chosen *config.AccountConfig
 
 	switch strategy {
-	case config.StrategyManual, config.StrategyFailover:
-		chosen = eligible[0]
-
-	case config.StrategyRoundRobin:
-		// If a session/thread key is present, keep messages within the same thread on its assigned account,
-		// while rotating new threads cleanly round-robin across eligible accounts.
+	case config.StrategySticky:
 		if req.SessionKey != "" {
 			if pinnedID, ok := m.stickyMap[req.SessionKey]; ok {
 				for _, a := range eligible {
@@ -287,48 +270,15 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 			}
 		}
 		if chosen == nil {
-			key := req.RuleKey
-			idx := m.rrCursor[key] % len(eligible)
-			chosen = eligible[idx]
-			m.rrCursor[key] = idx + 1
-			if req.SessionKey != "" {
-				m.stickyMap[req.SessionKey] = chosen.ID
-			}
-		}
-
-	case config.StrategyLeastBusy:
-		chosen = eligible[0]
-		for _, a := range eligible[1:] {
-			stA := m.states[a.ID]
-			stC := m.states[chosen.ID]
-			if stA.inFlight < stC.inFlight || (stA.inFlight == stC.inFlight && stA.lastUsedAt.Before(stC.lastUsedAt)) {
-				chosen = a
-			}
-		}
-
-	default: // StrategySticky
-		if req.SessionKey != "" {
-			if pinnedID, ok := m.stickyMap[req.SessionKey]; ok {
-				for _, a := range eligible {
-					if a.ID == pinnedID {
-						chosen = a
-						break
-					}
-				}
-			}
-		}
-		if chosen == nil {
-			// New conversation (or pinned account unavailable): least recently used account.
+			// Primary-first: new sessions or fallback after cooldown pick eligible[0] instead of rotating.
 			chosen = eligible[0]
-			for _, a := range eligible[1:] {
-				if m.states[a.ID].lastUsedAt.Before(m.states[chosen.ID].lastUsedAt) {
-					chosen = a
-				}
-			}
 		}
 		if req.SessionKey != "" {
 			m.stickyMap[req.SessionKey] = chosen.ID
 		}
+
+	default: // StrategyFailover, StrategyManual
+		chosen = eligible[0]
 	}
 
 	st := m.states[chosen.ID]
@@ -408,12 +358,7 @@ func (m *Manager) RecordError(accountID string, err error, rule config.RoutingRu
 			}
 		}
 		st.cooldownUntil = now.Add(cooldown)
-		// Never retry a 429 on another subscription account unless explicitly allowed.
-		if a.Kind == config.KindACP || a.Kind == config.KindCLI {
-			allowFailover = rule.AllowCrossAccountRetryOn429
-		} else {
-			allowFailover = rule.AllowCrossAccountRetryOn429 && rule.Strategy == config.StrategyFailover
-		}
+		allowFailover = rule.AllowCrossAccountRetryOn429 && rule.Strategy != config.StrategyManual
 
 	case backend.ErrKindAuth:
 		st.consecutiveAuthErr++

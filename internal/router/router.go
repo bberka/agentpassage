@@ -409,9 +409,10 @@ func (r *Router) matchRuleLocked(model, backendID string, accounts []*config.Acc
 		ids = append(ids, a.ID)
 	}
 	return config.RoutingRule{
-		Pattern:  model,
-		Accounts: ids,
-		Strategy: config.StrategySticky,
+		Pattern:                     model,
+		Accounts:                    ids,
+		Strategy:                    config.StrategyFailover,
+		AllowCrossAccountRetryOn429: true,
 	}
 }
 

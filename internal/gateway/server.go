@@ -1091,12 +1091,11 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 
 	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
 		lease, err := s.pool.Acquire(pool.SelectRequest{
-			RuleKey:                  plan.Rule.Pattern,
-			Strategy:                 plan.Rule.Strategy,
-			CandidateIDs:             plan.CandidateIDs,
-			SessionKey:               req.SessionKey,
-			SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-			ExcludeIDs:               tried,
+			RuleKey:      plan.Rule.Pattern,
+			Strategy:     plan.Rule.Strategy,
+			CandidateIDs: plan.CandidateIDs,
+			SessionKey:   req.SessionKey,
+			ExcludeIDs:   tried,
 		})
 		if err != nil {
 			if lastErr != nil {
@@ -1149,12 +1148,11 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pla
 
 	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
 		lease, err := s.pool.Acquire(pool.SelectRequest{
-			RuleKey:                  plan.Rule.Pattern,
-			Strategy:                 plan.Rule.Strategy,
-			CandidateIDs:             plan.CandidateIDs,
-			SessionKey:               req.SessionKey,
-			SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-			ExcludeIDs:               tried,
+			RuleKey:      plan.Rule.Pattern,
+			Strategy:     plan.Rule.Strategy,
+			CandidateIDs: plan.CandidateIDs,
+			SessionKey:   req.SessionKey,
+			ExcludeIDs:   tried,
 		})
 		if err != nil {
 			if lastErr != nil {
@@ -1369,10 +1367,7 @@ func (s *Server) logRequest(r *http.Request, model, acct string, status int, sta
 	})
 }
 
-func httpStatusFromPoolError(err error) int {
-	if errors.Is(err, pool.ErrStrategyOptInNeeded) {
-		return http.StatusForbidden
-	}
+func httpStatusFromPoolError(_ error) int {
 	return http.StatusServiceUnavailable
 }
 

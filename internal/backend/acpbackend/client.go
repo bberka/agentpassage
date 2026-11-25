@@ -936,8 +936,14 @@ func classifyACPError(err error) error {
 	switch {
 	case strings.Contains(lower, "restricted") || strings.Contains(lower, "suspended") || strings.Contains(lower, "banned"):
 		return &backend.BackendError{Kind: backend.ErrKindRestricted, StatusCode: 403, Message: msg, Cause: err}
-	case strings.Contains(lower, "429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "quota") || strings.Contains(lower, "resource_exhausted"):
-		return &backend.BackendError{Kind: backend.ErrKindRateLimit, StatusCode: 429, Message: msg, Cause: err}
+	case strings.Contains(lower, "429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "rate_limit") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "quota") || strings.Contains(lower, "usage limit") || strings.Contains(lower, "resource_exhausted"):
+		return &backend.BackendError{
+			Kind:       backend.ErrKindRateLimit,
+			StatusCode: 429,
+			Message:    msg,
+			RetryAfter: backend.ParseResetDurationSeconds(msg),
+			Cause:      err,
+		}
 	case strings.Contains(lower, "401") || strings.Contains(lower, "403") || strings.Contains(lower, "unauthenticated") || strings.Contains(lower, "not logged in") || strings.Contains(lower, "login required") || strings.Contains(lower, "auth"):
 		return &backend.BackendError{Kind: backend.ErrKindAuth, StatusCode: 401, Message: msg, Cause: err}
 	default:
