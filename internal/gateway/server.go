@@ -664,6 +664,7 @@ func (s *Server) Start() error {
 	srv := &http.Server{
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 	s.listener = ln
 	s.srv = srv

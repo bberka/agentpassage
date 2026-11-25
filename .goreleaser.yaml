@@ -8,6 +8,9 @@ builds:
     binary: apx
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
     ldflags:
       - -s -w
     goos:

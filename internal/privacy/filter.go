@@ -17,19 +17,21 @@ const placeholderSuffix = "}}"
 const maxPlaceholderLen = 48
 
 var (
-	// High-confidence API key / secret token patterns.
-	apiKeyPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`\bsk-(?:proj-|ant-[A-Za-z0-9_-]+-|live-|test-)?[A-Za-z0-9_-]{16,}\b`),
-		regexp.MustCompile(`\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b`),
-		regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{20,}\b`),
-		regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{16,}\b`),
-		regexp.MustCompile(`\bxox[baprs]-[A-Za-z0-9-]{12,}\b`),
-		regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`),
-		regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{30,}\b`),
-		regexp.MustCompile(`\b(?:apx|acpx)_[a-fA-F0-9]{16,}\b`),
-		regexp.MustCompile(`\b(?:gsk|hf)_[A-Za-z0-9]{20,}\b`),
-		regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b`),
-	}
+	// Single combined high-confidence API key / secret token pattern (1 pass instead of 10).
+	combinedAPIKeyPattern = regexp.MustCompile(
+		`\b(?:` +
+			`sk-(?:proj-|ant-[A-Za-z0-9_-]+-|live-|test-)?[A-Za-z0-9_-]{16,}` +
+			`|(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}` +
+			`|github_pat_[A-Za-z0-9_]{20,}` +
+			`|glpat-[A-Za-z0-9_-]{16,}` +
+			`|xox[baprs]-[A-Za-z0-9-]{12,}` +
+			`|AKIA[0-9A-Z]{16}` +
+			`|AIza[0-9A-Za-z_-]{30,}` +
+			`|(?:apx|acpx)_[a-fA-F0-9]{16,}` +
+			`|(?:gsk|hf)_[A-Za-z0-9]{20,}` +
+			`|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` +
+			`)\b`,
+	)
 	// Key-value assignment patterns where only group 1 (the secret value) is replaced.
 	assignedKeyPattern = regexp.MustCompile(`(?i)\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*["']?([A-Za-z0-9_\-.]{16,})["']?`)
 
@@ -89,12 +91,14 @@ func (f *Filter) Enabled() bool {
 
 // Session holds reversible placeholder mappings for one request/response exchange.
 type Session struct {
-	mu      sync.Mutex
-	filter  *Filter
-	valToPH map[string]string
-	phToVal map[string]string
-	counts  map[string]int
-	items   []RedactionItem
+	mu            sync.Mutex
+	filter        *Filter
+	valToPH       map[string]string
+	phToVal       map[string]string
+	counts        map[string]int
+	items         []RedactionItem
+	replacer      *strings.Replacer
+	replacerDirty bool
 }
 
 func (f *Filter) NewSession() *Session {
@@ -109,6 +113,17 @@ func (f *Filter) NewSession() *Session {
 	}
 }
 
+// HasRedactions reports whether any sensitive value was redacted in this session.
+func (s *Session) HasRedactions() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	n := len(s.phToVal)
+	s.mu.Unlock()
+	return n > 0
+}
+
 func (s *Session) placeholderFor(category, tag, raw string) string {
 	if ph, ok := s.valToPH[raw]; ok {
 		return ph
@@ -117,6 +132,7 @@ func (s *Session) placeholderFor(category, tag, raw string) string {
 	ph := fmt.Sprintf("%s%s_%d%s", placeholderPrefix, tag, s.counts[category], placeholderSuffix)
 	s.valToPH[raw] = ph
 	s.phToVal[ph] = raw
+	s.replacerDirty = true
 	s.items = append(s.items, RedactionItem{
 		Category:      category,
 		Placeholder:   ph,
@@ -137,23 +153,23 @@ func (s *Session) RedactText(text string) string {
 	cfg := s.filter.cfg
 
 	if cfg.RedactAPIKeys {
-		for _, re := range apiKeyPatterns {
-			out = re.ReplaceAllStringFunc(out, func(m string) string {
-				if isPlaceholder(m) {
-					return m
+		out = combinedAPIKeyPattern.ReplaceAllStringFunc(out, func(m string) string {
+			if isPlaceholder(m) {
+				return m
+			}
+			return s.placeholderFor("api_key", "KEY", m)
+		})
+		if strings.ContainsAny(out, ":=") {
+			out = replaceSubmatchGroup1(assignedKeyPattern, out, func(val string) string {
+				if isPlaceholder(val) {
+					return val
 				}
-				return s.placeholderFor("api_key", "KEY", m)
+				return s.placeholderFor("api_key", "KEY", val)
 			})
 		}
-		out = replaceSubmatchGroup1(assignedKeyPattern, out, func(val string) string {
-			if isPlaceholder(val) {
-				return val
-			}
-			return s.placeholderFor("api_key", "KEY", val)
-		})
 	}
 
-	if cfg.RedactEmails {
+	if cfg.RedactEmails && strings.ContainsRune(out, '@') {
 		out = emailPattern.ReplaceAllStringFunc(out, func(m string) string {
 			if isPlaceholder(m) {
 				return m
@@ -162,7 +178,7 @@ func (s *Session) RedactText(text string) string {
 		})
 	}
 
-	if cfg.RedactPhones {
+	if cfg.RedactPhones && hasAtLeastDigits(out, 10) {
 		out = phonePattern.ReplaceAllStringFunc(out, func(m string) string {
 			if isPlaceholder(m) || !looksLikePhone(m) {
 				return m
@@ -248,7 +264,7 @@ func (s *Session) redactJSONValue(v any) any {
 
 // RestoreText replaces reversible placeholders with their original sensitive values.
 func (s *Session) RestoreText(text string) string {
-	if s == nil || text == "" {
+	if s == nil || text == "" || !strings.Contains(text, placeholderPrefix) {
 		return text
 	}
 	s.mu.Lock()
@@ -256,12 +272,17 @@ func (s *Session) RestoreText(text string) string {
 		s.mu.Unlock()
 		return text
 	}
-	pairs := make([]string, 0, len(s.phToVal)*2)
-	for ph, orig := range s.phToVal {
-		pairs = append(pairs, ph, orig)
+	if s.replacer == nil || s.replacerDirty {
+		pairs := make([]string, 0, len(s.phToVal)*2)
+		for ph, orig := range s.phToVal {
+			pairs = append(pairs, ph, orig)
+		}
+		s.replacer = strings.NewReplacer(pairs...)
+		s.replacerDirty = false
 	}
+	rep := s.replacer
 	s.mu.Unlock()
-	return strings.NewReplacer(pairs...).Replace(text)
+	return rep.Replace(text)
 }
 
 // Summary returns counts by category and masked previews of everything redacted in this session.
@@ -317,7 +338,7 @@ func (s *Session) NewStreamRestorer() *StreamRestorer {
 
 // Push feeds one streamed delta and returns the safe restored prefix ready to emit.
 func (sr *StreamRestorer) Push(chunk string) string {
-	if sr == nil || sr.session == nil {
+	if sr == nil || sr.session == nil || !sr.session.HasRedactions() {
 		return chunk
 	}
 	if chunk == "" && sr.pending == "" {
@@ -359,6 +380,19 @@ func (sr *StreamRestorer) Flush() string {
 		return tail
 	}
 	return sr.session.RestoreText(tail)
+}
+
+func hasAtLeastDigits(s string, minCount int) bool {
+	n := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			n++
+			if n >= minCount {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func isPlaceholder(s string) bool {

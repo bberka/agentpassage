@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -21,6 +22,13 @@ import (
 
 const anthropicVersion = "2023-06-01"
 
+var scanBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 64*1024)
+		return &b
+	},
+}
+
 type Client struct {
 	httpClient *http.Client
 	hookMu     sync.RWMutex
@@ -28,9 +36,23 @@ type Client struct {
 }
 
 func New() *Client {
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 0, // per-request context controls deadline; streaming can be long-lived
+			Transport: tr,
+			Timeout:   0, // per-request context controls deadline; streaming can be long-lived
 		},
 	}
 }
@@ -330,8 +352,10 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 		return makeHTTPError(resp, respBody)
 	}
 
+	bufPtr := scanBufPool.Get().(*[]byte)
+	defer scanBufPool.Put(bufPtr)
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	scanner.Buffer(*bufPtr, 4*1024*1024)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -513,8 +537,10 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 		return makeHTTPError(resp, respBody)
 	}
 
+	bufPtr := scanBufPool.Get().(*[]byte)
+	defer scanBufPool.Put(bufPtr)
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	scanner.Buffer(*bufPtr, 4*1024*1024)
 	var eventName string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

@@ -81,3 +81,25 @@ func TestStreamRestorerAcrossSplitChunks(t *testing.T) {
 		t.Fatalf("stream restore mismatch:\ngot:  %q\nwant: %q", out.String(), want)
 	}
 }
+
+func BenchmarkPrivacyRedactAndStreamRestore(b *testing.B) {
+	f := NewFilter(config.PrivacyConfig{
+		Enabled:       true,
+		RedactAPIKeys: true,
+		RedactEmails:  true,
+		RedactPhones:  true,
+	})
+	prompt := "Use key sk-proj-abcdefghijklmnop123456, contact alice@example.com or +1 (415) 555-2671 on 2026-11-25."
+	chunks := []string{"Hello ", "world ", "from ", "{{APX_", "EMAIL_", "1}} ", "and normal text."}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		sess := f.NewSession()
+		_ = sess.RedactText(prompt)
+		sr := sess.NewStreamRestorer()
+		for _, c := range chunks {
+			_ = sr.Push(c)
+		}
+		_ = sr.Flush()
+	}
+}

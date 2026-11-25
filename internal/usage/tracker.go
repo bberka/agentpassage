@@ -107,17 +107,26 @@ type Summary struct {
 
 const maxInMemoryRecords = 20000
 
+type cachedSummary struct {
+	version uint64
+	at      time.Time
+	sum     Summary
+}
+
 // Tracker records per-request usage metrics in memory and persists them to <dataDir>/usage.jsonl.
 type Tracker struct {
 	mu      sync.RWMutex
 	file    *os.File
 	path    string
 	records []Record
+	version uint64
+	cache   map[string]cachedSummary
 }
 
 func New(dataDir string) *Tracker {
 	t := &Tracker{
 		records: make([]Record, 0, 256),
+		cache:   make(map[string]cachedSummary),
 	}
 	if dataDir != "" {
 		t.path = filepath.Join(dataDir, "usage.jsonl")
@@ -180,6 +189,7 @@ func (t *Tracker) Record(rec Record) {
 	if len(t.records) > maxInMemoryRecords {
 		t.records = t.records[len(t.records)-maxInMemoryRecords:]
 	}
+	t.version++
 	if t.file != nil {
 		if raw, err := json.Marshal(rec); err == nil {
 			_, _ = t.file.Write(append(raw, '\n'))
@@ -209,7 +219,27 @@ func (t *Tracker) SummaryAt(now time.Time) Summary {
 }
 
 func (t *Tracker) SummaryPeriod(period string) Summary {
-	return t.SummaryPeriodAt(time.Now(), period)
+	now := time.Now()
+	normPeriod, _ := periodCutoff(now, period)
+	t.mu.RLock()
+	if c, ok := t.cache[normPeriod]; ok && c.version == t.version && now.Sub(c.at) < 15*time.Second {
+		sum := c.sum
+		t.mu.RUnlock()
+		return sum
+	}
+	ver := t.version
+	t.mu.RUnlock()
+
+	sum := t.SummaryPeriodAt(now, normPeriod)
+	t.mu.Lock()
+	if t.version == ver {
+		if t.cache == nil {
+			t.cache = make(map[string]cachedSummary)
+		}
+		t.cache[normPeriod] = cachedSummary{version: ver, at: now, sum: sum}
+	}
+	t.mu.Unlock()
+	return sum
 }
 
 func periodCutoff(now time.Time, period string) (string, time.Time) {
