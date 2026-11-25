@@ -22,7 +22,8 @@ const (
 )
 
 var (
-	ErrNoAvailableAccount = errors.New("no available account for request")
+	ErrNoAvailableAccount  = errors.New("no available account for request")
+	ErrStrategyOptInNeeded = errors.New("round-robin and least-busy are intended for API-key pools and can cause bans on subscription (ACP/CLI) accounts; use failover or acknowledge the risk in Routing settings")
 )
 
 type HealthBanner struct {
@@ -77,6 +78,7 @@ type Manager struct {
 	accounts      map[string]*config.AccountConfig
 	states        map[string]*runtimeState
 	stickyMap     map[string]string // sessionKey -> accountID
+	rrCursor      map[string]int    // ruleKey -> round-robin index
 	onAutoDisable func(accountID, reason string)
 }
 
@@ -86,6 +88,7 @@ func NewManager(accounts []config.AccountConfig) *Manager {
 		accounts:  make(map[string]*config.AccountConfig),
 		states:    make(map[string]*runtimeState),
 		stickyMap: make(map[string]string),
+		rrCursor:  make(map[string]int),
 	}
 	m.SyncAccounts(accounts)
 	return m
@@ -194,11 +197,12 @@ func (m *Manager) isEligibleLocked(a *config.AccountConfig, st *runtimeState, no
 }
 
 type SelectRequest struct {
-	RuleKey      string
-	Strategy     string
-	CandidateIDs []string
-	SessionKey   string
-	ExcludeIDs   map[string]bool
+	RuleKey                  string
+	Strategy                 string
+	CandidateIDs             []string
+	SessionKey               string
+	SubscriptionWarningAcked bool
+	ExcludeIDs               map[string]bool
 }
 
 type Lease struct {
@@ -214,8 +218,9 @@ func (l *Lease) Release() {
 }
 
 // Acquire picks an eligible account according to the strategy and reserves one concurrency slot.
-// Traffic always prefers the first eligible account (primary-first failover) and never rotates
-// or spreads requests across subscription accounts while the primary account is healthy.
+// Default strategy is primary-first failover. round-robin and least-busy work freely for API-key
+// accounts, and require explicit SubscriptionWarningAcked opt-in when subscription (ACP/CLI)
+// accounts are in the candidate pool.
 func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -223,11 +228,24 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 
 	strategy := req.Strategy
 	switch strategy {
-	case config.StrategyFailover, config.StrategySticky, config.StrategyManual:
+	case config.StrategyFailover, config.StrategySticky, config.StrategyManual, config.StrategyRoundRobin, config.StrategyLeastBusy:
 		// valid
 	default:
-		// Empty or disabled legacy strategies (e.g. round-robin, least-busy) normalize to failover.
 		strategy = config.StrategyFailover
+	}
+
+	// Enforce explicit ban-risk opt-in for round-robin and least-busy on subscription (ACP / CLI) accounts.
+	if strategy == config.StrategyRoundRobin || strategy == config.StrategyLeastBusy {
+		hasSub := false
+		for _, id := range req.CandidateIDs {
+			if a, ok := m.accounts[id]; ok && (a.Kind == config.KindACP || a.Kind == config.KindCLI) {
+				hasSub = true
+				break
+			}
+		}
+		if hasSub && !req.SubscriptionWarningAcked {
+			return nil, ErrStrategyOptInNeeded
+		}
 	}
 
 	eligible := make([]*config.AccountConfig, 0, len(req.CandidateIDs))
@@ -258,7 +276,10 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	var chosen *config.AccountConfig
 
 	switch strategy {
-	case config.StrategySticky:
+	case config.StrategyManual, config.StrategyFailover:
+		chosen = eligible[0]
+
+	case config.StrategyRoundRobin:
 		if req.SessionKey != "" {
 			if pinnedID, ok := m.stickyMap[req.SessionKey]; ok {
 				for _, a := range eligible {
@@ -270,15 +291,42 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 			}
 		}
 		if chosen == nil {
-			// Primary-first: new sessions or fallback after cooldown pick eligible[0] instead of rotating.
+			key := req.RuleKey
+			idx := m.rrCursor[key] % len(eligible)
+			chosen = eligible[idx]
+			m.rrCursor[key] = idx + 1
+			if req.SessionKey != "" {
+				m.stickyMap[req.SessionKey] = chosen.ID
+			}
+		}
+
+	case config.StrategyLeastBusy:
+		chosen = eligible[0]
+		for _, a := range eligible[1:] {
+			stA := m.states[a.ID]
+			stC := m.states[chosen.ID]
+			if stA.inFlight < stC.inFlight || (stA.inFlight == stC.inFlight && stA.lastUsedAt.Before(stC.lastUsedAt)) {
+				chosen = a
+			}
+		}
+
+	default: // StrategySticky (primary-first on new/fallback sessions, never LRU-alternating)
+		if req.SessionKey != "" {
+			if pinnedID, ok := m.stickyMap[req.SessionKey]; ok {
+				for _, a := range eligible {
+					if a.ID == pinnedID {
+						chosen = a
+						break
+					}
+				}
+			}
+		}
+		if chosen == nil {
 			chosen = eligible[0]
 		}
 		if req.SessionKey != "" {
 			m.stickyMap[req.SessionKey] = chosen.ID
 		}
-
-	default: // StrategyFailover, StrategyManual
-		chosen = eligible[0]
 	}
 
 	st := m.states[chosen.ID]

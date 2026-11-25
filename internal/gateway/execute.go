@@ -24,11 +24,12 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 
 	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
 		lease, err := s.pool.Acquire(pool.SelectRequest{
-			RuleKey:      plan.Rule.Pattern,
-			Strategy:     plan.Rule.Strategy,
-			CandidateIDs: plan.CandidateIDs,
-			SessionKey:   req.SessionKey,
-			ExcludeIDs:   tried,
+			RuleKey:                  plan.Rule.Pattern,
+			Strategy:                 plan.Rule.Strategy,
+			CandidateIDs:             plan.CandidateIDs,
+			SessionKey:               req.SessionKey,
+			SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
+			ExcludeIDs:               tried,
 		})
 		if err != nil {
 			if lastErr != nil {

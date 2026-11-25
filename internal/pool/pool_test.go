@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -8,10 +9,12 @@ import (
 	"github.com/bberka/acpx/internal/config"
 )
 
-func TestPrimaryFirstFailoverStickyAndDisabledRoundRobin(t *testing.T) {
+func TestPrimaryFirstFailoverStickyAndSubscriptionGuard(t *testing.T) {
 	accts := []config.AccountConfig{
 		{ID: "agy-a", Name: "a", Kind: config.KindACP, Backend: "agy", Enabled: true, MaxConcurrency: 1},
 		{ID: "agy-b", Name: "b", Kind: config.KindACP, Backend: "agy", Enabled: true, MaxConcurrency: 1},
+		{ID: "ds-1", Name: "one", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, MaxConcurrency: 4},
+		{ID: "ds-2", Name: "two", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, MaxConcurrency: 4},
 	}
 	m := NewManager(accts)
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -38,20 +41,37 @@ func TestPrimaryFirstFailoverStickyAndDisabledRoundRobin(t *testing.T) {
 	}
 	l2.Release()
 
-	// Legacy round-robin and least-busy strings normalize to primary-first failover (never rotate).
-	for _, legacy := range []string{"round-robin", "least-busy"} {
-		now = now.Add(time.Second)
-		l, err := m.Acquire(SelectRequest{RuleKey: "agy/*", Strategy: legacy, CandidateIDs: []string{"agy-a", "agy-b"}, SessionKey: "legacy-" + legacy})
-		if err != nil {
-			t.Fatalf("acquire legacy %s: %v", legacy, err)
-		}
-		if l.Account.ID != "agy-a" {
-			t.Fatalf("expected legacy %s to normalize to primary agy-a, got %s", legacy, l.Account.ID)
-		}
-		l.Release()
+	// round-robin & least-busy work freely on API-key accounts without subscription opt-in!
+	api1, err := m.Acquire(SelectRequest{RuleKey: "deepseek/*", Strategy: config.StrategyRoundRobin, CandidateIDs: []string{"ds-1", "ds-2"}})
+	if err != nil {
+		t.Fatalf("expected round-robin on API keys to succeed: %v", err)
+	}
+	api1.Release()
+	api2, err := m.Acquire(SelectRequest{RuleKey: "deepseek/*", Strategy: config.StrategyRoundRobin, CandidateIDs: []string{"ds-1", "ds-2"}})
+	if err != nil {
+		t.Fatalf("expected second round-robin on API keys to succeed: %v", err)
+	}
+	api2.Release()
+	if api1.Account.ID == api2.Account.ID {
+		t.Fatalf("expected API-key round-robin to rotate between ds-1 and ds-2, both got %s", api1.Account.ID)
 	}
 
-	// Only when primary agy-a hits cooldown/quota exhaustion does traffic switch to agy-b.
+	// round-robin & least-busy on subscription accounts WITHOUT opt-in are blocked!
+	for _, strat := range []string{config.StrategyRoundRobin, config.StrategyLeastBusy} {
+		_, err := m.Acquire(SelectRequest{RuleKey: "agy/*", Strategy: strat, CandidateIDs: []string{"agy-a", "agy-b"}, SubscriptionWarningAcked: false})
+		if !errors.Is(err, ErrStrategyOptInNeeded) {
+			t.Fatalf("expected ErrStrategyOptInNeeded for subscription %s without opt-in, got %v", strat, err)
+		}
+	}
+
+	// With explicit opt-in acknowledged, round-robin succeeds on subscriptions.
+	lOpt, err := m.Acquire(SelectRequest{RuleKey: "agy/*", Strategy: config.StrategyRoundRobin, CandidateIDs: []string{"agy-a", "agy-b"}, SubscriptionWarningAcked: true})
+	if err != nil {
+		t.Fatalf("expected subscription round-robin with opt-in to succeed: %v", err)
+	}
+	lOpt.Release()
+
+	// Only when primary agy-a hits cooldown/quota exhaustion does failover switch to agy-b.
 	rule := config.RoutingRule{Pattern: "agy/*", Strategy: config.StrategyFailover, AllowCrossAccountRetryOn429: true}
 	retrySecs := backend.ParseResetDurationSeconds("Quota exceeded. Resets in 48m24s")
 	if retrySecs != 48*60+24 {

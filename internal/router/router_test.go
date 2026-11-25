@@ -134,16 +134,18 @@ func TestPrefixedModelRegistrationAndPrimaryFirstFailover(t *testing.T) {
 		t.Fatalf("expected default primary-first failover with 429 retry across 2 accounts, got %+v", plan)
 	}
 
-	// Legacy round-robin/least-busy rules normalize to failover with 429 retry enabled.
+	// Config.Normalize preserves round-robin/least-busy for API-key pools and defaults empty strategy to failover.
 	cfgPool.Routing = []config.RoutingRule{
-		{Pattern: "agy/*", Strategy: "round-robin"},
-		{Pattern: "codex/*", Strategy: "least-busy"},
+		{Pattern: "deepseek/*", Strategy: config.StrategyRoundRobin},
+		{Pattern: "openrouter/*", Strategy: config.StrategyLeastBusy},
+		{Pattern: "agy/*", Strategy: ""},
 	}
 	cfgPool.Normalize()
-	for _, r := range cfgPool.Routing {
-		if r.Strategy != config.StrategyFailover || !r.AllowCrossAccountRetryOn429 {
-			t.Fatalf("expected legacy rule %q normalized to failover with 429 retry, got %+v", r.Pattern, r)
-		}
+	if cfgPool.Routing[0].Strategy != config.StrategyRoundRobin || cfgPool.Routing[1].Strategy != config.StrategyLeastBusy {
+		t.Fatalf("expected round-robin/least-busy preserved by Normalize, got %+v", cfgPool.Routing)
+	}
+	if cfgPool.Routing[2].Strategy != config.StrategyFailover {
+		t.Fatalf("expected empty strategy normalized to failover, got %+v", cfgPool.Routing[2])
 	}
 
 	pm := pool.NewManager(cfgPool.Accounts)
