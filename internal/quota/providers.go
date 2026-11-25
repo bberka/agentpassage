@@ -185,7 +185,7 @@ func ParseOpenRouterKey(raw []byte) (AccountQuota, error) {
 	return q, nil
 }
 
-// --- Claude Code Local JSONL Usage Scanner (5h block + 7d weekly, read-only) ---
+// --- Claude Code Live ACP `/usage` + Local JSONL Usage Scanner ---
 
 type claudeLogSummary struct {
 	Msgs5h    int
@@ -193,6 +193,415 @@ type claudeLogSummary struct {
 	Msgs7d    int
 	Tokens7d  int
 	ScannedOK bool
+}
+
+func fetchClaudeQuota(ctx context.Context, acct config.AccountConfig, dataDir string) (AccountQuota, error) {
+	bin, err := exec.LookPath("claude-agent-acp")
+	if err != nil {
+		return AccountQuota{}, fmt.Errorf("claude-agent-acp binary not on PATH")
+	}
+	qctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(qctx, bin)
+	env := os.Environ()
+	if !acct.UseHostProfile {
+		pdir, err := config.ProfileDir(dataDir, acct.Backend, acct.Name)
+		if err != nil {
+			return AccountQuota{}, err
+		}
+		env = setEnvVar(env, "CLAUDE_CONFIG_DIR", pdir)
+		env = setEnvVar(env, "HOME", pdir)
+		env = setEnvVar(env, "XDG_CONFIG_HOME", filepath.Join(pdir, ".config"))
+	}
+	for k, v := range acct.CustomEnv {
+		env = setEnvVar(env, k, v)
+	}
+	cmd.Env = env
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return AccountQuota{}, err
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return AccountQuota{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return AccountQuota{}, err
+	}
+	defer func() {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_ = cmd.Wait()
+	}()
+
+	writeMsg := func(v any) error {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return err
+		}
+		_, err = stdin.Write(append(b, '\n'))
+		return err
+	}
+
+	if err := writeMsg(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion":    1,
+			"clientCapabilities": map[string]any{},
+			"clientInfo":         map[string]any{"name": "apx", "version": "0.1.0"},
+		},
+	}); err != nil {
+		return AccountQuota{}, err
+	}
+
+	var planHint string
+	var textBuf strings.Builder
+
+	sc := bufio.NewScanner(stdout)
+	sc.Buffer(make([]byte, 16*1024), 2*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var envMsg struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+			Result json.RawMessage `json:"result"`
+			Error  *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if json.Unmarshal([]byte(line), &envMsg) != nil {
+			continue
+		}
+
+		// Capture plan name from official auth/status_update notifications.
+		if envMsg.Method == "auth/status_update" || envMsg.Method == "_auth/status_update" {
+			var st struct {
+				AuthStatus *struct {
+					Label   string `json:"label"`
+					Account *struct {
+						Plan string `json:"plan"`
+					} `json:"account"`
+				} `json:"authStatus"`
+				Accounts []struct {
+					Label  string `json:"label"`
+					Active bool   `json:"active"`
+				} `json:"accounts"`
+			}
+			if json.Unmarshal(envMsg.Params, &st) == nil {
+				if st.AuthStatus != nil {
+					if st.AuthStatus.Account != nil && st.AuthStatus.Account.Plan != "" {
+						planHint = st.AuthStatus.Account.Plan
+					} else if st.AuthStatus.Label != "" {
+						planHint = st.AuthStatus.Label
+					}
+				}
+				for _, a := range st.Accounts {
+					if a.Active && a.Label != "" {
+						planHint = a.Label
+					}
+				}
+			}
+			continue
+		}
+
+		// Collect streamed `/usage` markdown text chunks.
+		if envMsg.Method == "session/update" {
+			var su struct {
+				Update struct {
+					SessionUpdate string `json:"sessionUpdate"`
+					Content       struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"update"`
+			}
+			if json.Unmarshal(envMsg.Params, &su) == nil && su.Update.SessionUpdate == "agent_message_chunk" {
+				textBuf.WriteString(su.Update.Content.Text)
+			}
+			continue
+		}
+
+		idStr := strings.TrimSpace(string(envMsg.ID))
+		switch idStr {
+		case "1":
+			if envMsg.Error != nil {
+				return AccountQuota{}, fmt.Errorf("claude ACP init: %s", envMsg.Error.Message)
+			}
+			if err := writeMsg(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      2,
+				"method":  "session/new",
+				"params":  map[string]any{"cwd": os.TempDir(), "mcpServers": []any{}},
+			}); err != nil {
+				return AccountQuota{}, err
+			}
+		case "2":
+			if envMsg.Error != nil {
+				return AccountQuota{}, fmt.Errorf("claude ACP session: %s", envMsg.Error.Message)
+			}
+			var res struct {
+				SessionID string `json:"sessionId"`
+			}
+			if err := json.Unmarshal(envMsg.Result, &res); err != nil || res.SessionID == "" {
+				return AccountQuota{}, fmt.Errorf("claude ACP returned empty sessionId")
+			}
+			if err := writeMsg(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      3,
+				"method":  "session/prompt",
+				"params": map[string]any{
+					"sessionId": res.SessionID,
+					"prompt":    []map[string]string{{"type": "text", "text": "/usage"}},
+				},
+			}); err != nil {
+				return AccountQuota{}, err
+			}
+		case "3":
+			if envMsg.Error != nil {
+				return AccountQuota{}, fmt.Errorf("claude /usage: %s", envMsg.Error.Message)
+			}
+			return ParseClaudeUsageMarkdown(textBuf.String(), planHint, time.Now())
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return AccountQuota{}, err
+	}
+	if textBuf.Len() > 0 {
+		return ParseClaudeUsageMarkdown(textBuf.String(), planHint, time.Now())
+	}
+	return AccountQuota{}, fmt.Errorf("claude-agent-acp closed before returning /usage")
+}
+
+var (
+	claudeLimitLineRe = regexp.MustCompile(`\*\*([^*]+)\*\*\s*[—\-–:]+\s*\*\*(\d+(?:\.\d+)?)%\*\*(?:\s*[·•\-]\s*Resets?\s+(.+))?`)
+	claudePlanLineRe  = regexp.MustCompile(`(?i)Claude\s+(ultra|max|pro|team|enterprise)`)
+	claudeGMTOffsetRe = regexp.MustCompile(`GMT([+-])(\d{1,2})(?::(\d{2}))?$`)
+)
+
+// ParseClaudeUsageMarkdown parses the official Markdown output from Claude Code's `/usage` command.
+func ParseClaudeUsageMarkdown(text, planHint string, now time.Time) (AccountQuota, error) {
+	q := AccountQuota{
+		Source:   "claude-live",
+		PlanType: normalizeClaudePlan(planHint),
+	}
+	if q.PlanType == "" {
+		if m := claudePlanLineRe.FindStringSubmatch(text); len(m) == 2 {
+			q.PlanType = strings.ToLower(m[1])
+		}
+	}
+
+	type parsedLimit struct {
+		rawLabel string
+		shortLbl string
+		usedPct  float64
+		resetsAt *time.Time
+		is5h     bool
+		isAllW   bool
+	}
+	var limits []parsedLimit
+
+	for _, rawLine := range strings.Split(text, "\n") {
+		line := strings.TrimSpace(rawLine)
+		m := claudeLimitLineRe.FindStringSubmatch(line)
+		if len(m) < 3 {
+			continue
+		}
+		rawLbl := strings.TrimSpace(m[1])
+		pct, err := strconv.ParseFloat(m[2], 64)
+		if err != nil {
+			continue
+		}
+		var resetsAt *time.Time
+		if len(m) >= 4 && strings.TrimSpace(m[3]) != "" {
+			resetsAt = parseClaudeResetTime(strings.TrimSpace(m[3]), now)
+		}
+
+		lower := strings.ToLower(rawLbl)
+		is5h := strings.Contains(lower, "5h") || strings.Contains(lower, "5-hour") || strings.Contains(lower, "session") || strings.Contains(lower, "current")
+		isAllW := strings.Contains(lower, "all models") || lower == "weekly" || lower == "7-day" || lower == "7d"
+
+		shortLbl := shortClaudeLimitLabel(rawLbl, is5h, isAllW)
+		limits = append(limits, parsedLimit{
+			rawLabel: rawLbl,
+			shortLbl: shortLbl,
+			usedPct:  clampPct(pct),
+			resetsAt: resetsAt,
+			is5h:     is5h,
+			isAllW:   isAllW,
+		})
+	}
+
+	if len(limits) == 0 {
+		return AccountQuota{}, fmt.Errorf("no limit entries found in claude /usage output")
+	}
+
+	makeWin := func(l parsedLimit) *Window {
+		return &Window{
+			Label:       l.shortLbl,
+			UsedPercent: l.usedPct,
+			LeftPercent: math.Round((100.0-l.usedPct)*10) / 10,
+			ResetsAt:    l.resetsAt,
+		}
+	}
+
+	usedIdx := make(map[int]bool)
+	// Prefer 5h/session as Primary, Weekly (all models) as Secondary; if there is no 5h window
+	// (e.g. Claude Max/Ultra weekly-only plans), promote Weekly all models to Primary and model-specific to Secondary.
+	for i, l := range limits {
+		if l.is5h && q.Primary == nil {
+			q.Primary = makeWin(l)
+			usedIdx[i] = true
+		}
+	}
+	for i, l := range limits {
+		if usedIdx[i] {
+			continue
+		}
+		if l.isAllW {
+			if q.Primary == nil {
+				q.Primary = makeWin(l)
+			} else if q.Secondary == nil {
+				q.Secondary = makeWin(l)
+			}
+			usedIdx[i] = true
+		}
+	}
+	for i, l := range limits {
+		if usedIdx[i] {
+			continue
+		}
+		if q.Primary == nil {
+			q.Primary = makeWin(l)
+			usedIdx[i] = true
+		} else if q.Secondary == nil {
+			q.Secondary = makeWin(l)
+			usedIdx[i] = true
+		}
+	}
+
+	if q.PlanType == "" {
+		q.PlanType = "claude"
+	}
+	return q, nil
+}
+
+func normalizeClaudePlan(raw string) string {
+	l := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case strings.Contains(l, "ultra"):
+		return "ultra"
+	case strings.Contains(l, "max_20x"):
+		return "max 20x"
+	case strings.Contains(l, "max_5x"):
+		return "max 5x"
+	case strings.Contains(l, "max"):
+		return "max"
+	case strings.Contains(l, "pro"):
+		return "pro"
+	case strings.Contains(l, "team"):
+		return "team"
+	case strings.Contains(l, "enterprise"):
+		return "ent"
+	default:
+		return ""
+	}
+}
+
+func shortClaudeLimitLabel(raw string, is5h, isAllW bool) string {
+	if is5h {
+		return "5h"
+	}
+	if isAllW {
+		return "Weekly"
+	}
+	// E.g. "Weekly · Fable" -> "Fable", "Weekly · Sonnet" -> "Sonnet"
+	for _, sep := range []string{"·", "•", "-", ":"} {
+		if parts := strings.SplitN(raw, sep, 2); len(parts) == 2 {
+			sub := strings.TrimSpace(parts[1])
+			if sub != "" {
+				if len(sub) > 12 {
+					return sub[:12]
+				}
+				return sub
+			}
+		}
+	}
+	if len(raw) > 12 {
+		return raw[:12]
+	}
+	return raw
+}
+
+func parseClaudeResetTime(raw string, now time.Time) *time.Time {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil
+	}
+	if secs := backend.ParseResetDurationSeconds(s); secs > 0 {
+		t := now.Add(time.Duration(secs) * time.Second)
+		return &t
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return &t
+	}
+
+	// Parse human strings like "Nov 27, 4:00 PM GMT+3", "Nov 27, 4pm UTC", "4:00 PM GMT+3"
+	loc := now.Location()
+	if m := claudeGMTOffsetRe.FindStringSubmatch(s); len(m) >= 3 {
+		hrs, _ := strconv.Atoi(m[2])
+		mins := 0
+		if len(m) >= 4 && m[3] != "" {
+			mins, _ = strconv.Atoi(m[3])
+		}
+		off := hrs*3600 + mins*60
+		if m[1] == "-" {
+			off = -off
+		}
+		loc = time.FixedZone("GMT"+m[1]+m[2], off)
+		s = strings.TrimSpace(s[:len(s)-len(m[0])])
+	} else if strings.HasSuffix(s, " UTC") {
+		loc = time.UTC
+		s = strings.TrimSpace(strings.TrimSuffix(s, " UTC"))
+	}
+
+	layoutsWithDate := []string{
+		"Jan 2, 3:04 PM",
+		"Jan 2, 3:04PM",
+		"Jan 2, 3 PM",
+		"Jan 2, 3PM",
+		"Jan 2 3:04 PM",
+		"January 2, 3:04 PM",
+	}
+	for _, layout := range layoutsWithDate {
+		if parsed, err := time.ParseInLocation(layout, s, loc); err == nil {
+			cand := time.Date(now.Year(), parsed.Month(), parsed.Day(), parsed.Hour(), parsed.Minute(), 0, 0, loc)
+			if cand.Before(now.Add(-24 * time.Hour)) {
+				cand = cand.AddDate(1, 0, 0)
+			}
+			return &cand
+		}
+	}
+	layoutsTimeOnly := []string{"3:04 PM", "3:04PM", "3 PM", "3PM"}
+	for _, layout := range layoutsTimeOnly {
+		if parsed, err := time.ParseInLocation(layout, s, loc); err == nil {
+			nInLoc := now.In(loc)
+			cand := time.Date(nInLoc.Year(), nInLoc.Month(), nInLoc.Day(), parsed.Hour(), parsed.Minute(), 0, 0, loc)
+			if cand.Before(now) {
+				cand = cand.Add(24 * time.Hour)
+			}
+			return &cand
+		}
+	}
+	return nil
 }
 
 func scanClaudeLocalUsage(acct config.AccountConfig, dataDir string, now time.Time) claudeLogSummary {

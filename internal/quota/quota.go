@@ -232,7 +232,20 @@ func (f *Fetcher) RefreshOne(ctx context.Context, acct config.AccountConfig) Acc
 	case "claude":
 		if acct.Kind == config.KindACP || acct.Kind == config.KindCLI {
 			cl := scanClaudeLocalUsage(acct, f.dataDir, time.Now())
-			if cl.ScannedOK {
+			if live, err := fetchClaudeQuota(ctx, acct, f.dataDir); err == nil {
+				q = live
+				q.AccountID = acct.ID
+				q.AccountName = acct.Backend + "/" + acct.Name
+				q.Backend = acct.Backend
+				q.Kind = acct.Kind
+				q.CheckedAt = time.Now()
+				if cl.ScannedOK {
+					q.Local5h = cl.Msgs5h
+					q.Local7d = cl.Msgs7d
+					q.Tokens5h = cl.Tokens5h
+					q.Tokens7d = cl.Tokens7d
+				}
+			} else if cl.ScannedOK {
 				q.Source = "claude-logs"
 				q.PlanType = "claude"
 				q.Local5h = cl.Msgs5h
@@ -240,8 +253,10 @@ func (f *Fetcher) RefreshOne(ctx context.Context, acct config.AccountConfig) Acc
 				q.Tokens5h = cl.Tokens5h
 				q.Tokens7d = cl.Tokens7d
 				q.Credits = fmt.Sprintf("5h: %s tok · 7d: %s tok", FormatCompactTokens(cl.Tokens5h), FormatCompactTokens(cl.Tokens7d))
+				q.Error = err.Error()
 			} else {
 				q.Source = "local-tracked"
+				q.Error = err.Error()
 			}
 		}
 	case "deepseek":

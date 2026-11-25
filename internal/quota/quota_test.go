@@ -311,3 +311,43 @@ func TestParseAgyUsageOutput(t *testing.T) {
 		t.Fatalf("expected unavailable + verify account badge, got %+v", qe)
 	}
 }
+
+func TestParseClaudeUsageMarkdown(t *testing.T) {
+	loc := time.FixedZone("GMT+3", 3*3600)
+	now := time.Date(2026, 11, 25, 20, 35, 0, 0, loc)
+
+	// 1. Live Claude Max/Ultra weekly + model-specific limits (real format from claude-agent-acp /usage)
+	md := "## Usage\n\n> Claude max subscription usage\n\n### Limits\n\n" +
+		"**Weekly · all models** — **67%** · Resets Nov 27, 4:00 PM GMT+3\n\n" +
+		"`█████████████░░░░░░░`\n\n" +
+		"**Weekly · Fable** — **10%** · Resets Nov 27, 4:00 PM GMT+3\n"
+	q, err := quota.ParseClaudeUsageMarkdown(md, "Claude Ultra", now)
+	if err != nil {
+		t.Fatalf("ParseClaudeUsageMarkdown failed: %v", err)
+	}
+	if q.Source != "claude-live" || q.PlanType != "ultra" {
+		t.Fatalf("unexpected source/plan: %+v", q)
+	}
+	if q.Primary == nil || q.Primary.Label != "Weekly" || q.Primary.UsedPercent != 67 || q.Primary.LeftPercent != 33 {
+		t.Fatalf("unexpected primary: %+v", q.Primary)
+	}
+	if q.Primary.ResetsAt == nil || q.Primary.ResetsAt.Day() != 27 || q.Primary.ResetsAt.Hour() != 16 {
+		t.Fatalf("unexpected primary reset time: %+v", q.Primary.ResetsAt)
+	}
+	if q.Secondary == nil || q.Secondary.Label != "Fable" || q.Secondary.UsedPercent != 10 || q.Secondary.LeftPercent != 90 {
+		t.Fatalf("unexpected secondary: %+v", q.Secondary)
+	}
+
+	// 2. Pro plan with 5h session + Weekly limits
+	proMD := "## Usage\n\n> Claude pro subscription usage\n\n**Current session** — **25%** · Resets 11:00 PM GMT+3\n**Weekly · all models** — **40%** · Resets Nov 30, 4:00 PM GMT+3\n"
+	qp, err := quota.ParseClaudeUsageMarkdown(proMD, "", now)
+	if err != nil {
+		t.Fatalf("ParseClaudeUsageMarkdown pro failed: %v", err)
+	}
+	if qp.PlanType != "pro" || qp.Primary == nil || qp.Primary.Label != "5h" || qp.Primary.LeftPercent != 75 {
+		t.Fatalf("unexpected pro primary: %+v", qp)
+	}
+	if qp.Secondary == nil || qp.Secondary.Label != "Weekly" || qp.Secondary.LeftPercent != 60 {
+		t.Fatalf("unexpected pro secondary: %+v", qp.Secondary)
+	}
+}

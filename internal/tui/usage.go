@@ -252,7 +252,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 				switch q.Source {
 				case "agy-live":
 					plan = "agy"
-				case "claude-logs":
+				case "claude-live", "claude-logs":
 					plan = "claude"
 				case "deepseek-live", "openrouter-live", "headers-live":
 					plan = "api"
