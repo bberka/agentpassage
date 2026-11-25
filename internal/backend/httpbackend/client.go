@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bberka/acpx/internal/backend"
@@ -22,6 +23,8 @@ const anthropicVersion = "2023-06-01"
 
 type Client struct {
 	httpClient *http.Client
+	hookMu     sync.RWMutex
+	onHeaders  func(config.AccountConfig, http.Header)
 }
 
 func New() *Client {
@@ -35,6 +38,26 @@ func New() *Client {
 func (c *Client) SetHTTPClient(hc *http.Client) {
 	if hc != nil {
 		c.httpClient = hc
+	}
+}
+
+// SetHeaderHook registers a callback invoked with upstream HTTP response headers
+// (used to capture live provider rate-limit windows such as Anthropic 5h/7d or x-ratelimit-*).
+func (c *Client) SetHeaderHook(fn func(config.AccountConfig, http.Header)) {
+	c.hookMu.Lock()
+	c.onHeaders = fn
+	c.hookMu.Unlock()
+}
+
+func (c *Client) emitHeaders(acct config.AccountConfig, h http.Header) {
+	if h == nil {
+		return
+	}
+	c.hookMu.RLock()
+	fn := c.onHeaders
+	c.hookMu.RUnlock()
+	if fn != nil {
+		fn(acct, h)
 	}
 }
 
@@ -238,6 +261,7 @@ func (c *Client) completeOpenAI(ctx context.Context, acct config.AccountConfig, 
 		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
 	}
 	defer resp.Body.Close()
+	c.emitHeaders(acct, resp.Header)
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
@@ -294,6 +318,7 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 		return &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
 	}
 	defer resp.Body.Close()
+	c.emitHeaders(acct, resp.Header)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -414,6 +439,7 @@ func (c *Client) completeAnthropic(ctx context.Context, acct config.AccountConfi
 		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
 	}
 	defer resp.Body.Close()
+	c.emitHeaders(acct, resp.Header)
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
@@ -475,6 +501,7 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 		return &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
 	}
 	defer resp.Body.Close()
+	c.emitHeaders(acct, resp.Header)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))

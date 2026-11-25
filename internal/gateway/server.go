@@ -111,7 +111,15 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		func() usage.Summary {
 			return s.LiveUsage()
 		},
+		func(accountID string) string {
+			if sec == nil {
+				return ""
+			}
+			k, _ := sec.Get(accountID)
+			return k
+		},
 	)
+	s.httpBE.SetHeaderHook(s.quota.RecordHTTPHeaders)
 	if logs != nil {
 		logs.RegisterSecret(cfg.Server.LocalKey)
 		for _, k := range cfg.Server.APIKeys {

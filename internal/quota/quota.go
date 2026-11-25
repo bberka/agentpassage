@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"sort"
@@ -43,6 +44,8 @@ type AccountQuota struct {
 	Local5h     int       `json:"local_5h_reqs"`
 	Local24h    int       `json:"local_24h_reqs"`
 	Local7d     int       `json:"local_7d_reqs"`
+	Tokens5h    int       `json:"tokens_5h"`
+	Tokens7d    int       `json:"tokens_7d"`
 	HourlyLimit int       `json:"hourly_limit,omitempty"`
 	DailyLimit  int       `json:"daily_limit,omitempty"`
 	WeeklyLimit int       `json:"weekly_limit,omitempty"`
@@ -55,28 +58,54 @@ type Report struct {
 	Accounts  []AccountQuota `json:"accounts"`
 }
 
-// Fetcher collects official provider subscription limits (e.g. Codex `account/rateLimits/read`,
-// Grok `grok usage --json`) and merges them with local rolling 1h/5h/24h/7d usage and budgets.
+// Fetcher collects official provider subscription limits (Codex `account/rateLimits/read`,
+// DeepSeek `/user/balance`, OpenRouter `/auth/key`, Grok `grok usage --json`, Claude local
+// JSONL 5h/7d blocks, and live HTTP rate-limit headers) and merges them with local usage.
 type Fetcher struct {
 	mu          sync.RWMutex
 	dataDir     string
 	getAccounts func() []config.AccountConfig
 	getUsage    func() usage.Summary
+	getSecret   func(accountID string) string
 	cache       map[string]AccountQuota
+	headerCache map[string]AccountQuota
 	updatedAt   time.Time
 	stopCh      chan struct{}
 	stopOnce    sync.Once
 	running     bool
 }
 
-func New(dataDir string, getAccounts func() []config.AccountConfig, getUsage func() usage.Summary) *Fetcher {
+func New(dataDir string, getAccounts func() []config.AccountConfig, getUsage func() usage.Summary, getSecret func(accountID string) string) *Fetcher {
 	return &Fetcher{
 		dataDir:     dataDir,
 		getAccounts: getAccounts,
 		getUsage:    getUsage,
+		getSecret:   getSecret,
 		cache:       make(map[string]AccountQuota),
+		headerCache: make(map[string]AccountQuota),
 		stopCh:      make(chan struct{}),
 	}
+}
+
+// RecordHTTPHeaders updates live rate-limit windows captured from upstream HTTP API responses.
+func (f *Fetcher) RecordHTTPHeaders(acct config.AccountConfig, h http.Header) {
+	prim, sec, ok := ParseHTTPHeaders(h, time.Now())
+	if !ok {
+		return
+	}
+	f.mu.Lock()
+	f.headerCache[acct.ID] = AccountQuota{
+		AccountID:   acct.ID,
+		AccountName: acct.Backend + "/" + acct.Name,
+		Backend:     acct.Backend,
+		Kind:        acct.Kind,
+		Source:      "headers-live",
+		PlanType:    "api",
+		Primary:     prim,
+		Secondary:   sec,
+		CheckedAt:   time.Now(),
+	}
+	f.mu.Unlock()
 }
 
 func (f *Fetcher) Start() {
@@ -149,6 +178,11 @@ func (f *Fetcher) RefreshOne(ctx context.Context, acct config.AccountConfig) Acc
 		CheckedAt:   time.Now(),
 	}
 
+	secretKey := ""
+	if f.getSecret != nil {
+		secretKey = f.getSecret(acct.ID)
+	}
+
 	switch acct.Backend {
 	case "codex":
 		if acct.Kind == config.KindACP || acct.Kind == config.KindCLI {
@@ -179,6 +213,55 @@ func (f *Fetcher) RefreshOne(ctx context.Context, acct config.AccountConfig) Acc
 				q.Kind = acct.Kind
 				q.CheckedAt = time.Now()
 			}
+		}
+	case "claude":
+		if acct.Kind == config.KindACP || acct.Kind == config.KindCLI {
+			cl := scanClaudeLocalUsage(acct, f.dataDir, time.Now())
+			if cl.ScannedOK {
+				q.Source = "claude-logs"
+				q.PlanType = "claude"
+				q.Local5h = cl.Msgs5h
+				q.Local7d = cl.Msgs7d
+				q.Tokens5h = cl.Tokens5h
+				q.Tokens7d = cl.Tokens7d
+				q.Credits = fmt.Sprintf("5h: %s tok · 7d: %s tok", FormatCompactTokens(cl.Tokens5h), FormatCompactTokens(cl.Tokens7d))
+			} else {
+				q.Source = "local-tracked"
+			}
+		}
+	case "deepseek":
+		if acct.Kind == config.KindAPIKey && secretKey != "" {
+			live, err := fetchDeepSeekBalance(ctx, acct, secretKey)
+			if err != nil {
+				q.Source = "local-tracked"
+				q.Error = err.Error()
+			} else {
+				q = live
+				q.AccountID = acct.ID
+				q.AccountName = acct.Backend + "/" + acct.Name
+				q.Backend = acct.Backend
+				q.Kind = acct.Kind
+				q.CheckedAt = time.Now()
+			}
+		} else {
+			q.Source = "local-tracked"
+		}
+	case "openrouter":
+		if acct.Kind == config.KindAPIKey && secretKey != "" {
+			live, err := fetchOpenRouterQuota(ctx, acct, secretKey)
+			if err != nil {
+				q.Source = "local-tracked"
+				q.Error = err.Error()
+			} else {
+				q = live
+				q.AccountID = acct.ID
+				q.AccountName = acct.Backend + "/" + acct.Name
+				q.Backend = acct.Backend
+				q.Kind = acct.Kind
+				q.CheckedAt = time.Now()
+			}
+		} else {
+			q.Source = "local-tracked"
 		}
 	default:
 		q.Source = "local-tracked"
@@ -220,10 +303,24 @@ func (f *Fetcher) Report() Report {
 			q.AccountName = key
 		}
 		if u, okU := usageByKey[key]; okU {
-			q.Local1h = u.Reqs1h
-			q.Local5h = u.Reqs5h
-			q.Local24h = u.Reqs24h
-			q.Local7d = u.Reqs7d
+			q.Local1h = max(q.Local1h, u.Reqs1h)
+			q.Local5h = max(q.Local5h, u.Reqs5h)
+			q.Local24h = max(q.Local24h, u.Reqs24h)
+			q.Local7d = max(q.Local7d, u.Reqs7d)
+			q.Tokens5h = max(q.Tokens5h, u.Tokens5h)
+			q.Tokens7d = max(q.Tokens7d, u.Tokens7d)
+		}
+		// Merge live HTTP rate-limit headers (Anthropic 5h/7d, OpenAI/Groq/Mistral x-ratelimit-*) if captured.
+		if hq, okH := f.headerCache[a.ID]; okH {
+			if q.Primary == nil && hq.Primary != nil {
+				q.Primary = hq.Primary
+				if q.Source == "" || q.Source == "local-tracked" {
+					q.Source = hq.Source
+				}
+			}
+			if q.Secondary == nil && hq.Secondary != nil {
+				q.Secondary = hq.Secondary
+			}
 		}
 		q.HourlyLimit = a.HourlyLimit
 		q.DailyLimit = a.DailyLimit
