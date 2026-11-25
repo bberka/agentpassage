@@ -103,52 +103,16 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		})
 
 	case "r":
-		return a, a.openEditModal("Rename Account", "New name for "+selected.Backend+"/"+selected.Name, selected.Name, func(val string) error {
-			if err := config.ValidateName(val); err != nil {
+		return a, a.openEditModal("Rename Account", "New name for "+selected.Backend+"/"+selected.Name+" (moves profile & updates routing)", selected.Name, func(val string) error {
+			if err := a.renameAccount(selected.ID, val); err != nil {
 				return err
 			}
-			cfg := a.srv.Config()
-			if acct := cfg.FindAccount(selected.ID); acct != nil {
-				acct.Name = val
-				_ = a.srv.ReloadConfig(cfg)
-				a.setStatus("Renamed account to "+val, false)
-			}
+			a.setStatus("Renamed account to "+selected.Backend+"/"+val, false)
 			return nil
 		})
 
 	case "e":
-		if selected.Kind == config.KindAPIKey {
-			return a, a.openEditModal("Edit Base URL", "Base URL for "+selected.Backend+"/"+selected.Name, selected.BaseURL, func(val string) error {
-				if val == "" {
-					return fmt.Errorf("base URL cannot be empty")
-				}
-				cfg := a.srv.Config()
-				if acct := cfg.FindAccount(selected.ID); acct != nil {
-					acct.BaseURL = val
-					_ = a.srv.ReloadConfig(cfg)
-					a.setStatus("Updated base URL for "+acct.Name, false)
-				}
-				return nil
-			})
-		}
-		return a, a.openEditModal("Edit Models", "Comma-separated models for "+selected.Backend+"/"+selected.Name, strings.Join(selected.Models, ","), func(val string) error {
-			cfg := a.srv.Config()
-			if acct := cfg.FindAccount(selected.ID); acct != nil {
-				var ms []string
-				for _, m := range strings.Split(val, ",") {
-					if m = strings.TrimSpace(m); m != "" {
-						ms = append(ms, m)
-					}
-				}
-				if len(ms) == 0 {
-					ms = []string{"default"}
-				}
-				acct.Models = ms
-				_ = a.srv.ReloadConfig(cfg)
-				a.setStatus("Updated models for "+acct.Name, false)
-			}
-			return nil
-		})
+		return a, a.openAccountEditor(selected)
 
 	case "H": // toggle UseHostProfile (isolated profile vs host ~/.claude / ~/.codex / ~/.gemini)
 		if selected.Kind == config.KindACP || selected.Kind == config.KindCLI {
@@ -245,7 +209,7 @@ func (a *App) viewAccounts(bodyHeight int) string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Accounts (%d)", len(accts)))+"   "+
-		a.styles.Muted.Render("M:models  m:pool/prefix  P:prefix  H:host/iso  l:login  t:test  p:perm  d:toggle  x:del"))
+		a.styles.Muted.Render("e:edit  r:rename  M/enter:models  m:pool/prefix  H:host/iso  l:login  t:test  d:toggle  x:del"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(accts) == 0 {

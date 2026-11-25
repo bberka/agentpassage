@@ -79,8 +79,26 @@ func TestTUIFullScreenScreensAndModals(t *testing.T) {
 	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 
-	// Open Accounts (2) -> M opens interactive Account Models Picker; Space toggles, Enter saves
+	// Open Accounts (2) -> e opens structured Account Editor modal (not comma-separated model text!)
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	if app.modal != modalEditAccount || !strings.Contains(app.View(), "Edit Account") {
+		t.Fatalf("expected Account Editor modal on 'e', got modal=%v", app.modal)
+	}
+	app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+	// Safe rename moves profile dir & updates routing rules
+	if _, err := config.EnsureProfileDir(dir, "agy", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.renameAccount("agy-a", "work"); err != nil {
+		t.Fatalf("renameAccount failed: %v", err)
+	}
+	if app.srv.Config().FindAccount("agy-work") == nil {
+		t.Fatalf("expected renamed account agy-work in config")
+	}
+
+	// Accounts -> M opens interactive Account Models Picker; Space toggles, Enter saves
 	app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("M")})
 	if app.modal != modalAccountModels || !strings.Contains(app.View(), "Models —") {
 		t.Fatalf("expected Account Models Picker modal on 'M', got modal=%v", app.modal)

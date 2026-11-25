@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 type Styles struct {
 	// Background tokens
@@ -228,7 +232,19 @@ func NewStyles(theme string) Styles {
 }
 
 func (s Styles) KeyHint(key, desc string) string {
-	return s.KeyCap.Render(key) + " " + s.KeyDesc.Render(desc)
+	sep := " "
+	if s.HasCanvasBg {
+		sep = lipgloss.NewStyle().Background(s.SurfaceBg).Render(" ")
+	}
+	return s.KeyCap.Render(key) + sep + s.KeyDesc.Render(desc)
+}
+
+func (s Styles) JoinHints(hints ...string) string {
+	sep := "   "
+	if s.HasCanvasBg {
+		sep = lipgloss.NewStyle().Background(s.SurfaceBg).Render("   ")
+	}
+	return strings.Join(hints, sep)
 }
 
 func (s Styles) Place(width, height int, hPos, vPos lipgloss.Position, content string) string {

@@ -49,6 +49,7 @@ const (
 	modalHelp
 	modalWelcome
 	modalAddAccount
+	modalEditAccount
 	modalAccountModels
 	modalInstalling
 	modalLoginPrompt
@@ -139,8 +140,9 @@ type App struct {
 	addAuthStyle string
 	addTesting   bool
 
-	// Interactive Model Picker (used both in Add Account Step 4 and Accounts -> M)
+	// Interactive Model Picker & Account Editor modals
 	modelPicker *modelPickerState
+	acctEditor  *accountEditorState
 
 	// Generic single-line text edit modal
 	editTitle    string
@@ -503,6 +505,9 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modalAddAccount:
 		return a.updateAddAccountModal(msg)
 
+	case modalEditAccount:
+		return a.updateAccountEditorModal(msg)
+
 	case modalAccountModels:
 		return a.updateAccountModelsModal(msg)
 
@@ -673,10 +678,10 @@ func (a *App) renderFooter() string {
 		case ScreenAccounts:
 			hints = []string{
 				a.styles.KeyHint("a", "add"),
+				a.styles.KeyHint("e", "edit"),
+				a.styles.KeyHint("r", "rename"),
 				a.styles.KeyHint("M", "models"),
-				a.styles.KeyHint("i", "install ACP"),
-				a.styles.KeyHint("m", "pool/prefix"),
-				a.styles.KeyHint("P", "prefix"),
+				a.styles.KeyHint("i", "install"),
 				a.styles.KeyHint("l", "login"),
 				a.styles.KeyHint("t", "test"),
 				a.styles.KeyHint("C", "connect"),
@@ -808,6 +813,9 @@ func (a *App) viewModal() string {
 
 	case modalAddAccount:
 		return a.viewAddAccountModal()
+
+	case modalEditAccount:
+		return a.viewAccountEditorModal()
 
 	case modalAccountModels:
 		return a.viewAccountModelsModal()
