@@ -114,6 +114,9 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 	)
 	if logs != nil {
 		logs.RegisterSecret(cfg.Server.LocalKey)
+		for _, k := range cfg.Server.APIKeys {
+			logs.RegisterSecret(k.Key)
+		}
 	}
 	pm.SetAutoDisableHook(func(accountID, reason string) {
 		s.mu.Lock()
@@ -160,6 +163,9 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	addr := s.listenOn
 	if s.logs != nil {
 		s.logs.RegisterSecret(cfg.Server.LocalKey)
+		for _, k := range cfg.Server.APIKeys {
+			s.logs.RegisterSecret(k.Key)
+		}
 	}
 	s.mu.Unlock()
 
@@ -583,14 +589,14 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /usage", s.handleUsageHub)
-	mux.HandleFunc("GET /admin/state", s.withAuth(s.handleAdminState))
-	mux.HandleFunc("GET /admin/logs", s.withAuth(s.handleAdminLogs))
-	mux.HandleFunc("GET /admin/usage", s.withAuth(s.handleAdminUsage))
-	mux.HandleFunc("GET /admin/quota", s.withAuth(s.handleAdminQuota))
-	mux.HandleFunc("POST /admin/quota/refresh", s.withAuth(s.handleAdminQuotaRefresh))
-	mux.HandleFunc("GET /admin/health", s.withAuth(s.handleAdminHealth))
-	mux.HandleFunc("POST /admin/health/check", s.withAuth(s.handleAdminHealthCheck))
-	mux.HandleFunc("POST /admin/reload", s.withAuth(s.handleAdminReload))
+	mux.HandleFunc("GET /admin/state", s.withAdminAuth(s.handleAdminState))
+	mux.HandleFunc("GET /admin/logs", s.withAdminAuth(s.handleAdminLogs))
+	mux.HandleFunc("GET /admin/usage", s.withAdminAuth(s.handleAdminUsage))
+	mux.HandleFunc("GET /admin/quota", s.withAdminAuth(s.handleAdminQuota))
+	mux.HandleFunc("POST /admin/quota/refresh", s.withAdminAuth(s.handleAdminQuotaRefresh))
+	mux.HandleFunc("GET /admin/health", s.withAdminAuth(s.handleAdminHealth))
+	mux.HandleFunc("POST /admin/health/check", s.withAdminAuth(s.handleAdminHealthCheck))
+	mux.HandleFunc("POST /admin/reload", s.withAdminAuth(s.handleAdminReload))
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleListModels))
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChatCompletions))
 	mux.HandleFunc("POST /v1/messages", s.withAuth(s.handleAnthropicMessages))
@@ -699,26 +705,76 @@ func (s *Server) FetchModelsWithKey(ctx context.Context, acct config.AccountConf
 	}
 }
 
+type authCtxKey struct{}
+
+type authPrincipal struct {
+	KeyName string
+	Role    string
+	Client  *config.ClientKey // nil for primary LocalKey (admin)
+}
+
+func (s *Server) authenticateRequest(r *http.Request) (*authPrincipal, bool) {
+	s.mu.RLock()
+	primary := s.cfg.Server.LocalKey
+	extra := append([]config.ClientKey(nil), s.cfg.Server.APIKeys...)
+	s.mu.RUnlock()
+
+	var token string
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
+			token = strings.TrimSpace(auth[7:])
+		}
+	}
+	if token == "" {
+		token = strings.TrimSpace(r.Header.Get("x-api-key"))
+	}
+	if token == "" {
+		return nil, false
+	}
+	if primary != "" && subtle.ConstantTimeCompare([]byte(token), []byte(primary)) == 1 {
+		return &authPrincipal{KeyName: "primary", Role: config.KeyRoleAdmin}, true
+	}
+	for i := range extra {
+		k := extra[i]
+		if k.Disabled || k.Key == "" {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(token), []byte(k.Key)) == 1 {
+			cp := k
+			return &authPrincipal{KeyName: k.Name, Role: k.EffectiveRole(), Client: &cp}, true
+		}
+	}
+	return nil, false
+}
+
+func principalFromContext(ctx context.Context) *authPrincipal {
+	p, _ := ctx.Value(authCtxKey{}).(*authPrincipal)
+	return p
+}
+
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.mu.RLock()
-		expected := s.cfg.Server.LocalKey
-		s.mu.RUnlock()
-
-		var token string
-		if auth := r.Header.Get("Authorization"); auth != "" {
-			if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
-				token = strings.TrimSpace(auth[7:])
-			}
-		}
-		if token == "" {
-			token = strings.TrimSpace(r.Header.Get("x-api-key"))
-		}
-		if expected == "" || subtle.ConstantTimeCompare([]byte(token), []byte(expected)) != 1 {
-			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing local acpx API key.")
+		p, ok := s.authenticateRequest(r)
+		if !ok {
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing acpx API key.")
 			return
 		}
-		next(w, r)
+		next(w, r.WithContext(context.WithValue(r.Context(), authCtxKey{}, p)))
+	}
+}
+
+func (s *Server) withAdminAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := s.authenticateRequest(r)
+		if !ok {
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid or missing acpx API key.")
+			return
+		}
+		if p.Role != config.KeyRoleAdmin {
+			writeOpenAIError(w, http.StatusForbidden, "insufficient_scope", "This API key has 'client' role; admin endpoints require an 'admin' key.")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), authCtxKey{}, p)))
 	}
 }
 
@@ -801,6 +857,9 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 	s.cfg = cfg
 	if s.logs != nil {
 		s.logs.RegisterSecret(cfg.Server.LocalKey)
+		for _, k := range cfg.Server.APIKeys {
+			s.logs.RegisterSecret(k.Key)
+		}
 	}
 	s.mu.Unlock()
 
@@ -825,9 +884,13 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 	models := s.router.ListModels(false)
+	p := principalFromContext(r.Context())
 	now := time.Now().Unix()
 	data := make([]map[string]any, 0, len(models))
 	for _, m := range models {
+		if p != nil && p.Client != nil && !p.Client.AllowsModel(m.ID) {
+			continue
+		}
 		owner := m.Backend
 		if m.AccountName != "" {
 			owner = m.Backend + "/" + m.AccountName
@@ -933,6 +996,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		RawOpenAIBody: rawBody,
 	}
 
+	if p := principalFromContext(r.Context()); p != nil && p.Client != nil && !p.Client.AllowsModel(req.Model) {
+		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", fmt.Sprintf("API key %q is not allowed to access model %q.", p.KeyName, req.Model))
+		return
+	}
 	plan, err := s.router.Resolve(req.Model)
 	if err != nil {
 		s.logRequest(r, req.Model, "", http.StatusNotFound, start, err)

@@ -57,6 +57,8 @@ const (
 	modalLoginPrompt
 	modalConnect
 	modalService
+	modalAPIKeys
+	modalRemoteGuide
 	modalConfirmDelete
 	modalSubStrategyWarn
 	modalEditText
@@ -134,6 +136,9 @@ type App struct {
 	connectCursor        int
 	connectConfirmAction string // "", "connect", "disconnect", "disconnect_all"
 	connectConfirmTarget connect.Target
+
+	// API Keys modal cursor
+	keyCursor int
 
 	// Cached OS background service status (refreshed asynchronously)
 	svcStatus service.StatusInfo
@@ -577,6 +582,12 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modalService:
 		return a.updateServiceModal(msg)
 
+	case modalAPIKeys:
+		return a.updateKeysModal(msg)
+
+	case modalRemoteGuide:
+		return a.updateRemoteModal(msg)
+
 	case modalConfirmDelete:
 		switch msg.String() {
 		case "y", "Y", "enter":
@@ -887,6 +898,12 @@ func (a *App) viewModal() string {
 
 	case modalService:
 		return a.viewServiceModal()
+
+	case modalAPIKeys:
+		return a.viewKeysModal()
+
+	case modalRemoteGuide:
+		return a.viewRemoteModal()
 
 	case modalConfirmDelete:
 		cardW := clamp(a.width-16, 48, 68)

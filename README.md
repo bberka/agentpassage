@@ -70,7 +70,13 @@ See the [Quickstart Guide](docs/quickstart.md) for end-to-end examples with Deep
 | `acpx acp` | Run `acpx` as a native ACP stdio server (register directly in T3 Code / Zed) |
 | `acpx add [--expose pool\|prefix\|both] [--prefix a-]` | Add an API-key or ACP account |
 | `acpx install <tool\|all>` | Install ACP CLI/adapter from the 45+ agent registry |
-| `acpx connect [t3code\|opencode\|codex\|claude\|pi\|grok\|cursor\|cline]` | Register `acpx` into coding CLIs & T3 Code |
+| `acpx connect [t3code\|zed\|vscode\|jetbrains\|...]` | Connect IDEs & coding CLIs (with confirmation preview) |
+| `acpx disconnect <client\|all>` | Cleanly remove `acpx` from connected IDEs & CLIs |
+| `acpx uninstall [--purge]` | Disconnect all IDEs/CLIs and uninstall the background service |
+| `acpx keys [list\|create\|enable\|disable\|revoke]` | Manage multiple client/admin API keys (with optional model scoping) |
+| `acpx remote` | Show Tailscale Serve & Cloudflare Tunnel remote access commands |
+| `acpx usage [--refresh] [--json]` | Show Usage Report Hub URL, traffic stats, and live hourly/weekly limits |
+| `acpx health [--json] [account]` | Run live health probes across configured accounts |
 | `acpx registry sync` | Refresh official ACP Registry agent index |
 | `acpx list [--json]` | List configured accounts and merged models |
 | `acpx doctor` | Check data dir, secret store, installed ACP CLIs, and accounts |
@@ -79,7 +85,7 @@ See the [Quickstart Guide](docs/quickstart.md) for end-to-end examples with Deep
 
 ## TUI Navigation
 
-- `1`–`6` or `Tab` / `Shift+Tab`: Switch screens (**Dashboard**, **Accounts**, **Models**, **Routing**, **Logs**, **Settings**)
+- `1`–`7` or `Tab` / `Shift+Tab`: Switch screens (**Dashboard**, **Accounts**, **Models**, **Routing**, **Logs**, **Usage**, **Settings**)
 - `?`: Help overlay
 - `/`: Filter current list
 - `q`: Back to Dashboard / Quit from Dashboard
@@ -92,6 +98,7 @@ See the [Quickstart Guide](docs/quickstart.md) for end-to-end examples with Deep
 - [Quickstart Guide](docs/quickstart.md)
 - [ACP Backends & Custom Descriptors](docs/acp-backends.md)
 - [Routing, Pools & Security](docs/routing-and-security.md)
+- [Remote Access (Tailscale & Cloudflare Tunnel)](docs/remote-access.md)
 - [HTTP API Reference](docs/api-reference.md)
 
 ## License

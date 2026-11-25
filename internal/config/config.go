@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -68,11 +70,53 @@ type CatalogConfig struct {
 	ShowEffortVariants   bool `toml:"show_effort_variants,omitempty"`   // expand -low/-medium/-high/[xhigh] as separate models (default false = grouped into thinking effort levels)
 }
 
+const (
+	KeyRoleClient = "client" // /v1/* inference endpoints only (recommended for remote devices/tunnels)
+	KeyRoleAdmin  = "admin"  // full access including /admin/* and Usage Hub
+)
+
+type ClientKey struct {
+	ID        string   `toml:"id" json:"id"`
+	Name      string   `toml:"name" json:"name"`
+	Key       string   `toml:"key" json:"key"`
+	Role      string   `toml:"role,omitempty" json:"role,omitempty"`     // "client" (default) or "admin"
+	Models    []string `toml:"models,omitempty" json:"models,omitempty"` // optional glob allowlist (empty = all)
+	Disabled  bool     `toml:"disabled,omitempty" json:"disabled,omitempty"`
+	CreatedAt string   `toml:"created_at,omitempty" json:"created_at,omitempty"`
+}
+
+func (k ClientKey) EffectiveRole() string {
+	if strings.EqualFold(k.Role, KeyRoleAdmin) {
+		return KeyRoleAdmin
+	}
+	return KeyRoleClient
+}
+
+func (k ClientKey) AllowsModel(modelID string) bool {
+	if len(k.Models) == 0 {
+		return true
+	}
+	for _, pat := range k.Models {
+		pat = strings.TrimSpace(pat)
+		if pat == "" || pat == "*" {
+			return true
+		}
+		if pat == modelID {
+			return true
+		}
+		if ok, _ := path.Match(pat, modelID); ok {
+			return true
+		}
+	}
+	return false
+}
+
 type ServerConfig struct {
-	Bind        string `toml:"bind"`
-	Port        int    `toml:"port"`
-	LocalKey    string `toml:"local_key"`
-	AllowRemote bool   `toml:"allow_remote"`
+	Bind        string      `toml:"bind"`
+	Port        int         `toml:"port"`
+	LocalKey    string      `toml:"local_key"`
+	APIKeys     []ClientKey `toml:"api_keys,omitempty"`
+	AllowRemote bool        `toml:"allow_remote"`
 }
 
 type UIConfig struct {
@@ -377,6 +421,14 @@ func (c *Config) Normalize() {
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		c.Server.Port = DefaultPort
 	}
+	for i := range c.Server.APIKeys {
+		if c.Server.APIKeys[i].ID == "" {
+			c.Server.APIKeys[i].ID = SanitizeSlug(c.Server.APIKeys[i].Name)
+		}
+		if c.Server.APIKeys[i].Role == "" {
+			c.Server.APIKeys[i].Role = KeyRoleClient
+		}
+	}
 	if c.Server.LocalKey == "" {
 		c.Server.LocalKey = GenerateLocalKey()
 	}
@@ -511,4 +563,62 @@ func (c *Config) BaseURL() string {
 		host = "[" + host + "]"
 	}
 	return fmt.Sprintf("http://%s:%d/v1", host, c.Server.Port)
+}
+
+func (c *Config) AddAPIKey(name, role string, models []string) (ClientKey, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ClientKey{}, fmt.Errorf("key name is required")
+	}
+	if err := ValidateName(name); err != nil {
+		return ClientKey{}, err
+	}
+	id := SanitizeSlug(name)
+	for _, existing := range c.Server.APIKeys {
+		if existing.ID == id || strings.EqualFold(existing.Name, name) {
+			return ClientKey{}, fmt.Errorf("API key %q already exists", name)
+		}
+	}
+	if strings.EqualFold(role, KeyRoleAdmin) {
+		role = KeyRoleAdmin
+	} else {
+		role = KeyRoleClient
+	}
+	var cleanModels []string
+	for _, m := range models {
+		if m = strings.TrimSpace(m); m != "" {
+			cleanModels = append(cleanModels, m)
+		}
+	}
+	ck := ClientKey{
+		ID:        id,
+		Name:      name,
+		Key:       GenerateLocalKey(),
+		Role:      role,
+		Models:    cleanModels,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	c.Server.APIKeys = append(c.Server.APIKeys, ck)
+	return ck, nil
+}
+
+func (c *Config) FindAPIKey(idOrName string) *ClientKey {
+	q := strings.TrimSpace(idOrName)
+	for i := range c.Server.APIKeys {
+		if c.Server.APIKeys[i].ID == q || strings.EqualFold(c.Server.APIKeys[i].Name, q) {
+			return &c.Server.APIKeys[i]
+		}
+	}
+	return nil
+}
+
+func (c *Config) DeleteAPIKey(idOrName string) bool {
+	q := strings.TrimSpace(idOrName)
+	for i := range c.Server.APIKeys {
+		if c.Server.APIKeys[i].ID == q || strings.EqualFold(c.Server.APIKeys[i].Name, q) {
+			c.Server.APIKeys = append(c.Server.APIKeys[:i], c.Server.APIKeys[i+1:]...)
+			return true
+		}
+	}
+	return false
 }

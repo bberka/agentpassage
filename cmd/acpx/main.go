@@ -66,6 +66,10 @@ func run(args []string) error {
 			return cmdDisconnect(args[1:])
 		case "uninstall":
 			return cmdUninstall(args[1:])
+		case "keys":
+			return cmdKeys(args[1:])
+		case "remote":
+			return cmdRemote(args[1:])
 		case "registry":
 			return cmdRegistry(args[1:])
 		case "export-env":
@@ -121,6 +125,8 @@ Usage:
   acpx connect [client...]     Connect T3 Code, Zed, VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude, Pi, Grok, Aider...
   acpx disconnect <client|all> Cleanly remove acpx from one or all connected IDEs & CLIs
   acpx uninstall [--yes]       Disconnect all IDEs/CLIs and uninstall the background service
+  acpx keys [list|create|enable|disable|revoke]  Manage multiple client/admin API keys
+  acpx remote                  Show Tailscale Serve & Cloudflare Tunnel remote access setup
   acpx registry sync           Fetch latest official ACP Registry JSON
   acpx export-env [--shell sh] Print shell exports for OpenAI/Anthropic clients
   acpx version                 Print version
@@ -1266,6 +1272,194 @@ func cmdUninstall(args []string) error {
 	if exe, err := os.Executable(); err == nil {
 		fmt.Printf("To remove the binary itself: rm %s\n", exe)
 	}
+	return nil
+}
+
+func cmdKeys(args []string) error {
+	dataDir, cfg, _, _, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	sub := "list"
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		sub = args[0]
+		args = args[1:]
+	}
+
+	switch sub {
+	case "list", "ls":
+		reveal := false
+		asJSON := false
+		for _, a := range args {
+			if a == "--reveal" || a == "-r" {
+				reveal = true
+			} else if a == "--json" {
+				asJSON = true
+			}
+		}
+		if asJSON {
+			type keyOut struct {
+				Name     string   `json:"name"`
+				Role     string   `json:"role"`
+				Disabled bool     `json:"disabled"`
+				Models   []string `json:"models,omitempty"`
+				Key      string   `json:"key"`
+			}
+			out := []keyOut{{Name: "primary", Role: config.KeyRoleAdmin, Key: secrets.Mask(cfg.Server.LocalKey)}}
+			if reveal {
+				out[0].Key = cfg.Server.LocalKey
+			}
+			for _, k := range cfg.Server.APIKeys {
+				val := secrets.Mask(k.Key)
+				if reveal {
+					val = k.Key
+				}
+				out = append(out, keyOut{Name: k.Name, Role: k.EffectiveRole(), Disabled: k.Disabled, Models: k.Models, Key: val})
+			}
+			return json.NewEncoder(os.Stdout).Encode(out)
+		}
+
+		fmtKey := func(k string) string {
+			if reveal {
+				return k
+			}
+			return secrets.Mask(k)
+		}
+		fmt.Printf("API Keys (%d total):\n", 1+len(cfg.Server.APIKeys))
+		fmt.Printf("  %-18s %-8s %-10s %-26s %s\n", "NAME", "ROLE", "STATUS", "KEY", "MODELS")
+		fmt.Printf("  %-18s %-8s %-10s %-26s %s\n", "primary", "admin", "active", fmtKey(cfg.Server.LocalKey), "all")
+		for _, k := range cfg.Server.APIKeys {
+			st := "active"
+			if k.Disabled {
+				st = "disabled"
+			}
+			mods := "all"
+			if len(k.Models) > 0 {
+				mods = strings.Join(k.Models, ",")
+			}
+			fmt.Printf("  %-18s %-8s %-10s %-26s %s\n", k.Name, k.EffectiveRole(), st, fmtKey(k.Key), mods)
+		}
+		return nil
+
+	case "create", "add", "new":
+		role := config.KeyRoleClient
+		var models []string
+		name := ""
+		for i := 0; i < len(args); i++ {
+			switch args[i] {
+			case "--role":
+				if i+1 < len(args) {
+					i++
+					role = args[i]
+				}
+			case "--models":
+				if i+1 < len(args) {
+					i++
+					for _, m := range strings.Split(args[i], ",") {
+						if m = strings.TrimSpace(m); m != "" {
+							models = append(models, m)
+						}
+					}
+				}
+			default:
+				if !strings.HasPrefix(args[i], "-") && name == "" {
+					name = args[i]
+				}
+			}
+		}
+		if name == "" {
+			return fmt.Errorf("usage: acpx keys create <name> [--role client|admin] [--models a,b]")
+		}
+		ck, err := cfg.AddAPIKey(name, role, models)
+		if err != nil {
+			return err
+		}
+		if err := config.Save(dataDir, cfg); err != nil {
+			return err
+		}
+		reloaded := ""
+		if gateway.NotifyRunningDaemon(cfg) {
+			reloaded = " (hot-reloaded running service)"
+		}
+		fmt.Printf("Created API key %q (role=%s)%s:\n", ck.Name, ck.Role, reloaded)
+		fmt.Printf("  %s\n", ck.Key)
+		if len(ck.Models) > 0 {
+			fmt.Printf("  Allowed models: %s\n", strings.Join(ck.Models, ", "))
+		}
+		return nil
+
+	case "enable", "disable":
+		if len(args) == 0 {
+			return fmt.Errorf("usage: acpx keys %s <name>", sub)
+		}
+		ck := cfg.FindAPIKey(args[0])
+		if ck == nil {
+			return fmt.Errorf("API key %q not found", args[0])
+		}
+		ck.Disabled = sub == "disable"
+		if err := config.Save(dataDir, cfg); err != nil {
+			return err
+		}
+		gateway.NotifyRunningDaemon(cfg)
+		fmt.Printf("API key %q %sd.\n", ck.Name, sub)
+		return nil
+
+	case "revoke", "delete", "rm":
+		if len(args) == 0 {
+			return fmt.Errorf("usage: acpx keys revoke <name>")
+		}
+		if !cfg.DeleteAPIKey(args[0]) {
+			return fmt.Errorf("API key %q not found", args[0])
+		}
+		if err := config.Save(dataDir, cfg); err != nil {
+			return err
+		}
+		gateway.NotifyRunningDaemon(cfg)
+		fmt.Printf("Revoked API key %q.\n", args[0])
+		return nil
+
+	default:
+		return fmt.Errorf("usage: acpx keys [list [--reveal|--json] | create <name> [--role client|admin] [--models a,b] | enable <name> | disable <name> | revoke <name>]")
+	}
+}
+
+func cmdRemote(_ []string) error {
+	_, cfg, _, _, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+
+	port := cfg.Server.Port
+	fmt.Printf(`acpx Remote Access Guide (listening locally on 127.0.0.1:%d)
+
+Keep acpx bound to 127.0.0.1 — let Tailscale or Cloudflare terminate HTTPS safely.
+
+1. Create a dedicated client-role key per remote device (blocks /admin/* & /usage):
+   acpx keys create laptop --role client
+
+2. Option A — Tailscale Serve (Private Tailnet HTTPS — Recommended):
+   tailscale serve --bg --https=443 http://127.0.0.1:%d
+   # Check your HTTPS URL:
+   tailscale serve status
+   # Point remote clients to: https://<host>.<tailnet>.ts.net/v1
+
+3. Option B — Cloudflare Tunnel (Public HTTPS, Zero Open Ports):
+   # Quick test tunnel:
+   cloudflared tunnel --url http://127.0.0.1:%d
+
+   # Permanent custom domain (e.g. https://ai.yourdomain.com/v1):
+   cloudflared tunnel login
+   cloudflared tunnel create acpx
+   cloudflared tunnel route dns acpx ai.yourdomain.com
+   # Add ingress in ~/.cloudflared/config.yml -> service: http://127.0.0.1:%d
+   # Run as service: sudo cloudflared service install
+
+Full step-by-step guide (including Cloudflare Access hardening & streaming config):
+   docs/remote-access.md
+`, port, port, port, port)
 	return nil
 }
 

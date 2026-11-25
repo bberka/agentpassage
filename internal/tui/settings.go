@@ -14,7 +14,7 @@ import (
 	"github.com/bberka/acpx/internal/service"
 )
 
-const settingsCount = 9
+const settingsCount = 11
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -157,6 +157,10 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				a.setStatus(fmt.Sprintf("Background health check interval set to %s", formatHealthInterval(next)), false)
 			}
+		case 9: // Manage Multiple API Keys
+			a.openKeysModal()
+		case 10: // Remote Access Guide (Tailscale & Cloudflare Tunnel)
+			a.openRemoteModal()
 		}
 	case "S":
 		// Uninstall background service when on Settings
@@ -206,6 +210,8 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Background Service", svcVal},
 		{"Auto-Start on Login", autoStartVal},
 		{"Health Check", healthVal},
+		{"API Keys", fmt.Sprintf("1 primary + %d client key(s)   (enter to create/revoke keys)", len(cfg.Server.APIKeys))},
+		{"Remote Access", "Tailscale Serve & Cloudflare Tunnel setup guide   (enter to open)"},
 	}
 
 	var lines []string

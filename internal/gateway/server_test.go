@@ -228,6 +228,66 @@ func TestGatewayOpenAIAndAnthropicEndpoints(t *testing.T) {
 	if !strings.Contains(string(body), `"account_name":"deepseek/default"`) || !strings.Contains(string(body), `"local_5h_reqs":4`) {
 		t.Fatalf("expected deepseek/default with local_5h_reqs=4 in /admin/quota, got %s", body)
 	}
+
+	// 10. Multiple API Keys: client role allowed on /v1/*, blocked on /admin/*, model allowlist enforced
+	clientKey, err := cfg.AddAPIKey("laptop", config.KeyRoleClient, []string{"deepseek/*"})
+	if err != nil {
+		t.Fatalf("AddAPIKey failed: %v", err)
+	}
+	restrictedKey, err := cfg.AddAPIKey("phone", config.KeyRoleClient, []string{"other-model"})
+	if err != nil {
+		t.Fatalf("AddAPIKey failed: %v", err)
+	}
+	adminKey2, err := cfg.AddAPIKey("ops", config.KeyRoleAdmin, nil)
+	if err != nil {
+		t.Fatalf("AddAPIKey failed: %v", err)
+	}
+
+	// Client key works on /v1/models
+	req, _ = http.NewRequest("GET", ts.URL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+clientKey.Key)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("client key /v1/models failed: %v %d", err, res.StatusCode)
+	}
+	res.Body.Close()
+
+	// Client key blocked (403) on /admin/state
+	req, _ = http.NewRequest("GET", ts.URL+"/admin/state", nil)
+	req.Header.Set("Authorization", "Bearer "+clientKey.Key)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for client key on /admin/state, got %v %d", err, res.StatusCode)
+	}
+	res.Body.Close()
+
+	// Restricted key blocked (403) on disallowed model
+	req, _ = http.NewRequest("POST", ts.URL+"/v1/chat/completions", bytes.NewBufferString(chatPayload))
+	req.Header.Set("Authorization", "Bearer "+restrictedKey.Key)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 for restricted key on deepseek/deepseek-chat, got %v %d", err, res.StatusCode)
+	}
+	res.Body.Close()
+
+	// Secondary admin key allowed on /admin/state
+	req, _ = http.NewRequest("GET", ts.URL+"/admin/state", nil)
+	req.Header.Set("Authorization", "Bearer "+adminKey2.Key)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != 200 {
+		t.Fatalf("expected 200 for secondary admin key on /admin/state, got %v %d", err, res.StatusCode)
+	}
+	res.Body.Close()
+
+	// Disabled key rejected with 401
+	cfg.FindAPIKey("laptop").Disabled = true
+	req, _ = http.NewRequest("GET", ts.URL+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+clientKey.Key)
+	res, err = http.DefaultClient.Do(req)
+	if err != nil || res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for disabled key, got %v %d", err, res.StatusCode)
+	}
+	res.Body.Close()
 }
 
 func TestGatewayFailover5xxVsNoFailover429(t *testing.T) {

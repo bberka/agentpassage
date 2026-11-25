@@ -84,6 +84,10 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		HasTools:    len(req.Tools) > 0,
 	}
 
+	if p := principalFromContext(r.Context()); p != nil && p.Client != nil && !p.Client.AllowsModel(req.Model) {
+		writeAnthropicError(w, http.StatusForbidden, "permission_error", fmt.Sprintf("API key %q is not allowed to access model %q.", p.KeyName, req.Model))
+		return
+	}
 	plan, err := s.router.Resolve(req.Model)
 	if err != nil {
 		s.logRequest(r, req.Model, "", http.StatusNotFound, start, err)
