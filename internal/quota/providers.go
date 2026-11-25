@@ -838,6 +838,8 @@ func fetchAgyQuota(ctx context.Context, acct config.AccountConfig, dataDir strin
 		}
 		env = setEnvVar(env, "HOME", pdir)
 		env = setEnvVar(env, "XDG_CONFIG_HOME", filepath.Join(pdir, ".config"))
+		env = setEnvVar(env, "AGY_ACP_FORCE_FILE_STORAGE", "1")
+		env = setEnvVar(env, "DBUS_SESSION_BUS_ADDRESS", "disabled:")
 	}
 	for k, v := range acct.CustomEnv {
 		env = setEnvVar(env, k, v)

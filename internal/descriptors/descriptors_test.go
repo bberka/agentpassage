@@ -32,18 +32,23 @@ default_models: ["m1", "m2"]
 		t.Fatalf("unexpected load errs: %v", errs)
 	}
 
-	// Verify agy uses relative flags + isolated HOME={profile} (prevents "must not be absolute" error)
+	// Verify agy uses isolated file-backed storage + HOME={profile} (prevents shared OS keyring collisions!)
 	agy, ok := reg.GetACP("agy")
 	if !ok {
 		t.Fatalf("missing built-in agy descriptor")
 	}
 	gotAgy := agy.ExpandCommand("/tmp/prof", nil)
-	wantAgy := []string{"agy", "acp", "--app-data-dir", "acpx-prof", "--gemini-dir", ".gemini"}
+	wantAgy := []string{"agy", "acp", "--app-data-dir", "antigravity-cli"}
 	if !reflect.DeepEqual(gotAgy, wantAgy) {
 		t.Fatalf("agy expand mismatch: got=%v want=%v", gotAgy, wantAgy)
 	}
 	gotEnv := agy.ExpandEnv("/tmp/prof", nil)
-	wantEnv := []string{"HOME=/tmp/prof", "XDG_CONFIG_HOME=/tmp/prof/.config"}
+	wantEnv := []string{
+		"AGY_ACP_FORCE_FILE_STORAGE=1",
+		"DBUS_SESSION_BUS_ADDRESS=disabled:",
+		"HOME=/tmp/prof",
+		"XDG_CONFIG_HOME=/tmp/prof/.config",
+	}
 	if !reflect.DeepEqual(gotEnv, wantEnv) {
 		t.Fatalf("agy env mismatch: got=%v want=%v", gotEnv, wantEnv)
 	}

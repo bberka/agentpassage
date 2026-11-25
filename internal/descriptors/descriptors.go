@@ -63,16 +63,21 @@ func BuiltInACP() []ACPDescriptor {
 			Name:        "Google Antigravity",
 			Description: "Google's AI coding agent (official agy CLI)",
 			Detect:      "agy",
-			Command:     []string{"agy", "acp"},
-			// NOTE: agy acp requires RELATIVE names for --app-data-dir and --gemini-dir;
-			// using acpx-{account} gives each account a unique keyring/app-data namespace,
-			// while HOME={profile} isolates all files inside {profile}/.gemini/.
-			ProfileArgs: []string{"--app-data-dir", "acpx-{account}", "--gemini-dir", ".gemini"},
+			Command: []string{"agy", "acp"},
+			// NOTE: On Linux, agy's ChainedAuth checks the shared desktop D-Bus keyring first,
+			// which would make all agy accounts overwrite and share a single Google login!
+			// Setting AGY_ACP_FORCE_FILE_STORAGE=1 + DBUS_SESSION_BUS_ADDRESS=disabled: forces
+			// per-profile file-backed credentials under HOME={profile}/.gemini/antigravity-cli
+			// so each Google account (Free, Plus, Pro, Ultra) stays genuinely isolated AND
+			// shares the exact same directory with `agy --print /usage`.
+			ProfileArgs: []string{"--app-data-dir", "antigravity-cli"},
 			ProfileEnv: map[string]string{
-				"HOME":            "{profile}",
-				"XDG_CONFIG_HOME": "{profile}/.config",
+				"HOME":                       "{profile}",
+				"XDG_CONFIG_HOME":            "{profile}/.config",
+				"AGY_ACP_FORCE_FILE_STORAGE": "1",
+				"DBUS_SESSION_BUS_ADDRESS":   "disabled:",
 			},
-			Login:       []string{"agy", "acp", "--login", "--app-data-dir", "acpx-{account}", "--gemini-dir", ".gemini"},
+			Login: []string{"agy", "acp", "--login", "--app-data-dir", "antigravity-cli"},
 			InstallNote: "Install Google Antigravity CLI (agy) from your Antigravity installer.",
 			DefaultModels: []string{
 				"default",
