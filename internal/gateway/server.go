@@ -194,13 +194,15 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	if err := config.Save(s.dataDir, cfg); err != nil {
 		return err
 	}
-	// If attached to a running background daemon, ask it to hot-reload from disk!
+	// If attached to a running background daemon, ask it to hot-reload from disk and refresh snapshots/banners immediately!
 	if attached && addr != "" {
 		key := prevKey
 		if key == "" {
 			key = cfg.Server.LocalKey
 		}
-		_ = s.notifyRemoteReload(addr, key)
+		if err := s.notifyRemoteReload(addr, key); err == nil {
+			s.SyncFromDaemon()
+		}
 	}
 	return nil
 }
@@ -929,7 +931,12 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
+	prevAccounts := make(map[string]config.AccountConfig, len(s.cfg.Accounts))
+	for _, a := range s.cfg.Accounts {
+		prevAccounts[a.ID] = a
+	}
 	s.cfg = cfg
+	s.privacy = privacy.NewFilter(cfg.Privacy)
 	if s.logs != nil {
 		s.logs.RegisterSecret(cfg.Server.LocalKey)
 		for _, k := range cfg.Server.APIKeys {
@@ -943,6 +950,16 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 	}
 	s.router.UpdateConfig(cfg)
 	s.pool.SyncAccounts(cfg.Accounts)
+	// Stop stale ACP workers when an account is re-enabled or its profile mode changed so it picks up fresh auth.
+	for _, a := range cfg.Accounts {
+		if a.Kind != config.KindACP {
+			continue
+		}
+		prev, existed := prevAccounts[a.ID]
+		if !existed || (!prev.Enabled && a.Enabled) || prev.UseHostProfile != a.UseHostProfile || (prev.DisabledReason != "" && a.DisabledReason == "") {
+			s.acpBE.StopAccount(a.ID)
+		}
+	}
 	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)
 	if s.health != nil {
 		s.health.UpdateConfig(cfg.Health)

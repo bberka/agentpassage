@@ -148,4 +148,24 @@ func TestHealthCooldownAuthDisableAndFailoverRules(t *testing.T) {
 	if len(banners) != 1 || banners[0].AccountID != "agy-2" {
 		t.Fatalf("expected health banner after repeated 401, got %+v", banners)
 	}
+
+	// RecordSuccess clears stale auth/disable banner
+	m.RecordSuccess("agy-2")
+	if got := m.Banners(); len(got) != 0 {
+		t.Fatalf("expected RecordSuccess to clear banner, got %+v", got)
+	}
+
+	// Banner loaded from DisabledReason on daemon startup must clear once SyncAccounts re-enables the account
+	m2 := NewManager([]config.AccountConfig{
+		{ID: "agy-bb", Name: "bb", Backend: "agy", Enabled: false, DisabledReason: "Disabled after repeated auth errors (401)", MaxConcurrency: 1},
+	})
+	if len(m2.Banners()) != 1 {
+		t.Fatalf("expected startup banner from DisabledReason")
+	}
+	m2.SyncAccounts([]config.AccountConfig{
+		{ID: "agy-bb", Name: "bb", Backend: "agy", Enabled: true, DisabledReason: "", MaxConcurrency: 1},
+	})
+	if got := m2.Banners(); len(got) != 0 {
+		t.Fatalf("expected SyncAccounts with Enabled=true to clear stale banner, got %+v", got)
+	}
 }

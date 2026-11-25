@@ -420,6 +420,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(msg.models) > 0 {
 				acct.MergeDiscoveredModels(msg.models)
 			}
+			if acct.DisabledReason != "" {
+				acct.Enabled = true
+				acct.DisabledReason = ""
+			}
 			a.srv.Pool().ClearHealth(acct.ID)
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus(fmt.Sprintf("Account %s OK (%d enabled / %d total models)", acct.Name, len(acct.Models), len(acct.AvailableModels)), false)
@@ -436,12 +440,11 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.srv.Pool().ClearHealth(msg.accountID)
 			cfg := a.srv.Config()
 			if acct := cfg.FindAccount(msg.accountID); acct != nil {
-				if !acct.Enabled && strings.Contains(strings.ToLower(acct.DisabledReason), "auth") {
-					acct.Enabled = true
-					acct.DisabledReason = ""
-				}
+				acct.Enabled = true
+				acct.DisabledReason = ""
 				_ = a.srv.ReloadConfig(cfg)
-				a.setStatus("Login finished for "+acct.Backend+"/"+acct.Name+" — press 't' to test.", false)
+				a.setStatus("Login finished for "+acct.Backend+"/"+acct.Name+" — testing & fetching models...", false)
+				return a, a.testAccountCmd(*acct)
 			} else {
 				a.setStatus("Login finished — press 't' on Accounts to test.", false)
 			}

@@ -121,15 +121,19 @@ func (m *Manager) SyncAccounts(accounts []config.AccountConfig) {
 			st = &runtimeState{}
 			m.states[a.ID] = st
 		}
-		// If user re-enabled an account, clear auto-disable banner & auth counters.
-		if a.Enabled && st.autoDisabled {
-			st.autoDisabled = false
-			st.loginNeeded = false
-			st.consecutiveAuthErr = 0
-			st.banner = ""
-		}
-		if !a.Enabled && a.DisabledReason != "" && st.banner == "" {
+		// If account is enabled, clear any stale auto-disable / auth banner state
+		// (including banners loaded from DisabledReason on daemon startup).
+		if a.Enabled {
+			if st.autoDisabled || st.loginNeeded || st.banner != "" {
+				st.autoDisabled = false
+				st.loginNeeded = false
+				st.consecutiveAuthErr = 0
+				st.banner = ""
+			}
+		} else if a.DisabledReason != "" {
 			st.banner = a.DisabledReason
+		} else {
+			st.banner = ""
 		}
 	}
 	for id := range m.accounts {
@@ -354,7 +358,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	}, nil
 }
 
-// RecordSuccess resets transient auth/429 counters for the account.
+// RecordSuccess resets transient auth/429 counters and clears any stale auth/disable banner.
 func (m *Manager) RecordSuccess(accountID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -362,6 +366,8 @@ func (m *Manager) RecordSuccess(accountID string) {
 		st.consecutive429 = 0
 		st.consecutiveAuthErr = 0
 		st.loginNeeded = false
+		st.autoDisabled = false
+		st.banner = ""
 		st.lastError = ""
 	}
 }
