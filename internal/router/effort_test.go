@@ -91,3 +91,43 @@ func TestGroupEffortVariantsAndResolve(t *testing.T) {
 		t.Fatalf("expected high, got %q", got)
 	}
 }
+
+func TestAccountModelEffortsFallback(t *testing.T) {
+	claudeAcct := config.AccountConfig{
+		ID:           "claude-main",
+		Name:         "main",
+		Backend:      "claude",
+		Kind:         config.KindACP,
+		Enabled:      true,
+		Models:       []string{"opus", "sonnet", "claude-fable-5-2"},
+		ModelEfforts: map[string][]string{"*": {"low", "medium", "high", "xhigh", "max"}},
+	}
+	agyAcct := config.AccountConfig{
+		ID:           "agy-main",
+		Name:         "main",
+		Backend:      "agy",
+		Kind:         config.KindACP,
+		Enabled:      true,
+		Models:       []string{"gemini-4-neon", "gemini-4-neon-low", "gemini-4-neon-high", "gpt-oss-120b-medium"},
+		ModelEfforts: map[string][]string{"*": {"low", "medium", "high", "xhigh"}},
+	}
+
+	cfg := config.Default()
+	cfg.Accounts = []config.AccountConfig{claudeAcct, agyAcct}
+	r := router.New(cfg)
+	list := r.ListModels(false)
+	byID := make(map[string]router.ModelEntry, len(list))
+	for _, m := range list {
+		byID[m.ID] = m
+	}
+	if !reflect.DeepEqual(byID["claude/opus"].Efforts, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("expected claude/opus to inherit account-wide thought_level efforts, got %v", byID["claude/opus"].Efforts)
+	}
+	if !reflect.DeepEqual(byID["claude/claude-fable-5-2"].Efforts, []string{"low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("expected claude/claude-fable-5-2 to inherit account-wide thought_level efforts, got %v", byID["claude/claude-fable-5-2"].Efforts)
+	}
+	// agy has suffixed effort variants, so gpt-oss-120b-medium must NOT falsely inherit "*" efforts.
+	if len(byID["agy/gpt-oss-120b-medium"].Efforts) != 0 {
+		t.Fatalf("expected agy/gpt-oss-120b-medium to have no efforts, got %v", byID["agy/gpt-oss-120b-medium"].Efforts)
+	}
+}

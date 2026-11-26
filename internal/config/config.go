@@ -34,6 +34,7 @@ const (
 	StrategyManual     = "manual"
 	StrategyRoundRobin = "round-robin"
 	StrategyLeastBusy  = "least-busy"
+	StrategyMostQuota  = "most-quota"
 
 	ToolActivityDrop = "drop"
 	ToolActivityText = "text"
@@ -55,9 +56,17 @@ type Config struct {
 	Catalog  CatalogConfig   `toml:"catalog"`
 	Health   HealthConfig    `toml:"health"`
 	Privacy  PrivacyConfig   `toml:"privacy"`
+	Alerts   AlertsConfig    `toml:"alerts"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Models   []ModelOverride `toml:"models"`
 	Routing  []RoutingRule   `toml:"routing"`
+}
+
+type AlertsConfig struct {
+	Enabled           bool   `toml:"enabled" json:"enabled"`
+	Desktop           bool   `toml:"desktop" json:"desktop"`
+	WebhookURL        string `toml:"webhook_url,omitempty" json:"webhook_url,omitempty"`
+	QuotaThresholdPct int    `toml:"quota_threshold_pct,omitempty" json:"quota_threshold_pct,omitempty"`
 }
 
 type PrivacyPattern struct {
@@ -124,9 +133,11 @@ type ClientKey struct {
 	Key       string   `toml:"key" json:"key"`
 	Role      string   `toml:"role,omitempty" json:"role,omitempty"`       // "client" (default) or "admin"
 	Project   string   `toml:"project,omitempty" json:"project,omitempty"` // optional project scope for project-based routing & usage
-	Models    []string `toml:"models,omitempty" json:"models,omitempty"`   // optional glob allowlist (empty = all)
-	Disabled  bool     `toml:"disabled,omitempty" json:"disabled,omitempty"`
-	CreatedAt string   `toml:"created_at,omitempty" json:"created_at,omitempty"`
+	Models           []string `toml:"models,omitempty" json:"models,omitempty"`                       // optional glob allowlist (empty = all)
+	DailyBudgetUSD   float64  `toml:"daily_budget_usd,omitempty" json:"daily_budget_usd,omitempty"`   // optional daily USD spend cap (0 = unlimited)
+	MonthlyBudgetUSD float64  `toml:"monthly_budget_usd,omitempty" json:"monthly_budget_usd,omitempty"` // optional 30d USD spend cap (0 = unlimited)
+	Disabled         bool     `toml:"disabled,omitempty" json:"disabled,omitempty"`
+	CreatedAt        string   `toml:"created_at,omitempty" json:"created_at,omitempty"`
 }
 
 func (k ClientKey) EffectiveRole() string {
@@ -191,13 +202,16 @@ type AccountConfig struct {
 	Models          []string          `toml:"models,omitempty"`           // enabled models served by this account
 	AvailableModels []string          `toml:"available_models,omitempty"` // full discovered catalog for enable/disable toggling
 	DisabledModels  []string          `toml:"disabled_models,omitempty"`  // explicitly disabled models from the catalog
-	ModelLabels     map[string]string `toml:"model_labels,omitempty"`     // upstream model id -> human display name (e.g. "fable" -> "Fable 5.2")
+	ModelLabels     map[string]string   `toml:"model_labels,omitempty"`     // upstream model id -> human display name (e.g. "fable" -> "Fable 5.2")
+	ModelEfforts    map[string][]string `toml:"model_efforts,omitempty"`    // upstream model id (or "*" default) -> ACP thought_level options (e.g. ["low","medium","high"])
 	ExposeMode      string            `toml:"expose_mode,omitempty"`      // "pool" (default), "prefix", "both"
 	ModelPrefix     string            `toml:"model_prefix,omitempty"`     // e.g. "a-", "b-" (defaults to "<name>-")
 	MaxConcurrency  int               `toml:"max_concurrency"`
-	HourlyLimit     int               `toml:"hourly_limit,omitempty"`
-	DailyLimit      int               `toml:"daily_limit,omitempty"`
-	WeeklyLimit     int               `toml:"weekly_limit,omitempty"`
+	HourlyLimit      int     `toml:"hourly_limit,omitempty"`
+	DailyLimit       int     `toml:"daily_limit,omitempty"`
+	WeeklyLimit      int     `toml:"weekly_limit,omitempty"`
+	DailyBudgetUSD   float64 `toml:"daily_budget_usd,omitempty"`
+	MonthlyBudgetUSD float64 `toml:"monthly_budget_usd,omitempty"`
 }
 
 // EffectivePrefix returns the model prefix used when ExposeMode is "prefix" or "both".
@@ -291,6 +305,53 @@ func (a *AccountConfig) MergeModelLabels(labels map[string]string) bool {
 	return changed
 }
 
+// MergeModelEfforts merges ACP-discovered thought_level/effort options onto the account.
+// Key "*" represents account-wide effort options for backends that expose a shared thought_level
+// configOption instead of suffixed model IDs (e.g. claude-agent-acp).
+func (a *AccountConfig) MergeModelEfforts(efforts map[string][]string) bool {
+	if len(efforts) == 0 {
+		return false
+	}
+	if a.ModelEfforts == nil {
+		a.ModelEfforts = make(map[string][]string, len(efforts))
+	}
+	changed := false
+	for k, vals := range efforts {
+		k = strings.TrimSpace(k)
+		if k == "" || len(vals) == 0 {
+			continue
+		}
+		clean := make([]string, 0, len(vals))
+		seen := make(map[string]bool, len(vals))
+		for _, v := range vals {
+			v = strings.ToLower(strings.TrimSpace(v))
+			if v == "" || v == "default" || v == "auto" || v == "none" || v == "off" || seen[v] {
+				continue
+			}
+			seen[v] = true
+			clean = append(clean, v)
+		}
+		if len(clean) == 0 {
+			continue
+		}
+		prev := a.ModelEfforts[k]
+		same := len(prev) == len(clean)
+		if same {
+			for i := range prev {
+				if prev[i] != clean[i] {
+					same = false
+					break
+				}
+			}
+		}
+		if !same {
+			a.ModelEfforts[k] = clean
+			changed = true
+		}
+	}
+	return changed
+}
+
 // SetModelEnabled enables or disables one model ID on this account.
 func (a *AccountConfig) SetModelEnabled(modelID string, enabled bool) {
 	modelID = strings.TrimSpace(modelID)
@@ -365,6 +426,9 @@ type RoutingRule struct {
 	Strategy                    string   `toml:"strategy"`
 	AllowCrossAccountRetryOn429 bool     `toml:"allow_cross_account_retry_on_429"`
 	SubscriptionWarningAcked    bool     `toml:"subscription_warning_acked,omitempty"`
+	QuotaThresholdPct           int      `toml:"quota_threshold_pct,omitempty"`            // avoid accounts above this used % (e.g. 90) when alternatives exist
+	DefaultEffort               string   `toml:"default_effort,omitempty"`                 // default thinking effort ("off", "low", "medium", "high", "xhigh", "max")
+	SystemPrompt                string   `toml:"system_prompt,omitempty"`                  // optional system prompt prepended for requests matching this rule
 	FallbackModels              []string `toml:"fallback_models,omitempty"`                // alternate models/providers tried after primary model fails
 	FallbackOn                  []string `toml:"fallback_on,omitempty"`                    // eligible error kinds: rate_limit, transient, unavailable
 }

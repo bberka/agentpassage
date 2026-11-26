@@ -202,7 +202,11 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	}
 
 	promptText := formatPrompt(req.Messages, existingSID != "")
-	argv, err := buildCLIArgs(desc, acct, req.UpstreamModel, req.ReasoningEffort, promptText, existingSID, cwd, profileDir)
+	effectiveAcct := acct
+	if req.PermissionMode != "" {
+		effectiveAcct.PermissionMode = req.PermissionMode
+	}
+	argv, err := buildCLIArgs(desc, effectiveAcct, req.UpstreamModel, req.ReasoningEffort, promptText, existingSID, cwd, profileDir)
 	if err != nil {
 		return err
 	}

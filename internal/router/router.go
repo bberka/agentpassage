@@ -103,6 +103,15 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 				continue
 			}
 			efforts := effortsByBase[m]
+			if len(acct.ModelEfforts) > 0 {
+				if me := acct.ModelEfforts[m]; len(me) > 0 {
+					efforts = mergeEfforts(efforts, me)
+				} else if len(efforts) == 0 && len(effortsByBase) == 0 {
+					if def := acct.ModelEfforts["*"]; len(def) > 0 {
+						efforts = mergeEfforts(efforts, def)
+					}
+				}
+			}
 			label := resolveAccountModelLabel(acct, m, len(efforts) > 0)
 
 			if mode == config.ExposePool || mode == config.ExposeBoth {

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bberka/agentpassage/internal/alerts"
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/backend/acpbackend"
 	"github.com/bberka/agentpassage/internal/backend/clibackend"
@@ -49,6 +50,7 @@ type Server struct {
 	health   *health.Checker
 	quota    *quota.Fetcher
 	privacy  *privacy.Filter
+	alerts   *alerts.Notifier
 
 	srv          *http.Server
 	listener     net.Listener
@@ -82,6 +84,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		logs:     logs,
 		usage:    usageTrk,
 		privacy:  privacy.NewFilter(cfg.Privacy),
+		alerts:   alerts.New(cfg.Alerts),
 	}
 	s.health = health.New(
 		func() []config.AccountConfig {
@@ -90,9 +93,9 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 			return append([]config.AccountConfig(nil), s.cfg.Accounts...)
 		},
 		func(ctx context.Context, acct config.AccountConfig) ([]string, error) {
-			models, labels, err := s.TestAccountWithLabels(ctx, acct)
-			if err == nil && len(labels) > 0 {
-				s.persistAccountLabels(acct.ID, labels)
+			models, labels, efforts, err := s.TestAccountDiscovery(ctx, acct)
+			if err == nil && (len(models) > 0 || len(labels) > 0 || len(efforts) > 0) {
+				s.persistAccountMetadata(acct.ID, models, labels, efforts)
 			}
 			return models, err
 		},
@@ -147,6 +150,15 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		if s.logs != nil {
 			s.logs.Warn("health", fmt.Sprintf("account %s auto-disabled: %s", accountID, reason))
 		}
+		if s.alerts != nil {
+			s.alerts.Notify("disable:"+accountID, alerts.Event{
+				Kind:     "auth_disabled",
+				Severity: "critical",
+				Account:  accountID,
+				Title:    "apx: Account disabled (" + accountID + ")",
+				Message:  reason,
+			})
+		}
 	})
 	return s
 }
@@ -190,6 +202,9 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)
 	if s.health != nil {
 		s.health.UpdateConfig(cfg.Health)
+	}
+	if s.alerts != nil {
+		s.alerts.UpdateConfig(cfg.Alerts)
 	}
 	if err := config.Save(s.dataDir, cfg); err != nil {
 		return err
@@ -644,6 +659,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /admin/reload", s.withAdminAuth(s.handleAdminReload))
 	mux.HandleFunc("GET /v1/models", s.withAuth(s.handleListModels))
 	mux.HandleFunc("POST /v1/chat/completions", s.withAuth(s.handleChatCompletions))
+	mux.HandleFunc("POST /v1/responses", s.withAuth(s.handleOpenAIResponses))
 	mux.HandleFunc("POST /v1/messages", s.withAuth(s.handleAnthropicMessages))
 	mux.HandleFunc("POST /v1/embeddings", s.withAuth(s.handleEmbeddings))
 	mux.HandleFunc("POST /v1/rerank", s.withAuth(s.handleRerank))
@@ -735,28 +751,49 @@ func (s *Server) TestAccount(ctx context.Context, acct config.AccountConfig) ([]
 // TestAccountWithLabels runs a live connectivity test and also returns upstream display names
 // (e.g. "fable" -> "Fable 5.2") when the backend provides them.
 func (s *Server) TestAccountWithLabels(ctx context.Context, acct config.AccountConfig) ([]string, map[string]string, error) {
+	models, labels, _, err := s.TestAccountDiscovery(ctx, acct)
+	return models, labels, err
+}
+
+// TestAccountDiscovery runs a live connectivity test and returns discovered model IDs,
+// upstream display names, and ACP-discovered thought_level/effort options.
+func (s *Server) TestAccountDiscovery(ctx context.Context, acct config.AccountConfig) ([]string, map[string]string, map[string][]string, error) {
 	switch acct.Kind {
 	case config.KindACP:
-		return s.acpBE.TestAccountWithLabels(ctx, acct)
+		return s.acpBE.TestAccountDiscovery(ctx, acct)
 	case config.KindCLI:
 		models, err := s.cliBE.TestAccount(ctx, acct)
-		return models, nil, err
+		return models, nil, nil, err
 	default:
 		key, _ := s.secrets.Get(acct.ID)
 		models, err := s.httpBE.TestAccount(ctx, acct, key)
-		return models, nil, err
+		return models, nil, nil, err
 	}
 }
 
-func (s *Server) persistAccountLabels(accountID string, labels map[string]string) {
-	if len(labels) == 0 {
+func (s *Server) persistAccountMetadata(accountID string, models []string, labels map[string]string, efforts map[string][]string) {
+	if len(models) == 0 && len(labels) == 0 && len(efforts) == 0 {
 		return
 	}
 	s.mu.Lock()
 	changed := false
 	for i := range s.cfg.Accounts {
 		if s.cfg.Accounts[i].ID == accountID {
-			changed = s.cfg.Accounts[i].MergeModelLabels(labels)
+			if len(models) > 0 {
+				prevAvail := strings.Join(s.cfg.Accounts[i].AvailableModels, "\x00")
+				prevModels := strings.Join(s.cfg.Accounts[i].Models, "\x00")
+				s.cfg.Accounts[i].MergeDiscoveredModels(models)
+				if strings.Join(s.cfg.Accounts[i].AvailableModels, "\x00") != prevAvail ||
+					strings.Join(s.cfg.Accounts[i].Models, "\x00") != prevModels {
+					changed = true
+				}
+			}
+			if s.cfg.Accounts[i].MergeModelLabels(labels) {
+				changed = true
+			}
+			if s.cfg.Accounts[i].MergeModelEfforts(efforts) {
+				changed = true
+			}
 			break
 		}
 	}
@@ -967,6 +1004,9 @@ func (s *Server) handleAdminReload(w http.ResponseWriter, r *http.Request) {
 	s.acpBE.SetToolActivity(cfg.ACP.ToolActivity)
 	if s.health != nil {
 		s.health.UpdateConfig(cfg.Health)
+	}
+	if s.alerts != nil {
+		s.alerts.UpdateConfig(cfg.Alerts)
 	}
 	if s.logs != nil {
 		s.logs.Info("system", fmt.Sprintf("hot-reloaded config (%d accounts, %d models)", len(cfg.Accounts), len(s.router.ListModels(false))))
@@ -1233,14 +1273,7 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 	var lastErr error
 
 	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-		lease, err := s.pool.Acquire(pool.SelectRequest{
-			RuleKey:                  plan.Rule.Pattern,
-			Strategy:                 plan.Rule.Strategy,
-			CandidateIDs:             plan.CandidateIDs,
-			SessionKey:               req.SessionKey,
-			SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-			ExcludeIDs:               tried,
-		})
+		lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
 		if err != nil {
 			if lastErr != nil {
 				return nil, lastAcct, httpStatusFromError(lastErr), lastErr
@@ -1252,8 +1285,8 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 		lastAcct = &acct
 		tried[acct.ID] = true
 
-		acctReq := req
-		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, req.ReasoningEffort)
+		acctReq := applyRouteDefaults(req, plan.Rule)
+		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, acctReq.ReasoningEffort)
 
 		var resp *backend.ChatResponse
 		var callErr error
@@ -1306,14 +1339,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 		var planErr error
 
 		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-			lease, err := s.pool.Acquire(pool.SelectRequest{
-				RuleKey:                  plan.Rule.Pattern,
-				Strategy:                 plan.Rule.Strategy,
-				CandidateIDs:             plan.CandidateIDs,
-				SessionKey:               req.SessionKey,
-				SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-				ExcludeIDs:               tried,
-			})
+			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
 			if err != nil {
 				if planErr == nil {
 					planErr = err
@@ -1415,9 +1441,9 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 				return nil
 			}
 
-			acctReq := req
+			acctReq := applyRouteDefaults(req, plan.Rule)
 			acctReq.Model = usedModel
-			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, req.ReasoningEffort)
+			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, acctReq.ReasoningEffort)
 
 			var streamErr error
 			switch acct.Kind {

@@ -2,7 +2,23 @@
 
 AgentPassage (`apx`) ships as a single static binary (`CGO_ENABLED=0`).
 
-## Build from source (recommended)
+## One-line script install (builds from source, no release archive needed)
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bberka/agentpassage/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/bberka/agentpassage/main/install.ps1 | iex
+```
+
+Both scripts require Go 1.22+, build a static binary, install it into your user bin directory (`~/.local/bin/apx` on Linux/macOS, `%LOCALAPPDATA%\apx\bin\apx.exe` on Windows), and restart the `apx` background service automatically if already installed.
+
+## Build from a local clone
 
 ```sh
 git clone https://github.com/bberka/agentpassage.git
@@ -20,12 +36,6 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ```sh
 go install github.com/bberka/agentpassage/cmd/apx@latest
-```
-
-## Release script (Linux / macOS)
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/bberka/agentpassage/main/install.sh | sh
 ```
 
 ## Background service

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -9,23 +10,33 @@ import (
 	"strings"
 )
 
+type ImageBlock struct {
+	Data     string `json:"data"`
+	MimeType string `json:"mime_type"`
+}
+
 type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
 type ChatRequest struct {
-	Model           string
-	UpstreamModel   string
-	ReasoningEffort string // optional thinking/effort level: minimal, low, medium, high, xhigh, max, ultra
-	Messages        []Message
-	Stream          bool
-	Temperature     *float64
-	MaxTokens       int
-	SessionKey      string
-	Cwd             string
-	HasTools        bool
-	RawOpenAIBody   []byte // preserved for transparent OpenAI HTTP pass-through
+	Model             string
+	UpstreamModel     string
+	ReasoningEffort   string // optional thinking/effort level: minimal, low, medium, high, xhigh, max, ultra
+	PermissionMode    string // optional per-request override ("auto-approve", "deny", "ask") from ACP host
+	ACPMode           string // optional ACP session mode override (e.g. "default", "acceptEdits", "auto", "bypassPermissions", "plan")
+	PermissionHandler func(ctx context.Context, req PermissionRequest) PermissionDecision
+	MCPServers        []any
+	Images            []ImageBlock
+	Messages          []Message
+	Stream            bool
+	Temperature       *float64
+	MaxTokens         int
+	SessionKey        string
+	Cwd               string
+	HasTools          bool
+	RawOpenAIBody     []byte // preserved for transparent OpenAI HTTP pass-through
 }
 
 type Usage struct {
@@ -47,6 +58,7 @@ type ChatResponse struct {
 type StreamChunk struct {
 	Delta        string
 	Reasoning    string
+	RawACPUpdate json.RawMessage // raw upstream ACP session/update payload (thoughts, tools, plan, usage_update)
 	FinishReason string
 	Usage        *Usage
 	ToolsIgnored bool

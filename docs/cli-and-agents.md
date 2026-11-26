@@ -83,6 +83,7 @@ apx rerank --model rerank-v3 --query "local proxy" --top-n 2 "unrelated text" "l
 ```sh
 apx connect t3code --yes
 apx connect zed --yes
+apx connect delta
 apx disconnect t3code --yes
 apx uninstall --yes
 apx service status

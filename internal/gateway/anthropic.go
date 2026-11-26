@@ -190,14 +190,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 		var planErr error
 
 		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-			lease, err := s.pool.Acquire(pool.SelectRequest{
-				RuleKey:                  plan.Rule.Pattern,
-				Strategy:                 plan.Rule.Strategy,
-				CandidateIDs:             plan.CandidateIDs,
-				SessionKey:               req.SessionKey,
-				SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-				ExcludeIDs:               tried,
-			})
+			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
 			if err != nil {
 				if planErr == nil {
 					planErr = err
@@ -283,9 +276,9 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 				return nil
 			}
 
-			acctReq := req
+			acctReq := applyRouteDefaults(req, plan.Rule)
 			acctReq.Model = usedModel
-			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, req.ReasoningEffort)
+			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, acctReq.ReasoningEffort)
 
 			var streamErr error
 			switch acct.Kind {

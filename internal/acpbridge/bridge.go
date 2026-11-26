@@ -3,14 +3,20 @@ package acpbridge
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/bberka/agentpassage/internal/backend"
+	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/gateway"
 	"github.com/bberka/agentpassage/internal/router"
 )
@@ -30,32 +36,46 @@ type rpcErr struct {
 }
 
 type bridgeSession struct {
-	id      string
-	cwd     string
-	model   string
-	effort  string
-	history []backend.Message
+	id         string
+	cwd        string
+	model      string
+	effort     string
+	mode       string
+	mcpServers []any
+	history    []backend.Message
+
+	promptMu sync.Mutex
+	cancel   context.CancelFunc
 }
 
 // Server exposes apx itself as an ACP JSON-RPC 2.0 stdio server (`apx acp`).
-// Any ACP host (T3 Code, Zed, JetBrains, etc.) can register `apx acp` and
-// immediately select pooled rotated models or account-prefixed models.
+// Any ACP host (T3 Code, Zed, Delta, JetBrains, etc.) can register `apx acp` and
+// immediately select pooled rotated models or account-prefixed models with full
+// native ACP passthrough (thoughts, tools, usage, images, permissions, cancel, live reload).
 type Server struct {
-	gw      *gateway.Server
-	writeMu sync.Mutex
-	sessMu  sync.Mutex
-	nextID  atomic.Int64
-	sess    map[string]*bridgeSession
+	gw         *gateway.Server
+	writeMu    sync.Mutex
+	sessMu     sync.Mutex
+	nextID     atomic.Int64
+	nextCallID atomic.Int64
+	sess       map[string]*bridgeSession
+
+	pendingMu sync.Mutex
+	pending   map[string]chan rpcMsg
 }
 
 func New(gw *gateway.Server) *Server {
 	return &Server{
-		gw:   gw,
-		sess: make(map[string]*bridgeSession),
+		gw:      gw,
+		sess:    make(map[string]*bridgeSession),
+		pending: make(map[string]chan rpcMsg),
 	}
 }
 
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
+	serveCtx, serveCancel := context.WithCancel(ctx)
+	defer serveCancel()
+
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 
@@ -81,9 +101,52 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		write(rpcMsg{JSONRPC: "2.0", Method: method, Params: raw})
 	}
 
+	callHost := func(callCtx context.Context, method string, params any) (json.RawMessage, error) {
+		callID := fmt.Sprintf("apx-req-%d", s.nextCallID.Add(1))
+		idRaw, _ := json.Marshal(callID)
+		pRaw, err := json.Marshal(params)
+		if err != nil {
+			return nil, err
+		}
+		ch := make(chan rpcMsg, 1)
+		s.pendingMu.Lock()
+		s.pending[callID] = ch
+		s.pendingMu.Unlock()
+
+		write(rpcMsg{JSONRPC: "2.0", ID: idRaw, Method: method, Params: pRaw})
+
+		select {
+		case <-callCtx.Done():
+			s.pendingMu.Lock()
+			delete(s.pending, callID)
+			s.pendingMu.Unlock()
+			return nil, callCtx.Err()
+		case <-serveCtx.Done():
+			s.pendingMu.Lock()
+			delete(s.pending, callID)
+			s.pendingMu.Unlock()
+			return nil, serveCtx.Err()
+		case resp, ok := <-ch:
+			if !ok {
+				return nil, errors.New("host connection closed")
+			}
+			if resp.Error != nil {
+				return nil, fmt.Errorf("host RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+			}
+			return resp.Result, nil
+		}
+	}
+
+	// Background config.toml watcher: reloads config and pushes config_option_update to active sessions.
+	if dataDir := s.gw.DataDir(); dataDir != "" {
+		go s.watchConfig(serveCtx, dataDir, notify)
+	}
+
+	var promptWG sync.WaitGroup
+
 	for scanner.Scan() {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if serveCtx.Err() != nil {
+			break
 		}
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -91,6 +154,19 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		}
 		var msg rpcMsg
 		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+
+		// Dispatch host responses to our outgoing requests (e.g. session/request_permission).
+		if msg.Method == "" && len(msg.ID) > 0 {
+			key := strings.Trim(strings.TrimSpace(string(msg.ID)), `"`)
+			s.pendingMu.Lock()
+			ch, ok := s.pending[key]
+			delete(s.pending, key)
+			s.pendingMu.Unlock()
+			if ok {
+				ch <- msg
+			}
 			continue
 		}
 
@@ -105,7 +181,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				"agentCapabilities": map[string]any{
 					"loadSession": false,
 					"promptCapabilities": map[string]any{
-						"image":           false,
+						"image":           true,
 						"audio":           false,
 						"embeddedContext": true,
 					},
@@ -115,25 +191,33 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 		case "session/new":
 			var p struct {
-				Cwd string `json:"cwd"`
+				Cwd        string `json:"cwd"`
+				MCPServers []any  `json:"mcpServers"`
 			}
 			_ = json.Unmarshal(msg.Params, &p)
 
-			configOpts, availModels, defaultModel, defaultEffort := s.buildModelOptions("", "")
+			defaultMode := "auto"
+			configOpts, availModels, defaultModel, defaultEffort := s.buildModelOptions("", "", defaultMode)
 
-			sid := fmt.Sprintf("apx-sess-%d", s.nextID.Add(1))
+			sid := s.newSessionID()
 			s.sessMu.Lock()
 			s.sess[sid] = &bridgeSession{
-				id:     sid,
-				cwd:    p.Cwd,
-				model:  defaultModel,
-				effort: defaultEffort,
+				id:         sid,
+				cwd:        p.Cwd,
+				model:      defaultModel,
+				effort:     defaultEffort,
+				mode:       defaultMode,
+				mcpServers: p.MCPServers,
 			}
 			s.sessMu.Unlock()
 
 			replyOK(msg.ID, map[string]any{
 				"sessionId":     sid,
 				"configOptions": configOpts,
+				"modes": map[string]any{
+					"currentModeId":  defaultMode,
+					"availableModes": bridgeAvailableModes(),
+				},
 				"models": map[string]any{
 					"currentModelId":  defaultModel,
 					"availableModels": availModels,
@@ -149,21 +233,27 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			_ = json.Unmarshal(msg.Params, &p)
 			curModel := ""
 			curEffort := ""
+			curMode := "auto"
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
 				switch strings.ToLower(p.ConfigID) {
 				case "thought_level", "reasoning_effort", "effort", "thinking":
 					bs.effort = router.NormalizeEffort(p.Value)
+				case "mode":
+					bs.mode = normalizeBridgeMode(p.Value)
 				default: // "model" or empty
 					bs.model = p.Value
 				}
 				curModel = bs.model
 				curEffort = bs.effort
+				curMode = bs.mode
 			} else if p.ConfigID == "model" || p.ConfigID == "" {
 				curModel = p.Value
+			} else if strings.EqualFold(p.ConfigID, "mode") {
+				curMode = normalizeBridgeMode(p.Value)
 			}
 			s.sessMu.Unlock()
-			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort)
+			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort, curMode)
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
 				bs.effort = resolvedEffort
@@ -173,17 +263,67 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				"configOptions": configOpts,
 			})
 
+		case "session/set_mode":
+			var p struct {
+				SessionID string `json:"sessionId"`
+				ModeID    string `json:"modeId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			curModel := ""
+			curEffort := ""
+			curMode := normalizeBridgeMode(p.ModeID)
+			s.sessMu.Lock()
+			if bs, ok := s.sess[p.SessionID]; ok {
+				bs.mode = curMode
+				curModel = bs.model
+				curEffort = bs.effort
+			}
+			s.sessMu.Unlock()
+			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort, curMode)
+			s.sessMu.Lock()
+			if bs, ok := s.sess[p.SessionID]; ok {
+				bs.effort = resolvedEffort
+			}
+			s.sessMu.Unlock()
+			notify("session/update", map[string]any{
+				"sessionId": p.SessionID,
+				"update": map[string]any{
+					"sessionUpdate": "config_option_update",
+					"configOptions": configOpts,
+				},
+			})
+			replyOK(msg.ID, map[string]any{})
+
 		case "session/set_model":
 			var p struct {
 				SessionID string `json:"sessionId"`
 				ModelID   string `json:"modelId"`
 			}
 			_ = json.Unmarshal(msg.Params, &p)
+			curModel := p.ModelID
+			curEffort := ""
+			curMode := "auto"
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
 				bs.model = p.ModelID
+				curModel = bs.model
+				curEffort = bs.effort
+				curMode = bs.mode
 			}
 			s.sessMu.Unlock()
+			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort, curMode)
+			s.sessMu.Lock()
+			if bs, ok := s.sess[p.SessionID]; ok {
+				bs.effort = resolvedEffort
+			}
+			s.sessMu.Unlock()
+			notify("session/update", map[string]any{
+				"sessionId": p.SessionID,
+				"update": map[string]any{
+					"sessionUpdate": "config_option_update",
+					"configOptions": configOpts,
+				},
+			})
 			replyOK(msg.ID, map[string]any{})
 
 		case "session/prompt":
@@ -192,6 +332,8 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				Prompt    []struct {
 					Type     string `json:"type"`
 					Text     string `json:"text"`
+					Data     string `json:"data"`
+					MimeType string `json:"mimeType"`
 					Resource *struct {
 						URI  string `json:"uri"`
 						Text string `json:"text"`
@@ -209,8 +351,11 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 
 			var promptSB strings.Builder
+			var images []backend.ImageBlock
 			for _, b := range p.Prompt {
-				if b.Text != "" {
+				if b.Type == "image" && b.Data != "" {
+					images = append(images, backend.ImageBlock{Data: b.Data, MimeType: b.MimeType})
+				} else if b.Text != "" {
 					if promptSB.Len() > 0 {
 						promptSB.WriteString("\n")
 					}
@@ -226,57 +371,229 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				}
 			}
 			userText := promptSB.String()
-			bs.history = append(bs.history, backend.Message{Role: "user", Content: userText})
 
+			s.sessMu.Lock()
 			if bs.model == "" {
+				s.sessMu.Unlock()
 				replyErr(msg.ID, -32602, "no model configured in apx; add an account first")
 				continue
 			}
+			bs.history = append(bs.history, backend.Message{Role: "user", Content: userText})
+			histSnap := append([]backend.Message(nil), bs.history...)
+			reqModel := bs.model
+			reqEffort := bs.effort
+			reqMode := bs.mode
+			reqCwd := bs.cwd
+			reqMCP := bs.mcpServers
+			s.sessMu.Unlock()
 
-			var replySB strings.Builder
-			_, err := s.gw.StreamDirect(ctx, backend.ChatRequest{
-				Model:           bs.model,
-				ReasoningEffort: bs.effort,
-				Messages:        append([]backend.Message(nil), bs.history...),
-				Stream:          true,
-				SessionKey:      bs.id,
-				Cwd:             bs.cwd,
-			}, func(ch backend.StreamChunk) error {
-				if ch.Delta != "" {
-					replySB.WriteString(ch.Delta)
-					notify("session/update", map[string]any{
+			msgID := append(json.RawMessage(nil), msg.ID...)
+			promptCtx, promptCancel := context.WithCancel(serveCtx)
+			bs.promptMu.Lock()
+			if bs.cancel != nil {
+				bs.cancel()
+			}
+			bs.cancel = promptCancel
+			bs.promptMu.Unlock()
+
+			permMode := bridgeModeToPermission(reqMode)
+			var permHandler func(context.Context, backend.PermissionRequest) backend.PermissionDecision
+			if normalizeBridgeMode(reqMode) == "default" {
+				permMode = config.PermAsk
+				permHandler = func(pCtx context.Context, req backend.PermissionRequest) backend.PermissionDecision {
+					opts := make([]map[string]string, 0, len(req.Options))
+					for _, o := range req.Options {
+						opts = append(opts, map[string]string{
+							"optionId": o.ID,
+							"name":     o.Name,
+							"kind":     o.Kind,
+						})
+					}
+					toolCall := map[string]any{
+						"title": req.Title,
+						"name":  req.ToolName,
+					}
+					if req.Arguments != "" {
+						toolCall["rawInput"] = json.RawMessage(req.Arguments)
+					}
+					resRaw, err := callHost(pCtx, "session/request_permission", map[string]any{
 						"sessionId": bs.id,
-						"update": map[string]any{
-							"sessionUpdate": "agent_message_chunk",
-							"content": map[string]any{
-								"type": "text",
-								"text": ch.Delta,
-							},
-						},
+						"toolCall":  toolCall,
+						"options":   opts,
 					})
+					if err != nil {
+						return backend.PermissionDecision{Approved: false}
+					}
+					var out struct {
+						Outcome struct {
+							Outcome  string `json:"outcome"`
+							OptionID string `json:"optionId"`
+						} `json:"outcome"`
+					}
+					if json.Unmarshal(resRaw, &out) == nil && out.Outcome.Outcome == "selected" {
+						return backend.PermissionDecision{Approved: true, OptionID: out.Outcome.OptionID}
+					}
+					return backend.PermissionDecision{Approved: false}
 				}
-				return nil
-			})
-			if err != nil {
-				replyErr(msg.ID, -32000, err.Error())
-				continue
 			}
 
-			bs.history = append(bs.history, backend.Message{Role: "assistant", Content: replySB.String()})
-			replyOK(msg.ID, map[string]any{"stopReason": "end_turn"})
+			promptWG.Add(1)
+			go func() {
+				defer promptWG.Done()
+				defer func() {
+					promptCancel()
+					bs.promptMu.Lock()
+					bs.cancel = nil
+					bs.promptMu.Unlock()
+				}()
+
+				var replySB strings.Builder
+				_, err := s.gw.StreamDirect(promptCtx, backend.ChatRequest{
+					Model:             reqModel,
+					ReasoningEffort:   reqEffort,
+					PermissionMode:    permMode,
+					ACPMode:           reqMode,
+					PermissionHandler: permHandler,
+					MCPServers:        reqMCP,
+					Images:            images,
+					Messages:          histSnap,
+					Stream:            true,
+					SessionKey:        bs.id,
+					Cwd:               reqCwd,
+				}, func(ch backend.StreamChunk) error {
+					if len(ch.RawACPUpdate) > 0 {
+						notify("session/update", map[string]any{
+							"sessionId": bs.id,
+							"update":    ch.RawACPUpdate,
+						})
+						return nil
+					}
+					if ch.Reasoning != "" {
+						notify("session/update", map[string]any{
+							"sessionId": bs.id,
+							"update": map[string]any{
+								"sessionUpdate": "agent_thought_chunk",
+								"content": map[string]any{
+									"type": "text",
+									"text": ch.Reasoning,
+								},
+							},
+						})
+					}
+					if ch.Delta != "" {
+						replySB.WriteString(ch.Delta)
+						notify("session/update", map[string]any{
+							"sessionId": bs.id,
+							"update": map[string]any{
+								"sessionUpdate": "agent_message_chunk",
+								"content": map[string]any{
+									"type": "text",
+									"text": ch.Delta,
+								},
+							},
+						})
+					}
+					return nil
+				})
+				if err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(promptCtx.Err(), context.Canceled) {
+						replyOK(msgID, map[string]any{"stopReason": "cancelled"})
+						return
+					}
+					replyErr(msgID, -32000, err.Error())
+					return
+				}
+
+				s.sessMu.Lock()
+				bs.history = append(bs.history, backend.Message{Role: "assistant", Content: replySB.String()})
+				s.sessMu.Unlock()
+				replyOK(msgID, map[string]any{"stopReason": "end_turn"})
+			}()
 
 		case "session/cancel":
-			// No-op ack for notification
+			var p struct {
+				SessionID string `json:"sessionId"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			s.sessMu.Lock()
+			bs, ok := s.sess[p.SessionID]
+			s.sessMu.Unlock()
+			if ok {
+				bs.promptMu.Lock()
+				if bs.cancel != nil {
+					bs.cancel()
+				}
+				bs.promptMu.Unlock()
+			}
+
 		default:
 			if len(msg.ID) > 0 {
 				replyErr(msg.ID, -32601, "method not found: "+msg.Method)
 			}
 		}
 	}
+
+	// Wait for any in-flight prompts to complete before closing stdout.
+	promptWG.Wait()
 	return scanner.Err()
 }
 
-func (s *Server) buildModelOptions(selectedModel, selectedEffort string) ([]map[string]any, []map[string]string, string, string) {
+func (s *Server) watchConfig(ctx context.Context, dataDir string, notify func(string, any)) {
+	cfgPath := config.ConfigPath(dataDir)
+	var lastMod time.Time
+	if st, err := os.Stat(cfgPath); err == nil {
+		lastMod = st.ModTime()
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			st, err := os.Stat(cfgPath)
+			if err != nil {
+				continue
+			}
+			if !st.ModTime().After(lastMod) {
+				continue
+			}
+			lastMod = st.ModTime()
+			newCfg, _, err := config.Load(dataDir)
+			if err != nil || newCfg == nil {
+				continue
+			}
+			if err := s.gw.ReloadConfig(newCfg); err != nil {
+				continue
+			}
+			s.sessMu.Lock()
+			sessions := make([]*bridgeSession, 0, len(s.sess))
+			for _, bs := range s.sess {
+				sessions = append(sessions, bs)
+			}
+			s.sessMu.Unlock()
+			for _, bs := range sessions {
+				s.sessMu.Lock()
+				curM, curE, curMode := bs.model, bs.effort, bs.mode
+				s.sessMu.Unlock()
+				opts, _, _, resolvedEffort := s.buildModelOptions(curM, curE, curMode)
+				s.sessMu.Lock()
+				bs.effort = resolvedEffort
+				s.sessMu.Unlock()
+				notify("session/update", map[string]any{
+					"sessionId": bs.id,
+					"update": map[string]any{
+						"sessionUpdate": "config_option_update",
+						"configOptions": opts,
+					},
+				})
+			}
+		}
+	}
+}
+
+func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode string) ([]map[string]any, []map[string]string, string, string) {
 	models := s.gw.Router().ListModels(false)
 	opts := make([]map[string]string, 0, len(models)+1)
 	availModels := make([]map[string]string, 0, len(models)+1)
@@ -327,14 +644,12 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort string) ([]map[
 		},
 	}
 
-	// Expose ACP v1 `thought_level` configOption when the selected model has effort levels
-	// (or a non-empty effort was explicitly requested).
+	// Expose ACP v1 `thought_level` configOption when the selected model has effort levels.
+	// Omit synthetic "default" so the host dropdown shows only real thinking levels.
 	resolvedEffort := router.NormalizeEffort(selectedEffort)
 	if len(selectedEfforts) > 0 {
-		effortOpts := []map[string]string{
-			{"value": "default", "name": "Default"},
-		}
-		effortValid := resolvedEffort == ""
+		effortOpts := make([]map[string]string, 0, len(selectedEfforts))
+		effortValid := false
 		for _, eff := range selectedEfforts {
 			if eff == resolvedEffort {
 				effortValid = true
@@ -345,25 +660,102 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort string) ([]map[
 			})
 		}
 		if !effortValid {
-			resolvedEffort = ""
-		}
-		curEffortVal := resolvedEffort
-		if curEffortVal == "" {
-			curEffortVal = "default"
+			resolvedEffort = pickDefaultEffort(selectedEfforts)
 		}
 		configOpts = append(configOpts, map[string]any{
 			"id":           "thought_level",
 			"name":         "Thinking Effort",
 			"category":     "thought_level",
 			"type":         "select",
-			"currentValue": curEffortVal,
+			"currentValue": resolvedEffort,
 			"options":      effortOpts,
 		})
 	} else {
 		resolvedEffort = ""
 	}
 
+	// Expose ACP v1 `mode` configOption so ACP hosts (T3 Code, Zed, etc.) can override permissions.
+	curMode := normalizeBridgeMode(selectedMode)
+	configOpts = append(configOpts, map[string]any{
+		"id":           "mode",
+		"name":         "Mode",
+		"category":     "mode",
+		"type":         "select",
+		"currentValue": curMode,
+		"options":      bridgeModeOptions(),
+	})
+
 	return configOpts, availModels, cur, resolvedEffort
+}
+
+func pickDefaultEffort(efforts []string) string {
+	for _, pref := range []string{"medium", "high"} {
+		for _, e := range efforts {
+			if e == pref {
+				return e
+			}
+		}
+	}
+	if len(efforts) > 0 {
+		return efforts[0]
+	}
+	return ""
+}
+
+func normalizeBridgeMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "default", "approval-required", "manual":
+		return "default"
+	case "acceptedits", "accept-edits", "auto-accept-edits":
+		return "acceptEdits"
+	case "bypasspermissions", "bypass", "full-access", "full_access":
+		return "bypassPermissions"
+	case "plan":
+		return "plan"
+	case "auto", "":
+		return "auto"
+	default:
+		return strings.TrimSpace(raw)
+	}
+}
+
+func bridgeModeToPermission(mode string) string {
+	switch normalizeBridgeMode(mode) {
+	case "bypassPermissions", "auto", "acceptEdits":
+		return config.PermAutoApprove
+	case "plan":
+		return config.PermDeny
+	default:
+		return ""
+	}
+}
+
+func bridgeAvailableModes() []map[string]string {
+	return []map[string]string{
+		{"id": "default", "name": "Manual", "description": "Forward permission prompts to host"},
+		{"id": "acceptEdits", "name": "Accept edits", "description": "Auto-approve file edits"},
+		{"id": "auto", "name": "Auto", "description": "Auto-approve tool permissions"},
+		{"id": "bypassPermissions", "name": "Full access", "description": "Auto-approve all permissions"},
+		{"id": "plan", "name": "Plan", "description": "Read-only planning mode"},
+	}
+}
+
+func bridgeModeOptions() []map[string]string {
+	return []map[string]string{
+		{"value": "default", "name": "Manual"},
+		{"value": "acceptEdits", "name": "Accept edits"},
+		{"value": "auto", "name": "Auto"},
+		{"value": "bypassPermissions", "name": "Full access"},
+		{"value": "plan", "name": "Plan"},
+	}
+}
+
+func (s *Server) newSessionID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err == nil {
+		return fmt.Sprintf("apx-sess-%s-%d", hex.EncodeToString(b[:]), s.nextID.Add(1))
+	}
+	return fmt.Sprintf("apx-sess-%d", s.nextID.Add(1))
 }
 
 func formatEffortLabel(eff string) string {

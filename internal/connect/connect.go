@@ -74,6 +74,24 @@ func zedSettingsPath() string {
 	return filepath.Join(home, ".config", "zed", "settings.json")
 }
 
+func deltaDataDir() string {
+	home := homeDir()
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(home, "Library", "Application Support", "Delta")
+	case "windows":
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			return filepath.Join(localAppData, "Delta")
+		}
+		return filepath.Join(home, "AppData", "Local", "Delta")
+	default:
+		if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+			return filepath.Join(xdgData, "delta")
+		}
+		return filepath.Join(home, ".local", "share", "delta")
+	}
+}
+
 func detectJetBrains(home string) bool {
 	if _, err := os.Stat(filepath.Join(home, ".jetbrains")); err == nil {
 		return true
@@ -134,10 +152,18 @@ func ListTargets() []Target {
 		{
 			ID:          "zed",
 			Name:        "Zed",
-			Description: "Native ACP agent_server (`apx acp`) in Zed settings.json",
+			Description: "Native ACP custom agent_server (`apx acp`) in Zed settings.json",
 			ConfigPath:  zedPath,
 			AutoApply:   true,
 			Detected:    hasBin("zed") || hasBin("zeditor") || exists(filepath.Dir(zedPath)),
+		},
+		{
+			ID:          "delta",
+			Name:        "Delta (Zed Agent IDE)",
+			Description: "Native ACP custom agent (`apx acp`) or OpenAI-compatible provider for Zed Delta",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("delta") || exists(deltaDataDir()),
 		},
 		{
 			ID:          "vscode",
@@ -297,6 +323,7 @@ var targetAliases = map[string]string{
 	"roocode":       "cline",
 	"kilo":          "cline",
 	"t3":            "t3code",
+	"zed-delta":     "delta",
 	"shell":         "agy",
 }
 
@@ -481,6 +508,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 
 	case "zed":
 		agentEntry := map[string]any{
+			"type":    "custom",
 			"command": apxBin,
 			"args":    []string{"acp"},
 		}
@@ -828,6 +856,20 @@ return {
 			res.Backup = bak
 			res.Message = "Configured Aider in " + path
 		}
+
+	case "delta":
+		res.Snippet = fmt.Sprintf(
+			"Delta (Zed Agent IDE) -> Settings -> Custom ACP Agent:\n"+
+				"  Name:    AgentPassage (apx)\n"+
+				"  Command: %s\n"+
+				"  Args:    acp\n"+
+				"  Models:  %d enabled (auto-discovered via ACP)\n\n"+
+				"Or connect via OpenAI-compatible provider:\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n",
+			apxBin, enabledCount, baseURL, key,
+		)
+		res.Message = "Copy Delta (Zed Agent IDE) settings above (Delta encrypts its settings.json)."
 
 	case "cursor":
 		res.Snippet = fmt.Sprintf(

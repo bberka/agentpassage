@@ -86,6 +86,10 @@ func run(args []string) error {
 			return cmdRegistry(args[1:])
 		case "export-env":
 			return cmdExportEnv(args[1:])
+		case "export-config":
+			return cmdExportConfig(args[1:])
+		case "import-config":
+			return cmdImportConfig(args[1:])
 		case "agent-guide":
 			return cmdAgentGuide()
 		case "version":

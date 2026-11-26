@@ -29,12 +29,21 @@ func (a *App) filteredLogs() []logbuf.Entry {
 }
 
 func (a *App) updateLogs(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	entries := a.filteredLogs()
 	switch msg.String() {
 	case "up", "k":
-		a.logCursor++
+		if a.logCursor < max(len(entries)-1, 0) {
+			a.logCursor++
+		}
 	case "down", "j":
 		if a.logCursor > 0 {
 			a.logCursor--
+		}
+	case "enter":
+		a.logInspect = !a.logInspect
+	case "esc":
+		if a.logInspect {
+			a.logInspect = false
 		}
 	case "l":
 		switch a.logLevel {
@@ -63,7 +72,7 @@ func (a *App) viewLogs(bodyHeight int) string {
 	}
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("Logs (%d)", len(entries)))+"   "+
-		a.styles.Muted.Render(fmt.Sprintf("level: %s · secrets redacted", lvl)))
+		a.styles.Muted.Render(fmt.Sprintf("level: %s · enter: trace inspector · secrets redacted", lvl)))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	if len(entries) == 0 {
@@ -72,14 +81,24 @@ func (a *App) viewLogs(bodyHeight int) string {
 		return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	maxRows := max(bodyHeight-5, 4)
-	end := len(entries) - a.logCursor
-	if end < 0 {
-		end = 0
+	if a.logCursor >= len(entries) {
+		a.logCursor = len(entries) - 1
+	}
+	selectedIdx := len(entries) - 1 - a.logCursor
+
+	inspectLines := 0
+	if a.logInspect {
+		inspectLines = 7
+	}
+	maxRows := max(bodyHeight-5-inspectLines, 4)
+	end := selectedIdx + 1
+	if end < maxRows {
+		end = min(len(entries), maxRows)
 	}
 	start := max(end-maxRows, 0)
 
-	for _, e := range entries[start:end] {
+	for idx := start; idx < end; idx++ {
+		e := entries[idx]
 		ts := e.Time.Format("15:04:05")
 		var msg string
 		if e.Kind == "request" {
@@ -90,14 +109,49 @@ func (a *App) viewLogs(bodyHeight int) string {
 		if e.Error != "" {
 			msg += " err=" + e.Error
 		}
-		row := fmt.Sprintf("%s %-5s %s", ts, e.Level, truncate(msg, max(innerW-16, 20)))
-		switch e.Level {
-		case logbuf.LevelError:
-			row = a.styles.StateErr.Render(row)
-		case logbuf.LevelWarn:
-			row = a.styles.StateWarn.Render(row)
+		prefix := "  "
+		if idx == selectedIdx {
+			prefix = "> "
+		}
+		row := fmt.Sprintf("%s%s %-5s %s", prefix, ts, e.Level, truncate(msg, max(innerW-18, 20)))
+		if idx == selectedIdx {
+			row = a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(row)
+		} else {
+			switch e.Level {
+			case logbuf.LevelError:
+				row = a.styles.StateErr.Render(row)
+			case logbuf.LevelWarn:
+				row = a.styles.StateWarn.Render(row)
+			}
 		}
 		lines = append(lines, row)
+	}
+
+	if a.logInspect && selectedIdx >= 0 && selectedIdx < len(entries) {
+		e := entries[selectedIdx]
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		lines = append(lines, a.styles.Highlight.Render("Trace Inspector")+"  "+a.styles.Muted.Render(e.Time.Format("2006-01-02 15:04:05")+" · "+string(e.Level)+" · "+e.Kind))
+		if e.Kind == "request" {
+			up := e.UpstreamModel
+			if up == "" {
+				up = e.Model
+			}
+			eff := e.Effort
+			if eff == "" {
+				eff = "default"
+			}
+			proj := e.Project
+			if proj == "" {
+				proj = "—"
+			}
+			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Route:   %s %s  model=%s -> upstream=%s  effort=%s  project=%s", e.Method, e.Path, e.Model, up, eff, proj)))
+			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Account: %s  status=%d  latency=%dms  failover_hops=%d  tokens=%d in / %d out", e.Account, e.Status, e.DurationMs, e.FailoverHops, e.TokensIn, e.TokensOut)))
+		} else if e.Message != "" {
+			lines = append(lines, a.styles.Muted.Render("Message: "+truncate(e.Message, max(innerW-10, 20))))
+		}
+		if e.Error != "" {
+			lines = append(lines, a.styles.StateErr.Render("Error:   "+truncate(e.Error, max(innerW-10, 20))))
+		}
 	}
 	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

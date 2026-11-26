@@ -30,6 +30,7 @@ func TestHelperACPProcess(t *testing.T) {
 
 	sessionCounter := 0
 	modelsBySession := map[string]string{}
+	effortsBySession := map[string]string{}
 
 	for scanner.Scan() {
 		var msg rpcMessage
@@ -48,6 +49,7 @@ func TestHelperACPProcess(t *testing.T) {
 			sessionCounter++
 			sid := fmt.Sprintf("sess-%d", sessionCounter)
 			modelsBySession[sid] = "default"
+			effortsBySession[sid] = "default"
 			res, _ := json.Marshal(map[string]any{
 				"sessionId": sid,
 				"configOptions": []map[string]any{
@@ -60,6 +62,17 @@ func TestHelperACPProcess(t *testing.T) {
 							{"value": "gemini-3.1-pro", "name": "Gemini 3.1 Pro"},
 						},
 					},
+					{
+						"id":           "effort",
+						"category":     "thought_level",
+						"currentValue": "default",
+						"options": []map[string]string{
+							{"value": "default", "name": "Default"},
+							{"value": "low", "name": "Low"},
+							{"value": "high", "name": "High"},
+							{"value": "max", "name": "Max"},
+						},
+					},
 				},
 			})
 			writeMsg(rpcMessage{JSONRPC: "2.0", ID: msg.ID, Result: res})
@@ -67,7 +80,11 @@ func TestHelperACPProcess(t *testing.T) {
 		case "session/set_config_option":
 			var p setConfigOptionParams
 			_ = json.Unmarshal(msg.Params, &p)
-			modelsBySession[p.SessionID] = p.Value
+			if p.ConfigID == "effort" || p.ConfigID == "thought_level" {
+				effortsBySession[p.SessionID] = p.Value
+			} else {
+				modelsBySession[p.SessionID] = p.Value
+			}
 			writeMsg(rpcMessage{JSONRPC: "2.0", ID: msg.ID, Result: json.RawMessage(`{}`)})
 
 		case "session/prompt":
@@ -106,6 +123,9 @@ func TestHelperACPProcess(t *testing.T) {
 			writeMsg(rpcMessage{JSONRPC: "2.0", Method: "session/update", Params: toolUpd})
 
 			reply := fmt.Sprintf("[%s|%s|%s] %s", profile, p.SessionID, modelsBySession[p.SessionID], text)
+			if eff := effortsBySession[p.SessionID]; eff != "" && eff != "default" {
+				reply = fmt.Sprintf("[%s|%s|%s|effort=%s] %s", profile, p.SessionID, modelsBySession[p.SessionID], eff, text)
+			}
 			mid := len(reply) / 2
 			for _, part := range []string{reply[:mid], reply[mid:]} {
 				upd, _ := json.Marshal(map[string]any{
@@ -249,5 +269,56 @@ func TestGroupedConfigOptionsAndLoopEnvSanitization(t *testing.T) {
 	}
 	if !strings.Contains(joined, "APX_IN_CHILD=1") || !strings.Contains(joined, "PI_CODING_AGENT_DIR=/tmp/profile") || !strings.Contains(joined, "SAFE_VAR=keep") {
 		t.Fatalf("sanitizeChildEnv missing expected entries: %s", joined)
+	}
+}
+
+func TestACPThoughtLevelDiscoveryAndForwarding(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := descriptors.LoadRegistry(dir)
+	mgr := NewManager(dir, reg, nil, config.ToolActivityDrop)
+	defer mgr.Close()
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	acct := config.AccountConfig{
+		ID:            "claude-test",
+		Name:          "test",
+		Kind:          config.KindACP,
+		Backend:       "custom-acp",
+		Enabled:       true,
+		CustomCommand: []string{exe, "-test.run=TestHelperACPProcess"},
+		CustomEnv: map[string]string{
+			"APX_TEST_ACP_HELPER": "1",
+			"APX_TEST_PROFILE":    "{profile}",
+		},
+	}
+
+	models, labels, efforts, err := mgr.TestAccountDiscovery(context.Background(), acct)
+	if err != nil {
+		t.Fatalf("TestAccountDiscovery failed: %v", err)
+	}
+	if len(models) == 0 || labels["gemini-3.1-pro"] != "Gemini 3.1 Pro" {
+		t.Fatalf("unexpected models=%v labels=%v", models, labels)
+	}
+	wantEfforts := []string{"low", "high", "max"}
+	gotEfforts := efforts["*"]
+	if len(gotEfforts) != len(wantEfforts) || gotEfforts[0] != "low" || gotEfforts[1] != "high" || gotEfforts[2] != "max" {
+		t.Fatalf("expected discovered thought_level efforts %v, got %v", wantEfforts, gotEfforts)
+	}
+
+	resp, err := mgr.Complete(context.Background(), acct, backend.ChatRequest{
+		Model:           "claude/gemini-3.1-pro",
+		UpstreamModel:   "gemini-3.1-pro",
+		ReasoningEffort: "high",
+		Messages:        []backend.Message{{Role: "user", Content: "hello"}},
+		SessionKey:      "effort-sess",
+	})
+	if err != nil {
+		t.Fatalf("Complete failed: %v", err)
+	}
+	if !strings.Contains(resp.Content, "effort=high") {
+		t.Fatalf("expected thought_level=high forwarded to ACP worker, got %q", resp.Content)
 	}
 }

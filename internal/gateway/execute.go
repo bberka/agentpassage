@@ -2,12 +2,116 @@ package gateway
 
 import (
 	"context"
+	"strings"
 
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/pool"
 	"github.com/bberka/agentpassage/internal/router"
 )
+
+// applyRouteDefaults applies per-route DefaultEffort (including "off"/"none" to disable thinking)
+// and optional SystemPrompt prepending.
+func applyRouteDefaults(req backend.ChatRequest, rule config.RoutingRule) backend.ChatRequest {
+	if def := strings.TrimSpace(rule.DefaultEffort); def != "" {
+		lower := strings.ToLower(def)
+		if lower == "off" || lower == "none" {
+			req.ReasoningEffort = ""
+		} else if req.ReasoningEffort == "" {
+			req.ReasoningEffort = router.NormalizeEffort(def)
+		}
+	}
+	if sp := strings.TrimSpace(rule.SystemPrompt); sp != "" {
+		hasSame := len(req.Messages) > 0 && req.Messages[0].Role == "system" && strings.Contains(req.Messages[0].Content, sp)
+		if !hasSame {
+			msgs := make([]backend.Message, 0, len(req.Messages)+1)
+			msgs = append(msgs, backend.Message{Role: "system", Content: sp})
+			msgs = append(msgs, req.Messages...)
+			req.Messages = msgs
+		}
+	}
+	return req
+}
+
+// buildPoolSelectRequest builds a pool.SelectRequest enriched with live quota percentages
+// and USD spend budget checks for the candidate accounts.
+func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, exclude map[string]bool) pool.SelectRequest {
+	req := pool.SelectRequest{
+		RuleKey:                  plan.Rule.Pattern,
+		Strategy:                 plan.Rule.Strategy,
+		CandidateIDs:             plan.CandidateIDs,
+		SessionKey:               sessionKey,
+		SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
+		ExcludeIDs:               exclude,
+		QuotaThresholdPct:        plan.Rule.QuotaThresholdPct,
+	}
+
+	if s.quota != nil && (plan.Rule.Strategy == config.StrategyMostQuota || plan.Rule.QuotaThresholdPct > 0) {
+		rep := s.quota.Report()
+		used := make(map[string]float64, len(rep.Accounts))
+		for _, aq := range rep.Accounts {
+			maxPct := 0.0
+			if aq.Primary != nil && aq.Primary.UsedPercent > maxPct {
+				maxPct = aq.Primary.UsedPercent
+			}
+			if aq.Secondary != nil && aq.Secondary.UsedPercent > maxPct {
+				maxPct = aq.Secondary.UsedPercent
+			}
+			used[aq.AccountID] = maxPct
+		}
+		req.QuotaUsedPct = used
+	}
+
+	if s.usage != nil {
+		s.mu.RLock()
+		cfg := s.cfg
+		s.mu.RUnlock()
+		needDay, needMonth := false, false
+		for _, id := range plan.CandidateIDs {
+			if acct := cfg.FindAccount(id); acct != nil {
+				if acct.DailyBudgetUSD > 0 {
+					needDay = true
+				}
+				if acct.MonthlyBudgetUSD > 0 {
+					needMonth = true
+				}
+			}
+		}
+		if needDay || needMonth {
+			daySpend := make(map[string]float64)
+			monthSpend := make(map[string]float64)
+			if needDay {
+				for _, au := range s.usage.SummaryPeriod("24h").ByAccount {
+					daySpend[au.Account] = au.EstimatedCostUSD
+				}
+			}
+			if needMonth {
+				for _, au := range s.usage.SummaryPeriod("30d").ByAccount {
+					monthSpend[au.Account] = au.EstimatedCostUSD
+				}
+			}
+			exceeded := make(map[string]bool)
+			for _, id := range plan.CandidateIDs {
+				acct := cfg.FindAccount(id)
+				if acct == nil {
+					continue
+				}
+				label := acct.Backend + "/" + acct.Name
+				if acct.DailyBudgetUSD > 0 && daySpend[label] >= acct.DailyBudgetUSD {
+					exceeded[id] = true
+				}
+				if acct.MonthlyBudgetUSD > 0 && monthSpend[label] >= acct.MonthlyBudgetUSD {
+					exceeded[id] = true
+				}
+			}
+			if len(exceeded) > 0 {
+				req.BudgetExceededIDs = exceeded
+			}
+		}
+	}
+
+	return req
+}
 
 // StreamDirect executes a chat completion directly through the router, pool, and backend
 // without an HTTP hop (used by the `apx acp` stdio bridge server).
@@ -29,14 +133,7 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 		var planErr error
 
 		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-			lease, err := s.pool.Acquire(pool.SelectRequest{
-				RuleKey:                  plan.Rule.Pattern,
-				Strategy:                 plan.Rule.Strategy,
-				CandidateIDs:             plan.CandidateIDs,
-				SessionKey:               req.SessionKey,
-				SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
-				ExcludeIDs:               tried,
-			})
+			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
 			if err != nil {
 				if planErr == nil {
 					planErr = err
@@ -62,15 +159,15 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 				if ch.Delta != "" {
 					emitted = true
 				}
-				if ch.Delta == "" && ch.Reasoning == "" && ch.FinishReason == "" && ch.Usage == nil {
+				if ch.Delta == "" && ch.Reasoning == "" && len(ch.RawACPUpdate) == 0 && ch.FinishReason == "" && ch.Usage == nil {
 					return nil
 				}
 				return cb(ch)
 			}
 
-			acctReq := req
+			acctReq := applyRouteDefaults(req, plan.Rule)
 			acctReq.Model = plan.RequestedModel
-			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, req.ReasoningEffort)
+			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, acctReq.ReasoningEffort)
 
 			var streamErr error
 			switch acct.Kind {

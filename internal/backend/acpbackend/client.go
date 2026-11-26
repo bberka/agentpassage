@@ -129,9 +129,16 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 // TestAccountWithLabels launches the ACP worker, runs initialize + session/new, and returns
 // both discovered model IDs and upstream human labels (e.g. "fable" -> "Fable 5.2").
 func (m *Manager) TestAccountWithLabels(ctx context.Context, acct config.AccountConfig) ([]string, map[string]string, error) {
+	models, labels, _, err := m.TestAccountDiscovery(ctx, acct)
+	return models, labels, err
+}
+
+// TestAccountDiscovery launches the ACP worker, runs initialize + session/new, and returns
+// discovered model IDs, upstream human labels, and ACP thought_level/effort options.
+func (m *Manager) TestAccountDiscovery(ctx context.Context, acct config.AccountConfig) ([]string, map[string]string, map[string][]string, error) {
 	w, err := m.getOrStartWorker(ctx, acct)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cwd := acct.DefaultCwd
 	if cwd == "" {
@@ -139,11 +146,20 @@ func (m *Manager) TestAccountWithLabels(ctx context.Context, acct config.Account
 	}
 	testCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
-	sess, err := w.newSession(testCtx, cwd)
+	sess, err := w.newSession(testCtx, cwd, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return sess.availableModels, sess.modelLabels, nil
+	var efforts map[string][]string
+	if len(sess.availableEfforts) > 0 {
+		efforts = map[string][]string{
+			"*": append([]string(nil), sess.availableEfforts...),
+		}
+		if sess.currentModel != "" && sess.currentModel != "default" {
+			efforts[sess.currentModel] = append([]string(nil), sess.availableEfforts...)
+		}
+	}
+	return sess.availableModels, sess.modelLabels, efforts, nil
 }
 
 func (m *Manager) Complete(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest) (*backend.ChatResponse, error) {
@@ -192,7 +208,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		cwd, _ = os.Getwd()
 	}
 
-	sess, reused, err := w.acquireSession(ctx, req.SessionKey, cwd, req.UpstreamModel)
+	sess, reused, err := w.acquireSession(ctx, req.SessionKey, cwd, req.UpstreamModel, req.ReasoningEffort, req.PermissionMode, req.ACPMode, req.MCPServers, req.PermissionHandler)
 	if err != nil {
 		return err
 	}
@@ -206,8 +222,8 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	var cbErr error
 	var cbMu sync.Mutex
 	unregister := w.registerStream(sess.id, func(update json.RawMessage) {
-		delta := extractUpdateDelta(update, toolMode)
-		if delta == "" {
+		delta, thought, passthrough := extractUpdateParts(update, toolMode)
+		if delta == "" && thought == "" && !passthrough {
 			return
 		}
 		cbMu.Lock()
@@ -215,21 +231,38 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		if cbErr != nil {
 			return
 		}
-		if err := cb(backend.StreamChunk{
+		chunk := backend.StreamChunk{
 			Delta:        delta,
+			Reasoning:    thought,
 			ToolsIgnored: req.HasTools,
 			SessionID:    sess.id,
-		}); err != nil {
+		}
+		if passthrough {
+			chunk.RawACPUpdate = append(json.RawMessage(nil), update...)
+		}
+		if err := cb(chunk); err != nil {
 			cbErr = err
 		}
 	})
 	defer unregister()
 
+	blocks := make([]promptBlock, 0, 1+len(req.Images))
+	if promptText != "" || len(req.Images) == 0 {
+		blocks = append(blocks, promptBlock{Type: "text", Text: promptText})
+	}
+	for _, img := range req.Images {
+		if img.Data != "" {
+			mime := img.MimeType
+			if mime == "" {
+				mime = "image/png"
+			}
+			blocks = append(blocks, promptBlock{Type: "image", Data: img.Data, MimeType: mime})
+		}
+	}
+
 	resRaw, err := w.call(ctx, "session/prompt", sessionPromptParams{
 		SessionID: sess.id,
-		Prompt: []promptBlock{
-			{Type: "text", Text: promptText},
-		},
+		Prompt:    blocks,
 	})
 	if err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
@@ -321,13 +354,19 @@ func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfi
 // --- ACP stdio worker ---
 
 type acpSession struct {
-	id              string
-	cwd             string
-	modelConfigID   string
-	useSetModel     bool
-	currentModel    string
-	availableModels []string
-	modelLabels     map[string]string
+	id               string
+	cwd              string
+	modelConfigID    string
+	effortConfigID   string
+	modeConfigID     string
+	useSetModel      bool
+	currentModel     string
+	currentEffort    string
+	currentMode      string
+	availableModels  []string
+	availableEfforts []string
+	hasDefaultEffort bool
+	modelLabels      map[string]string
 }
 
 type worker struct {
@@ -346,8 +385,10 @@ type worker struct {
 	streamMu sync.RWMutex
 	streams  map[string]func(json.RawMessage)
 
-	sessMu   sync.Mutex
-	sessions map[string]*acpSession
+	sessMu          sync.Mutex
+	sessions        map[string]*acpSession
+	permByID        map[string]string            // upstream ACP sessionId -> per-request permissionMode override
+	permHandlerByID map[string]PermissionHandler // upstream ACP sessionId -> per-request interactive permission handler
 
 	closed atomic.Bool
 	doneCh chan struct{}
@@ -384,9 +425,11 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 		cmd:      cmd,
 		stdin:    stdin,
 		pending:  make(map[string]chan rpcMessage),
-		streams:  make(map[string]func(json.RawMessage)),
-		sessions: make(map[string]*acpSession),
-		doneCh:   make(chan struct{}),
+		streams:         make(map[string]func(json.RawMessage)),
+		sessions:        make(map[string]*acpSession),
+		permByID:        make(map[string]string),
+		permHandlerByID: make(map[string]PermissionHandler),
+		doneCh:          make(chan struct{}),
 	}
 
 	go w.readStdout(stdout)
@@ -656,14 +699,26 @@ func (w *worker) handlePermission(msg rpcMessage) {
 		return permissionOutcome{Outcome: "cancelled"}
 	}
 
+	permMode := acct.PermissionMode
+	var sessPermHandler PermissionHandler
+	w.sessMu.Lock()
+	if override := w.permByID[p.SessionID]; override != "" {
+		permMode = override
+	}
+	sessPermHandler = w.permHandlerByID[p.SessionID]
+	w.sessMu.Unlock()
+
 	var outcome permissionOutcome
-	switch acct.PermissionMode {
+	switch permMode {
 	case config.PermAutoApprove:
 		outcome = pickOption(true)
 	case config.PermAsk:
-		w.mgr.mu.Lock()
-		handler := w.mgr.permHandler
-		w.mgr.mu.Unlock()
+		handler := sessPermHandler
+		if handler == nil {
+			w.mgr.mu.Lock()
+			handler = w.mgr.permHandler
+			w.mgr.mu.Unlock()
+		}
 		if handler != nil {
 			args := string(p.ToolCall.Arguments)
 			if args == "" {
@@ -702,10 +757,13 @@ func (w *worker) handlePermission(msg rpcMessage) {
 	})
 }
 
-func (w *worker) newSession(ctx context.Context, cwd string) (*acpSession, error) {
+func (w *worker) newSession(ctx context.Context, cwd string, mcpServers []any) (*acpSession, error) {
+	if mcpServers == nil {
+		mcpServers = []any{}
+	}
 	resRaw, err := w.call(ctx, "session/new", sessionNewParams{
 		Cwd:        cwd,
-		MCPServers: []any{},
+		MCPServers: mcpServers,
 	})
 	if err != nil {
 		return nil, classifyACPError(err)
@@ -754,7 +812,15 @@ func (w *worker) newSession(ctx context.Context, cwd string) (*acpSession, error
 			s.modelConfigID = opt.ID
 			s.currentModel = opt.CurrentValue
 			collectOptionValues(opt.Options)
-			break
+			continue
+		}
+		if isThoughtLevelOption(opt) {
+			applyEffortConfigOption(s, opt)
+			continue
+		}
+		if strings.EqualFold(opt.Category, "mode") || strings.EqualFold(opt.ID, "mode") {
+			s.modeConfigID = opt.ID
+			s.currentMode = strings.TrimSpace(opt.CurrentValue)
 		}
 	}
 	if res.Models != nil {
@@ -775,7 +841,48 @@ func (w *worker) newSession(ctx context.Context, cwd string) (*acpSession, error
 	return s, nil
 }
 
-func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamModel string) (*acpSession, bool, error) {
+func isThoughtLevelOption(opt configOption) bool {
+	cat := strings.ToLower(strings.TrimSpace(opt.Category))
+	id := strings.ToLower(strings.TrimSpace(opt.ID))
+	return cat == "thought_level" || id == "thought_level" || id == "effort" || id == "reasoning_effort"
+}
+
+func applyEffortConfigOption(s *acpSession, opt configOption) {
+	s.effortConfigID = opt.ID
+	s.currentEffort = strings.TrimSpace(opt.CurrentValue)
+	s.availableEfforts = nil
+	s.hasDefaultEffort = false
+	seen := make(map[string]bool)
+	var collect func(opts []configOptionValue)
+	collect = func(opts []configOptionValue) {
+		for _, v := range opts {
+			if len(v.Options) > 0 {
+				collect(v.Options)
+			}
+			val := strings.ToLower(strings.TrimSpace(v.Value))
+			if val == "" {
+				val = strings.ToLower(strings.TrimSpace(v.ID))
+			}
+			if val == "" {
+				continue
+			}
+			if val == "default" {
+				s.hasDefaultEffort = true
+				continue
+			}
+			if val == "auto" || val == "none" || val == "off" {
+				continue
+			}
+			if !seen[val] {
+				seen[val] = true
+				s.availableEfforts = append(s.availableEfforts, val)
+			}
+		}
+	}
+	collect(opt.Options)
+}
+
+func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamModel, reasoningEffort, permissionMode, acpMode string, mcpServers []any, permHandler PermissionHandler) (*acpSession, bool, error) {
 	w.sessMu.Lock()
 	var sess *acpSession
 	reused := false
@@ -789,7 +896,7 @@ func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamMo
 
 	if sess == nil {
 		var err error
-		sess, err = w.newSession(ctx, cwd)
+		sess, err = w.newSession(ctx, cwd, mcpServers)
 		if err != nil {
 			return nil, false, err
 		}
@@ -800,14 +907,52 @@ func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamMo
 		}
 	}
 
+	w.sessMu.Lock()
+	if permissionMode != "" {
+		w.permByID[sess.id] = permissionMode
+	}
+	if permHandler != nil {
+		w.permHandlerByID[sess.id] = permHandler
+	}
+	w.sessMu.Unlock()
+
+	if acpMode != "" && !strings.EqualFold(acpMode, sess.currentMode) {
+		if sess.modeConfigID != "" {
+			if _, err := w.call(ctx, "session/set_config_option", setConfigOptionParams{
+				SessionID: sess.id,
+				ConfigID:  sess.modeConfigID,
+				Value:     acpMode,
+			}); err == nil {
+				sess.currentMode = acpMode
+			}
+		} else {
+			if _, err := w.call(ctx, "session/set_mode", map[string]string{
+				"sessionId": sess.id,
+				"modeId":    acpMode,
+			}); err == nil {
+				sess.currentMode = acpMode
+			}
+		}
+	}
+
 	if upstreamModel != "" && upstreamModel != "default" && upstreamModel != sess.currentModel {
 		if sess.modelConfigID != "" {
-			if _, err := w.call(ctx, "session/set_config_option", setConfigOptionParams{
+			if resRaw, err := w.call(ctx, "session/set_config_option", setConfigOptionParams{
 				SessionID: sess.id,
 				ConfigID:  sess.modelConfigID,
 				Value:     upstreamModel,
 			}); err == nil {
 				sess.currentModel = upstreamModel
+				var cfgRes struct {
+					ConfigOptions []configOption `json:"configOptions"`
+				}
+				if json.Unmarshal(resRaw, &cfgRes) == nil && len(cfgRes.ConfigOptions) > 0 {
+					for _, opt := range cfgRes.ConfigOptions {
+						if isThoughtLevelOption(opt) {
+							applyEffortConfigOption(sess, opt)
+						}
+					}
+				}
 			}
 		} else if sess.useSetModel {
 			if _, err := w.call(ctx, "session/set_model", setModelParams{
@@ -815,6 +960,22 @@ func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamMo
 				ModelID:   upstreamModel,
 			}); err == nil {
 				sess.currentModel = upstreamModel
+			}
+		}
+	}
+
+	if sess.effortConfigID != "" {
+		targetEffort := strings.ToLower(strings.TrimSpace(reasoningEffort))
+		if targetEffort == "" && sess.hasDefaultEffort && sess.currentEffort != "" && !strings.EqualFold(sess.currentEffort, "default") {
+			targetEffort = "default"
+		}
+		if targetEffort != "" && !strings.EqualFold(targetEffort, strings.TrimSpace(sess.currentEffort)) {
+			if _, err := w.call(ctx, "session/set_config_option", setConfigOptionParams{
+				SessionID: sess.id,
+				ConfigID:  sess.effortConfigID,
+				Value:     targetEffort,
+			}); err == nil {
+				sess.currentEffort = targetEffort
 			}
 		}
 	}
@@ -862,7 +1023,7 @@ func formatPrompt(messages []backend.Message, reusedSession bool) string {
 	return strings.TrimSpace(sb.String())
 }
 
-func extractUpdateDelta(raw json.RawMessage, toolMode string) string {
+func extractUpdateParts(raw json.RawMessage, toolMode string) (delta, thought string, passthrough bool) {
 	var u struct {
 		SessionUpdate string          `json:"sessionUpdate"`
 		Kind          string          `json:"kind"`
@@ -871,7 +1032,7 @@ func extractUpdateDelta(raw json.RawMessage, toolMode string) string {
 		Content       json.RawMessage `json:"content"`
 	}
 	if err := json.Unmarshal(raw, &u); err != nil {
-		return ""
+		return "", "", false
 	}
 	kind := u.SessionUpdate
 	if kind == "" {
@@ -880,17 +1041,28 @@ func extractUpdateDelta(raw json.RawMessage, toolMode string) string {
 
 	switch kind {
 	case "agent_message_chunk":
-		return extractTextFromContent(u.Content)
+		return extractTextFromContent(u.Content), "", false
+	case "agent_thought_chunk":
+		return "", extractTextFromContent(u.Content), true
 	case "tool_call":
 		if toolMode == config.ToolActivityText && u.Title != "" {
-			return fmt.Sprintf("\n[tool: %s]\n", u.Title)
+			return fmt.Sprintf("\n[tool: %s]\n", u.Title), "", true
 		}
+		return "", "", true
 	case "tool_call_update":
 		if toolMode == config.ToolActivityText && u.Title != "" && u.Status != "" {
-			return fmt.Sprintf("\n[tool %s: %s]\n", u.Status, u.Title)
+			return fmt.Sprintf("\n[tool %s: %s]\n", u.Status, u.Title), "", true
 		}
+		return "", "", true
+	case "plan", "usage_update":
+		return "", "", true
 	}
-	return ""
+	return "", "", false
+}
+
+func extractUpdateDelta(raw json.RawMessage, toolMode string) string {
+	d, _, _ := extractUpdateParts(raw, toolMode)
+	return d
 }
 
 func extractTextFromContent(raw json.RawMessage) string {

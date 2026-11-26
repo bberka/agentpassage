@@ -75,6 +75,7 @@ type testResultMsg struct {
 	accountID string
 	models    []string
 	labels    map[string]string
+	efforts   map[string][]string
 	err       error
 }
 
@@ -122,19 +123,21 @@ type App struct {
 	modelCursor   int
 	showHidden    bool
 	routingCursor int
-	logCursor     int
-	logLevel      string
+	logCursor        int
+	logLevel         string
+	logInspect       bool
 	usageShow14d     bool
 	usagePeriod      string
 	usageQuotaOffset int
 	settingCursor    int
 
 	// Welcome / ACP Registry Detect & Install modal
-	detected        []descriptors.DetectedCLI
-	detectCursor    int
-	detectSelected  map[string]bool
-	detectSearch    textinput.Model
-	detectSearching bool
+	detected            []descriptors.DetectedCLI
+	detectCursor        int
+	detectSelected      map[string]bool
+	detectSearch        textinput.Model
+	detectSearching     bool
+	detectInstalledOnly bool
 
 	// Detected Host Logins (copy/reuse/re-authenticate confirmation modal)
 	hostAuthItems    []hostauth.DetectedLogin
@@ -416,6 +419,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if acct := cfg.FindAccount(msg.accountID); acct != nil {
 			if len(msg.labels) > 0 {
 				acct.MergeModelLabels(msg.labels)
+			}
+			if len(msg.efforts) > 0 {
+				acct.MergeModelEfforts(msg.efforts)
 			}
 			if len(msg.models) > 0 {
 				acct.MergeDiscoveredModels(msg.models)
@@ -835,12 +841,12 @@ func (a *App) renderFooter() string {
 		case ScreenAccounts:
 			hints = []string{
 				a.styles.KeyHint("a", "add"),
+				a.styles.KeyHint("i", "installed"),
+				a.styles.KeyHint("c", "logins"),
 				a.styles.KeyHint("e", "edit"),
-				a.styles.KeyHint("r", "rename"),
 				a.styles.KeyHint("M", "models"),
 				a.styles.KeyHint("l", "login"),
 				a.styles.KeyHint("t", "test"),
-				a.styles.KeyHint("T", "health all"),
 				a.styles.KeyHint("C", "connect"),
 			}
 		case ScreenModels:
@@ -1104,8 +1110,8 @@ func (a *App) testAccountCmd(acct config.AccountConfig) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		models, labels, err := a.srv.TestAccountWithLabels(ctx, acct)
-		return testResultMsg{accountID: acct.ID, models: models, labels: labels, err: err}
+		models, labels, efforts, err := a.srv.TestAccountDiscovery(ctx, acct)
+		return testResultMsg{accountID: acct.ID, models: models, labels: labels, efforts: efforts, err: err}
 	}
 }
 

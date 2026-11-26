@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 type fetchModelsMsg struct {
@@ -25,18 +26,27 @@ type fetchAllModelsMsg struct {
 	errors          []string
 }
 
+type modelPickerRow struct {
+	id       string
+	members  []string // concrete model IDs controlled by this row (base + collapsed effort variants)
+	efforts  []string
+	enabled  bool
+}
+
 type modelPickerState struct {
-	accountID   string // non-empty when editing an existing account; empty during Add Account wizard
-	title       string
-	models      []string        // full sorted catalog
-	enabled     map[string]bool // modelID -> enabled
-	cursor      int
-	loading     bool
-	fetchErr    string
-	searching   bool
-	searchInput textinput.Model
-	addingModel bool
-	addInput    textinput.Model
+	accountID     string // non-empty when editing an existing account; empty during Add Account wizard
+	title         string
+	models        []string            // full sorted concrete catalog
+	enabled       map[string]bool     // concrete modelID -> enabled
+	modelEfforts  map[string][]string // optional ACP thought_level metadata
+	groupThinking bool
+	cursor        int
+	loading       bool
+	fetchErr      string
+	searching     bool
+	searchInput   textinput.Model
+	addingModel   bool
+	addInput      textinput.Model
 }
 
 func newModelPicker(accountID, title string, catalog, enabledList []string) *modelPickerState {
@@ -71,13 +81,89 @@ func newModelPicker(accountID, title string, catalog, enabledList []string) *mod
 	sort.Strings(all)
 
 	return &modelPickerState{
-		accountID:   accountID,
-		title:       title,
-		models:      all,
-		enabled:     en,
-		searchInput: si,
-		addInput:    ai,
+		accountID:     accountID,
+		title:         title,
+		models:        all,
+		enabled:       en,
+		groupThinking: true,
+		searchInput:   si,
+		addInput:      ai,
 	}
+}
+
+func (p *modelPickerState) rows() []modelPickerRow {
+	q := strings.ToLower(strings.TrimSpace(p.searchInput.Value()))
+	if !p.groupThinking {
+		var out []modelPickerRow
+		for _, m := range p.models {
+			if q != "" && !strings.Contains(strings.ToLower(m), q) {
+				continue
+			}
+			out = append(out, modelPickerRow{
+				id:      m,
+				members: []string{m},
+				enabled: p.enabled[m],
+			})
+		}
+		return out
+	}
+
+	grouped, effortsByBase := router.GroupEffortVariants(p.models)
+	membersByBase := make(map[string][]string, len(grouped))
+	for _, m := range p.models {
+		base, eff, _ := router.SplitModelEffort(m)
+		if eff != "" && len(effortsByBase[base]) > 0 {
+			membersByBase[base] = append(membersByBase[base], m)
+		} else {
+			membersByBase[m] = append(membersByBase[m], m)
+		}
+	}
+
+	var out []modelPickerRow
+	for _, base := range grouped {
+		if q != "" && !strings.Contains(strings.ToLower(base), q) {
+			continue
+		}
+		members := membersByBase[base]
+		if len(members) == 0 {
+			members = []string{base}
+		}
+		anyEnabled := false
+		for _, m := range members {
+			if p.enabled[m] {
+				anyEnabled = true
+				break
+			}
+		}
+		effs := effortsByBase[base]
+		if len(effs) == 0 && len(p.modelEfforts) > 0 {
+			if me := p.modelEfforts[base]; len(me) > 0 {
+				effs = me
+			} else if len(effortsByBase) == 0 && len(p.modelEfforts["*"]) > 0 {
+				effs = p.modelEfforts["*"]
+			}
+		}
+		out = append(out, modelPickerRow{
+			id:      base,
+			members: members,
+			efforts: effs,
+			enabled: anyEnabled,
+		})
+	}
+	return out
+}
+
+func (p *modelPickerState) rowCounts() (enabledCount, totalCount int) {
+	q := p.searchInput.Value()
+	p.searchInput.SetValue("")
+	all := p.rows()
+	p.searchInput.SetValue(q)
+	for _, r := range all {
+		if r.enabled {
+			enabledCount++
+		}
+	}
+	return enabledCount, len(all)
 }
 
 func (p *modelPickerState) mergeFetched(fetched []string, enableNew bool) {
@@ -158,7 +244,7 @@ func (a *App) fetchAllAccountsModelsCmd() tea.Cmd {
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			models, labels, err := a.srv.TestAccountWithLabels(ctx, *acct)
+			models, labels, efforts, err := a.srv.TestAccountDiscovery(ctx, *acct)
 			cancel()
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %v", acct.Name, err))
@@ -166,6 +252,9 @@ func (a *App) fetchAllAccountsModelsCmd() tea.Cmd {
 			}
 			if len(labels) > 0 {
 				acct.MergeModelLabels(labels)
+			}
+			if len(efforts) > 0 {
+				acct.MergeModelEfforts(efforts)
 			}
 			if len(models) > 0 {
 				acct.MergeDiscoveredModels(models)
@@ -187,6 +276,8 @@ func (a *App) openAccountModelsModal(acct config.AccountConfig) tea.Cmd {
 		catalog = acct.Models
 	}
 	a.modelPicker = newModelPicker(acct.ID, "Models — "+acct.Backend+"/"+acct.Name, catalog, acct.Models)
+	a.modelPicker.groupThinking = !a.srv.Config().Catalog.ShowEffortVariants
+	a.modelPicker.modelEfforts = acct.ModelEfforts
 	a.modal = modalAccountModels
 	if acct.Kind == config.KindAPIKey {
 		a.modelPicker.loading = true
@@ -248,7 +339,7 @@ func (a *App) updateAccountModelsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	items := p.filtered()
+	items := p.rows()
 	if p.cursor >= len(items) && len(items) > 0 {
 		p.cursor = len(items) - 1
 	}
@@ -289,34 +380,45 @@ func (a *App) updateAccountModelsModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case " ":
 		if p.cursor >= 0 && p.cursor < len(items) {
-			id := items[p.cursor]
-			p.enabled[id] = !p.enabled[id]
+			row := items[p.cursor]
+			next := !row.enabled
+			for _, m := range row.members {
+				p.enabled[m] = next
+			}
 		}
 	case "a":
 		// Enable all currently visible (or all) models
-		for _, id := range items {
-			p.enabled[id] = true
+		for _, row := range items {
+			for _, m := range row.members {
+				p.enabled[m] = true
+			}
 		}
 		a.setStatus(fmt.Sprintf("Enabled %d model(s)", len(items)), false)
 	case "n":
 		// Disable all currently visible (or all) models
-		for _, id := range items {
-			p.enabled[id] = false
+		for _, row := range items {
+			for _, m := range row.members {
+				p.enabled[m] = false
+			}
 		}
 		a.setStatus(fmt.Sprintf("Disabled %d model(s)", len(items)), false)
 	case "x", "delete":
-		// Remove selected model from this account's catalog
+		// Remove selected model (and its collapsed effort variants) from this account's catalog
 		if p.cursor >= 0 && p.cursor < len(items) {
-			target := items[p.cursor]
-			delete(p.enabled, target)
+			row := items[p.cursor]
+			drop := make(map[string]bool, len(row.members))
+			for _, m := range row.members {
+				drop[m] = true
+				delete(p.enabled, m)
+			}
 			kept := p.models[:0]
 			for _, m := range p.models {
-				if m != target {
+				if !drop[m] {
 					kept = append(kept, m)
 				}
 			}
 			p.models = kept
-			a.setStatus("Removed model "+target, false)
+			a.setStatus("Removed model "+row.id, false)
 		}
 	case "f", "F":
 		cfg := a.srv.Config()
@@ -365,7 +467,7 @@ func (a *App) renderModelPickerBody(p *modelPickerState, innerW, maxRows int) []
 		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Filter: %q  (/ edit)", q)))
 	}
 
-	items := p.filtered()
+	items := p.rows()
 	if len(items) == 0 {
 		lines = append(lines, "")
 		if p.loading {
@@ -389,18 +491,22 @@ func (a *App) renderModelPickerBody(p *modelPickerState, innerW, maxRows int) []
 	idW := max(innerW-2-3-2-2-stateW, 18)
 
 	for i := start; i < end; i++ {
-		id := items[i]
+		item := items[i]
 		markPlain := "[ ]"
 		statePlain := "disabled"
 		markStyle := a.styles.Muted
 		stateStyle := a.styles.Muted
-		if p.enabled[id] {
+		if item.enabled {
 			markPlain = "[x]"
 			statePlain = "enabled"
 			markStyle = a.styles.StateReady
 			stateStyle = a.styles.StateReady
 		}
-		idStr := truncate(id, idW)
+		label := item.id
+		if len(item.efforts) > 0 {
+			label = fmt.Sprintf("%s  [thinking:%s]", item.id, strings.Join(item.efforts, "/"))
+		}
+		idStr := truncate(label, idW)
 		if i == p.cursor {
 			plain := fmt.Sprintf("> %s  %-*s  %s", markPlain, idW, idStr, statePlain)
 			lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
@@ -427,7 +533,8 @@ func (a *App) viewAccountModelsModal() string {
 	cardW := clamp(a.width-10, 62, 90)
 	innerW := cardW - 6
 
-	summary := fmt.Sprintf("%d enabled / %d total", p.enabledCount(), len(p.models))
+	enCount, totCount := p.rowCounts()
+	summary := fmt.Sprintf("%d enabled / %d total", enCount, totCount)
 	var lines []string
 	lines = append(lines, a.styles.Title.Render("◆ "+p.title)+"   "+a.styles.Muted.Render(summary))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))

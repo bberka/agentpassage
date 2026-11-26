@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/gateway"
 	"github.com/bberka/agentpassage/internal/privacy"
@@ -159,6 +161,20 @@ func cmdAccounts(args []string) error {
 			case "--permission":
 				i++
 				acct.PermissionMode = val
+			case "--daily-budget-usd":
+				i++
+				v, err := strconv.ParseFloat(val, 64)
+				if err != nil || v < 0 {
+					return fmt.Errorf("invalid --daily-budget-usd %q", val)
+				}
+				acct.DailyBudgetUSD = v
+			case "--monthly-budget-usd":
+				i++
+				v, err := strconv.ParseFloat(val, 64)
+				if err != nil || v < 0 {
+					return fmt.Errorf("invalid --monthly-budget-usd %q", val)
+				}
+				acct.MonthlyBudgetUSD = v
 			}
 		}
 		if err := config.Save(dataDir, cfg); err != nil {
@@ -303,6 +319,16 @@ func cmdRouting(args []string) error {
 			case "--retry-429":
 				v := strings.ToLower(nextVal())
 				rule.AllowCrossAccountRetryOn429 = v == "true" || v == "1" || v == "yes" || v == "on"
+			case "--quota-threshold":
+				n, err := strconv.Atoi(nextVal())
+				if err != nil || n < 0 || n > 100 {
+					return fmt.Errorf("invalid --quota-threshold (0-100)")
+				}
+				rule.QuotaThresholdPct = n
+			case "--default-effort":
+				rule.DefaultEffort = nextVal()
+			case "--system-prompt":
+				rule.SystemPrompt = nextVal()
 			case "--accept-sub-risk":
 				acceptSubRisk = true
 			case "--json":
@@ -314,7 +340,7 @@ func cmdRouting(args []string) error {
 			}
 		}
 		if rule.Pattern == "" {
-			return fmt.Errorf("usage: apx routing add <pattern> [--project p] [--strategy failover|sticky|manual|round-robin|least-busy] [--accounts a,b] [--fallback m1,m2] [--retry-429 true|false] [--accept-sub-risk]")
+			return fmt.Errorf("usage: apx routing add <pattern> [--project p] [--strategy failover|sticky|manual|round-robin|least-busy|most-quota] [--accounts a,b] [--quota-threshold 90] [--default-effort off|low|medium|high|xhigh|max] [--system-prompt text] [--fallback m1,m2] [--retry-429 true|false] [--accept-sub-risk]")
 		}
 		if rule.Strategy == config.StrategyRoundRobin || rule.Strategy == config.StrategyLeastBusy {
 			if routingRuleTouchesSub(cfg, rule) {
@@ -711,6 +737,118 @@ Use --json for structured output and --yes to skip interactive prompts.
   apx disconnect t3code --yes
   apx service status|start|stop|restart|install|uninstall
 `)
+	return nil
+}
+
+func cmdExportConfig(args []string) error {
+	outPath := ""
+	for i := 0; i < len(args); i++ {
+		if (args[i] == "--out" || args[i] == "-o") && i+1 < len(args) {
+			i++
+			outPath = args[i]
+		}
+	}
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+	cfg, _, err := config.Load(dataDir)
+	if err != nil {
+		return err
+	}
+	// Strip all local/client API key secrets before exporting.
+	sanitized := *cfg
+	sanitized.Server.LocalKey = ""
+	sanitized.Server.APIKeys = nil
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(&sanitized); err != nil {
+		return err
+	}
+	if outPath != "" {
+		if err := os.WriteFile(outPath, buf.Bytes(), 0o600); err != nil {
+			return err
+		}
+		fmt.Printf("Exported secret-free config to %s\n", outPath)
+		return nil
+	}
+	fmt.Print(buf.String())
+	return nil
+}
+
+func cmdImportConfig(args []string) error {
+	inPath := ""
+	merge := false
+	for _, a := range args {
+		if a == "--merge" {
+			merge = true
+		} else if !strings.HasPrefix(a, "-") && inPath == "" {
+			inPath = a
+		}
+	}
+	if inPath == "" {
+		return fmt.Errorf("usage: apx import-config <file.toml> [--merge]")
+	}
+	raw, err := os.ReadFile(inPath)
+	if err != nil {
+		return err
+	}
+	var incoming config.Config
+	if _, err := toml.Decode(string(raw), &incoming); err != nil {
+		return fmt.Errorf("parse %s: %w", inPath, err)
+	}
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+	cur, _, err := config.Load(dataDir)
+	if err != nil {
+		return err
+	}
+	if merge {
+		// Merge routing rules, model overrides, privacy patterns, and alerts while preserving local keys & accounts.
+		for _, r := range incoming.Routing {
+			found := false
+			for i := range cur.Routing {
+				if cur.Routing[i].Pattern == r.Pattern && cur.Routing[i].Project == r.Project {
+					cur.Routing[i] = r
+					found = true
+					break
+				}
+			}
+			if !found {
+				cur.Routing = append(cur.Routing, r)
+			}
+		}
+		for _, m := range incoming.Models {
+			found := false
+			for i := range cur.Models {
+				if cur.Models[i].ID == m.ID {
+					cur.Models[i] = m
+					found = true
+					break
+				}
+			}
+			if !found {
+				cur.Models = append(cur.Models, m)
+			}
+		}
+		if incoming.Privacy.Enabled {
+			cur.Privacy = incoming.Privacy
+		}
+		if incoming.Alerts.Enabled {
+			cur.Alerts = incoming.Alerts
+		}
+	} else {
+		// Replace non-secret settings while keeping existing local key and client API keys.
+		incoming.Server.LocalKey = cur.Server.LocalKey
+		incoming.Server.APIKeys = cur.Server.APIKeys
+		cur = &incoming
+	}
+	if err := config.Save(dataDir, cur); err != nil {
+		return err
+	}
+	gateway.NotifyRunningDaemon(cur)
+	fmt.Printf("Imported config from %s (secrets preserved).\n", inPath)
 	return nil
 }
 

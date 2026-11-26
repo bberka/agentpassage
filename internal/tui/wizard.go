@@ -16,16 +16,28 @@ func (a *App) openWelcome() {
 	a.detected = a.srv.Registry().DetectInstalled()
 	a.detectCursor = 0
 	a.detectSearching = false
+	a.detectInstalledOnly = false
 	a.detectSearch.SetValue("")
 	a.detectSearch.Blur()
 	a.detectSelected = make(map[string]bool)
+	existingBackends := a.configuredBackendCounts()
 	for _, d := range a.detected {
-		if d.Found {
+		if d.Found && existingBackends[d.Descriptor.ID] == 0 {
 			a.detectSelected[d.Descriptor.ID] = true
 		}
 	}
 	a.hostAuthItems = hostauth.DetectAll("")
 	a.modal = modalWelcome
+}
+
+func (a *App) configuredBackendCounts() map[string]int {
+	counts := make(map[string]int)
+	for _, acct := range a.srv.Config().Accounts {
+		if acct.Kind == config.KindACP || acct.Kind == config.KindCLI {
+			counts[acct.Backend]++
+		}
+	}
+	return counts
 }
 
 // openStartupHostAuthIfNeeded checks for existing host CLI logins on launch that either
@@ -316,15 +328,21 @@ func (a *App) viewHostAuthModal() string {
 
 func (a *App) filteredDetected() []descriptors.DetectedCLI {
 	q := strings.ToLower(strings.TrimSpace(a.detectSearch.Value()))
-	if q == "" {
+	if q == "" && !a.detectInstalledOnly {
 		return a.detected
 	}
 	var out []descriptors.DetectedCLI
 	for _, d := range a.detected {
-		hay := strings.ToLower(d.Descriptor.ID + " " + d.Descriptor.Name + " " + d.Descriptor.Description + " " + d.Descriptor.Detect)
-		if strings.Contains(hay, q) {
-			out = append(out, d)
+		if a.detectInstalledOnly && !d.Found {
+			continue
 		}
+		if q != "" {
+			hay := strings.ToLower(d.Descriptor.ID + " " + d.Descriptor.Name + " " + d.Descriptor.Description + " " + d.Descriptor.Detect)
+			if !strings.Contains(hay, q) {
+				continue
+			}
+		}
+		out = append(out, d)
 	}
 	return out
 }
@@ -369,11 +387,16 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(items) > 0 {
 			a.detectCursor = min(a.detectCursor+8, len(items)-1)
 		}
+	case "f":
+		a.detectInstalledOnly = !a.detectInstalledOnly
+		a.detectCursor = 0
 	case " ":
 		if a.detectCursor >= 0 && a.detectCursor < len(items) {
 			d := items[a.detectCursor]
-			if d.Found || d.Descriptor.NPXPackage != "" || d.Descriptor.UVXPackage != "" {
+			if d.Found {
 				a.detectSelected[d.Descriptor.ID] = !a.detectSelected[d.Descriptor.ID]
+			} else if d.Descriptor.CanInstall() {
+				a.setStatus(d.Descriptor.Name+" is not installed yet — press 'i' to install it first.", false)
 			}
 		}
 	case "i":
@@ -413,14 +436,16 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if !a.detectSelected[d.Descriptor.ID] {
 				continue
 			}
-			id := config.SanitizeSlug(d.Descriptor.ID + "-default")
-			if cfg.FindAccount(id) != nil {
-				continue
+			acctName := "default"
+			id := config.SanitizeSlug(d.Descriptor.ID + "-" + acctName)
+			for n := 2; cfg.FindAccount(id) != nil; n++ {
+				acctName = fmt.Sprintf("acct%d", n)
+				id = config.SanitizeSlug(d.Descriptor.ID + "-" + acctName)
 			}
-			_, _ = config.EnsureProfileDir(a.srv.DataDir(), d.Descriptor.ID, "default")
+			_, _ = config.EnsureProfileDir(a.srv.DataDir(), d.Descriptor.ID, acctName)
 			cfg.Accounts = append(cfg.Accounts, config.AccountConfig{
 				ID:             id,
-				Name:           "default",
+				Name:           acctName,
 				Kind:           config.KindACP,
 				Backend:        d.Descriptor.ID,
 				Enabled:        true,
@@ -474,9 +499,21 @@ func (a *App) viewWelcomeModal() string {
 	innerW := cardW - 6
 	items := a.filteredDetected()
 
+	installedTotal := 0
+	for _, d := range a.detected {
+		if d.Found {
+			installedTotal++
+		}
+	}
+	existingCounts := a.configuredBackendCounts()
+
 	var lines []string
-	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("◆ ACP Registry & CLI Installer (%d agents)", len(items))))
-	lines = append(lines, a.styles.Muted.Render("Install adapters right inside apx without exiting, or press Space + Enter to add agents."))
+	title := fmt.Sprintf("◆ ACP Registry & CLI Installer (%d installed / %d total)", installedTotal, len(a.detected))
+	if a.detectInstalledOnly {
+		title += "  [installed only]"
+	}
+	lines = append(lines, a.styles.Title.Render(title))
+	lines = append(lines, a.styles.Muted.Render("Press Space + Enter to add installed agents, 'i' to install new ones, or 'f' for installed only."))
 	if len(a.hostAuthItems) > 0 {
 		names := make([]string, 0, len(a.hostAuthItems))
 		for _, hl := range a.hostAuthItems {
@@ -499,31 +536,37 @@ func (a *App) viewWelcomeModal() string {
 	end := min(start+maxRows, len(items))
 
 	nameW := 18
-	statW := 21
+	statW := 16
 	descW := max(innerW-2-3-2-nameW-2-statW-2, 10)
 
 	for i := start; i < end; i++ {
 		d := items[i]
-		mark := "[ ]"
-		if a.detectSelected[d.Descriptor.ID] {
-			mark = "[x]"
-		} else if !d.Found && d.Descriptor.NPXPackage == "" && d.Descriptor.UVXPackage == "" {
-			mark = " · "
+		mark := " · "
+		if d.Found {
+			if a.detectSelected[d.Descriptor.ID] {
+				mark = "[x]"
+			} else {
+				mark = "[ ]"
+			}
 		}
 
 		statusPlain := "○ manual"
 		statusStyle := a.styles.Muted
 		if d.Found {
-			statusPlain = "● installed"
+			if n := existingCounts[d.Descriptor.ID]; n > 0 {
+				statusPlain = fmt.Sprintf("● installed (%d)", n)
+			} else {
+				statusPlain = "● installed"
+			}
 			statusStyle = a.styles.StateReady
 		} else if d.Descriptor.BinaryArchive != "" {
-			statusPlain = "○ binary (i: install)"
+			statusPlain = "○ binary"
 			statusStyle = a.styles.StateWarn
 		} else if d.Descriptor.InstallPackage != "" {
-			statusPlain = "○ npm (i: install)"
+			statusPlain = "○ npm"
 			statusStyle = a.styles.StateWarn
 		} else if d.Descriptor.UVXPackage != "" {
-			statusPlain = "○ uvx (i: install)"
+			statusPlain = "○ uvx"
 			statusStyle = a.styles.StateWarn
 		}
 
@@ -568,8 +611,13 @@ func (a *App) viewWelcomeModal() string {
 		lines = append(lines, a.styles.Muted.Render(truncate(info, innerW)))
 	}
 
+	filterLabel := "installed only"
+	if a.detectInstalledOnly {
+		filterLabel = "show all"
+	}
 	lines = append(lines, a.styles.JoinHints(
 		a.styles.KeyHint("/", "search"),
+		a.styles.KeyHint("f", filterLabel),
 		a.styles.KeyHint("i", "install"),
 		a.styles.KeyHint("space", "select"),
 		a.styles.KeyHint("enter", "add selected"),

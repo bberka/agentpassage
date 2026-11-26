@@ -119,8 +119,22 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		t.Fatalf("expected existing context_servers preserved in zed settings")
 	}
 	zedServers := zedParsed["agent_servers"].(map[string]any)
-	if _, ok := zedServers["apx"]; !ok {
+	zedAPX, ok := zedServers["apx"].(map[string]any)
+	if !ok {
 		t.Fatalf("expected agent_servers.apx in zed settings, got %s", zedRaw)
+	}
+	if zedAPX["type"] != "custom" {
+		t.Fatalf("expected agent_servers.apx.type=custom in zed settings, got %s", zedRaw)
+	}
+
+	// 3c. Delta (Zed Agent IDE) target lookup & snippet
+	tDelta, ok := FindTarget("delta")
+	if !ok {
+		t.Fatalf("expected delta target registered")
+	}
+	resDelta, err := ApplyAtPath(tDelta, "", cfg, models, false)
+	if err != nil || !strings.Contains(resDelta.Snippet, "acp") || !strings.Contains(resDelta.Snippet, "Base URL:") {
+		t.Fatalf("delta connect snippet failed: res=%+v err=%v", resDelta, err)
 	}
 
 	// 4. Claude Code settings merge

@@ -207,6 +207,9 @@ type SelectRequest struct {
 	SessionKey               string
 	SubscriptionWarningAcked bool
 	ExcludeIDs               map[string]bool
+	BudgetExceededIDs        map[string]bool
+	QuotaUsedPct             map[string]float64 // accountID -> highest used % across quota windows
+	QuotaThresholdPct        int                // prefer accounts with QuotaUsedPct < threshold when > 0
 }
 
 type Lease struct {
@@ -232,7 +235,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 
 	strategy := req.Strategy
 	switch strategy {
-	case config.StrategyFailover, config.StrategySticky, config.StrategyManual, config.StrategyRoundRobin, config.StrategyLeastBusy:
+	case config.StrategyFailover, config.StrategySticky, config.StrategyManual, config.StrategyRoundRobin, config.StrategyLeastBusy, config.StrategyMostQuota:
 		// valid
 	default:
 		strategy = config.StrategyFailover
@@ -262,6 +265,10 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		if !ok {
 			continue
 		}
+		if req.BudgetExceededIDs != nil && req.BudgetExceededIDs[id] {
+			reasons = append(reasons, fmt.Sprintf("%s (USD budget exceeded)", a.Name))
+			continue
+		}
 		st := m.states[id]
 		if okElig, reason := m.isEligibleLocked(a, st, now); okElig {
 			eligible = append(eligible, a)
@@ -277,11 +284,37 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		return nil, ErrNoAvailableAccount
 	}
 
+	// If a quota threshold is configured (e.g. 90%), prefer accounts below that threshold
+	// while still falling back to all eligible accounts if every candidate is above it.
+	if req.QuotaThresholdPct > 0 && len(req.QuotaUsedPct) > 0 {
+		thresh := float64(req.QuotaThresholdPct)
+		under := make([]*config.AccountConfig, 0, len(eligible))
+		for _, a := range eligible {
+			if used, ok := req.QuotaUsedPct[a.ID]; !ok || used < thresh {
+				under = append(under, a)
+			}
+		}
+		if len(under) > 0 {
+			eligible = under
+		}
+	}
+
 	var chosen *config.AccountConfig
 
 	switch strategy {
 	case config.StrategyManual, config.StrategyFailover:
 		chosen = eligible[0]
+
+	case config.StrategyMostQuota:
+		chosen = eligible[0]
+		bestUsed := req.QuotaUsedPct[chosen.ID]
+		for _, a := range eligible[1:] {
+			u := req.QuotaUsedPct[a.ID]
+			if u < bestUsed {
+				chosen = a
+				bestUsed = u
+			}
+		}
 
 	case config.StrategyRoundRobin:
 		if req.SessionKey != "" {

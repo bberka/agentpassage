@@ -9,7 +9,9 @@ import (
 
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/hostauth"
 	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 func (a *App) filteredAccounts() []config.AccountConfig {
@@ -47,6 +49,14 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "a":
 		a.openAddAccount()
+		return a, nil
+	case "c":
+		found := hostauth.DetectAll("")
+		if len(found) == 0 {
+			a.setStatus("No existing host CLI logins detected on this machine.", false)
+			return a, nil
+		}
+		a.openHostAuthModal(found, nil, false)
 		return a, nil
 	}
 
@@ -258,8 +268,8 @@ func (a *App) viewAccounts(bodyHeight int) string {
 			}
 			extra = fmt.Sprintf("perm=%s %s cap=%d", acct.PermissionMode, prof, acct.MaxConcurrency)
 		}
-		totalModels := max(len(acct.AvailableModels), len(acct.Models))
-		modelCol := fmt.Sprintf("%d/%d", len(acct.Models), totalModels)
+		enabledModels, totalModels := accountGroupedModelCounts(acct, !a.srv.Config().Catalog.ShowEffortVariants)
+		modelCol := fmt.Sprintf("%d/%d", enabledModels, totalModels)
 		if i == a.acctCursor {
 			plainState := plainStateText(snap)
 			plainProbe := plainProbeText(hr)
@@ -309,7 +319,8 @@ func (a *App) viewAccounts(bodyHeight int) string {
 			}
 		}
 		lines = append(lines, a.styles.Muted.Render("Health:  "+truncate(healthSummary, innerW-10)))
-		lines = append(lines, a.styles.Muted.Render("Models:  "+truncate(strings.Join(sel.Models, ", "), innerW-10)))
+		modelSummary := formatAccountModelsSummary(sel, !a.srv.Config().Catalog.ShowEffortVariants)
+		lines = append(lines, a.styles.Muted.Render("Models:  "+truncate(modelSummary, innerW-10)))
 		if snap.LastError != "" {
 			lines = append(lines, a.styles.StateErr.Render("Error:   "+truncate(snap.LastError, innerW-10)))
 		}
@@ -344,4 +355,41 @@ func plainProbeText(r health.Result) string {
 	default:
 		return "—"
 	}
+}
+
+func accountGroupedModelCounts(acct config.AccountConfig, groupThinking bool) (enabledCount, totalCount int) {
+	catalog := acct.AvailableModels
+	if len(catalog) < len(acct.Models) {
+		catalog = acct.Models
+	}
+	if !groupThinking {
+		return len(acct.Models), len(catalog)
+	}
+	enGrouped, _ := router.GroupEffortVariants(acct.Models)
+	totGrouped, _ := router.GroupEffortVariants(catalog)
+	return len(enGrouped), max(len(totGrouped), len(enGrouped))
+}
+
+func formatAccountModelsSummary(acct config.AccountConfig, groupThinking bool) string {
+	if !groupThinking {
+		return strings.Join(acct.Models, ", ")
+	}
+	grouped, effortsByBase := router.GroupEffortVariants(acct.Models)
+	parts := make([]string, 0, len(grouped))
+	for _, m := range grouped {
+		effs := effortsByBase[m]
+		if len(effs) == 0 && len(acct.ModelEfforts) > 0 {
+			if me := acct.ModelEfforts[m]; len(me) > 0 {
+				effs = me
+			} else if len(effortsByBase) == 0 && len(acct.ModelEfforts["*"]) > 0 {
+				effs = acct.ModelEfforts["*"]
+			}
+		}
+		if len(effs) > 0 {
+			parts = append(parts, fmt.Sprintf("%s (%s)", m, strings.Join(effs, "/")))
+		} else {
+			parts = append(parts, m)
+		}
+	}
+	return strings.Join(parts, ", ")
 }

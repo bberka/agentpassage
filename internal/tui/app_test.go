@@ -303,8 +303,8 @@ func TestAPISetupAndModelsPickerAutoFetch(t *testing.T) {
 		app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if got := app.filteredConnectTargets(); len(got) != 1 || got[0].ID != "zed" {
-		t.Fatalf("expected zed from connect search, got %+v", got)
+	if got := app.filteredConnectTargets(); len(got) == 0 || got[0].ID != "zed" {
+		t.Fatalf("expected zed first from connect search, got %+v", got)
 	}
 }
 

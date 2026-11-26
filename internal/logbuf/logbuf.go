@@ -19,17 +19,23 @@ const (
 )
 
 type Entry struct {
-	Time       time.Time `json:"time"`
-	Level      Level     `json:"level"`
-	Kind       string    `json:"kind"` // "request", "acp", "health", "system"
-	Method     string    `json:"method,omitempty"`
-	Path       string    `json:"path,omitempty"`
-	Model      string    `json:"model,omitempty"`
-	Account    string    `json:"account,omitempty"`
-	Status     int       `json:"status,omitempty"`
-	DurationMs int64     `json:"duration_ms,omitempty"`
-	Message    string    `json:"message,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Time          time.Time `json:"time"`
+	Level         Level     `json:"level"`
+	Kind          string    `json:"kind"` // "request", "acp", "health", "system"
+	Method        string    `json:"method,omitempty"`
+	Path          string    `json:"path,omitempty"`
+	Model         string    `json:"model,omitempty"`
+	UpstreamModel string    `json:"upstream_model,omitempty"`
+	Effort        string    `json:"effort,omitempty"`
+	Project       string    `json:"project,omitempty"`
+	Account       string    `json:"account,omitempty"`
+	FailoverHops  int       `json:"failover_hops,omitempty"`
+	Status        int       `json:"status,omitempty"`
+	DurationMs    int64     `json:"duration_ms,omitempty"`
+	TokensIn      int       `json:"tokens_in,omitempty"`
+	TokensOut     int       `json:"tokens_out,omitempty"`
+	Message       string    `json:"message,omitempty"`
+	Error         string    `json:"error,omitempty"`
 }
 
 var (

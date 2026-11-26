@@ -34,6 +34,7 @@ apx models list
 ```sh
 apx connect t3code
 apx connect zed
+apx connect delta
 apx connect opencode
 ```
 

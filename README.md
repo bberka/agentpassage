@@ -1,8 +1,18 @@
 # AgentPassage (`apx`)
 
-AgentPassage (`apx`) is a single-binary local gateway and credential bridge for ACP subscription agents, CLI providers, and HTTP API-key providers. It exposes OpenAI-compatible (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/models`), Anthropic-compatible (`/v1/messages`), and native ACP stdio (`apx acp`) interfaces, with a keyboard-driven TUI and a full non-interactive CLI.
+AgentPassage (`apx`) is a lightweight, single-binary, multi-platform (Linux, macOS, Windows) local gateway and credential bridge—built as a fast, TUI-first alternative to **CLIProxyAPI** and other heavy web-based AI proxies.
+
+It unifies ACP subscription agents, CLI providers, and HTTP API-key providers behind OpenAI-compatible (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/models`), Anthropic-compatible (`/v1/messages`), CLIProxyAPI-compatible management/usage endpoints, and native ACP stdio (`apx acp`)—with a keyboard-driven terminal UI and a full non-interactive CLI.
 
 AgentPassage manages authentication, isolated profiles, protocol bridging, routing, health, quotas, and privacy filtering. It is intentionally **not** a chat client or coding harness.
+
+## Why AgentPassage (vs CLIProxyAPI & web proxies)
+
+- **Single static binary (~12 MB), zero runtime:** No Node, Python, Docker, or separate web dashboard process required—runs natively on Linux, macOS, and Windows (x64 & arm64).
+- **Keyboard-driven TUI + headless CLI:** Manage accounts, models, thinking effort levels, routing, logs, and live quotas right in the terminal (`apx`), over SSH, or via `apx <cmd> --json` scripts.
+- **Native ACP stdio bridge (`apx acp`):** Connect directly as a custom ACP agent in T3 Code, Zed, Delta (Zed Agent IDE), JetBrains, and Neovim—not just HTTP.
+- **CLIProxyAPI-compatible endpoints:** Drop-in management and usage hub endpoints (`/v0/management/*`, `/usage`) for tools that already integrate with CLIProxyAPI.
+- **Real official CLIs, no spoofing:** Launches official binaries in isolated per-account profile directories without disguising client identity.
 
 ## Core capabilities
 
@@ -13,9 +23,23 @@ AgentPassage manages authentication, isolated profiles, protocol bridging, routi
 - **Reversible privacy filter:** Replace API keys, email addresses, phone numbers, and custom regex matches with per-request placeholders (`{{APX_KEY_1}}`, `{{APX_EMAIL_1}}`) before sending upstream, then restore originals across both non-streaming and streaming responses.
 - **Embeddings & reranking:** OpenAI-compatible `POST /v1/embeddings` and standard `POST /v1/rerank` endpoints routed through the same auth, project rules, failover, and usage pipeline.
 - **Usage, estimated costs & subscription limits:** Track requests, tokens, latency, and reference-rate cost estimates by period (`1h`/`24h`/`7d`/`30d`/`all`), model, account, API key, and project, alongside live subscription limits (Codex, DeepSeek balance, OpenRouter credits, Claude local 5h/7d logs, HTTP rate-limit headers).
-- **Agent-driveable CLI & IDE connectors:** Every feature is controllable via `apx <cmd> --json` and via TUI, with preview-and-confirm `apx connect` / `apx disconnect` / `apx uninstall` for T3 Code, Zed, VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude Code, Pi, Grok, Aider, Cursor, Windsurf, and Cline.
+- **Agent-driveable CLI & IDE connectors:** Every feature is controllable via `apx <cmd> --json` and via TUI, with preview-and-confirm `apx connect` / `apx disconnect` / `apx uninstall` for T3 Code, Zed, Delta (Zed Agent IDE), VS Code, JetBrains, Continue, Neovim, OpenCode, Codex, Claude Code, Pi, Grok, Aider, Cursor, Windsurf, and Cline.
 
 ## Install
+
+**Linux / macOS:**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bberka/agentpassage/main/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/bberka/agentpassage/main/install.ps1 | iex
+```
+
+**Or from a local clone / Go:**
 
 ```sh
 git clone https://github.com/bberka/agentpassage.git
