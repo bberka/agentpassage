@@ -91,6 +91,9 @@ func (s *Server) handleCLIProxyAuthFileModels(w http.ResponseWriter, r *http.Req
 			continue
 		}
 		for _, m := range acct.Models {
+			if acct.IsLabelAlias(m) {
+				continue
+			}
 			disp := acct.ModelLabels[m]
 			if disp == "" {
 				disp = m

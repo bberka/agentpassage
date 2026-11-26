@@ -324,6 +324,23 @@ func (a *AccountConfig) MergeModelLabels(labels map[string]string) bool {
 	return changed
 }
 
+// IsLabelAlias reports whether model is a short alias that shares its display
+// name with a longer model ID on the same account (e.g. "fable" and
+// "claude-fable-5-2" are both "Fable 5.2"). Catalogs hide such aliases so the
+// model appears once; requests for the alias still route.
+func (a AccountConfig) IsLabelAlias(model string) bool {
+	lbl := strings.TrimSpace(a.ModelLabels[model])
+	if lbl == "" {
+		return false
+	}
+	for _, other := range a.Models {
+		if other != model && len(other) > len(model) && strings.TrimSpace(a.ModelLabels[other]) == lbl {
+			return true
+		}
+	}
+	return false
+}
+
 // MergeModelEfforts merges ACP-discovered thought_level/effort options onto the account.
 // Key "*" represents account-wide effort options for backends that expose a shared thought_level
 // configOption instead of suffixed model IDs (e.g. claude-agent-acp).

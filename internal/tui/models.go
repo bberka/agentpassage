@@ -182,7 +182,7 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case " ", "h":
 		a.upsertModelOverride(sel.ID, func(ov *config.ModelOverride) {
-			ov.Hidden = !ov.Hidden
+			ov.Hidden = !sel.Hidden
 		})
 		if sel.Hidden {
 			a.setStatus("Enabled "+sel.ID, false)

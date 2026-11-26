@@ -113,6 +113,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 				}
 			}
 			label := resolveAccountModelLabel(acct, m, len(efforts) > 0)
+			hideAlias := acct.IsLabelAlias(m)
 
 			if mode == config.ExposePool || mode == config.ExposeBoth {
 				if emitProvider {
@@ -120,6 +121,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 					if entry, ok := pooled[poolID]; ok {
 						entry.AccountIDs = append(entry.AccountIDs, acct.ID)
 						entry.Efforts = mergeEfforts(entry.Efforts, efforts)
+						entry.Hidden = entry.Hidden && hideAlias
 						if entry.DisplayName == "" && label != "" {
 							entry.DisplayName = label
 						}
@@ -132,6 +134,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 							Kind:        acct.Kind,
 							AccountIDs:  []string{acct.ID},
 							Efforts:     append([]string(nil), efforts...),
+							Hidden:      hideAlias,
 						}
 					}
 				}
@@ -144,6 +147,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 					if entry, ok := bare[m]; ok {
 						entry.AccountIDs = append(entry.AccountIDs, acct.ID)
 						entry.Efforts = mergeEfforts(entry.Efforts, efforts)
+						entry.Hidden = entry.Hidden && hideAlias
 						if entry.DisplayName == "" && label != "" {
 							entry.DisplayName = label
 						}
@@ -156,6 +160,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 							Kind:        acct.Kind,
 							AccountIDs:  []string{acct.ID},
 							Efforts:     append([]string(nil), efforts...),
+							Hidden:      hideAlias,
 						}
 					}
 				}
@@ -174,6 +179,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 							Kind:        acct.Kind,
 							AccountIDs:  []string{acct.ID},
 							Efforts:     append([]string(nil), efforts...),
+							Hidden:      hideAlias,
 						})
 					}
 				}
@@ -194,6 +200,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 						Prefixed:    true,
 						AccountIDs:  []string{acct.ID},
 						Efforts:     append([]string(nil), efforts...),
+						Hidden:      hideAlias,
 					})
 				}
 			}

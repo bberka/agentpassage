@@ -60,17 +60,24 @@ func GroupForModel(backend, upstreamModel string) string {
 	}
 }
 
-// UsedPercentForGroup returns the highest used % across the windows of groupID.
-// With an empty groupID, or when the account reports no groups, it uses the
-// account-level windows. ok is false when no matching window exists.
+// UsedPercentForGroup returns the used % that routing should weigh for groupID.
+// Claude & GPT use the highest used % across that group's own windows. Gemini
+// uses the group's weekly window only, since its 5h window refills quickly; it
+// falls back to the 5h window when no weekly window is reported. With an empty
+// groupID, or when the account reports no groups, it uses the account-level
+// windows. ok is false when no matching window exists.
 func (q AccountQuota) UsedPercentForGroup(groupID string) (float64, bool) {
 	if groupID == "" || len(q.Groups) == 0 {
 		return maxUsedPercent(q.Primary, q.Secondary)
 	}
 	for _, g := range q.Groups {
-		if g.ID == groupID {
-			return maxUsedPercent(g.Primary, g.Secondary)
+		if g.ID != groupID {
+			continue
 		}
+		if groupID == GroupGemini && g.Secondary != nil {
+			return maxUsedPercent(g.Secondary)
+		}
+		return maxUsedPercent(g.Primary, g.Secondary)
 	}
 	return 0, false
 }

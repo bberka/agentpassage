@@ -234,3 +234,35 @@ func TestProjectBasedRoutingPriority(t *testing.T) {
 		t.Fatalf("expected ds-work with fallback for project 'work', got %+v err=%v", pWork, err)
 	}
 }
+
+func TestLabelAliasHiddenButRoutable(t *testing.T) {
+	cfg := config.Default()
+	cfg.Accounts = []config.AccountConfig{
+		{ID: "claude-main", Name: "main", Kind: config.KindACP, Backend: "claude", Enabled: true, ExposeMode: config.ExposePool,
+			Models:      []string{"claude-fable-5-2", "fable", "opus"},
+			ModelLabels: map[string]string{"claude-fable-5-2": "Fable 5.2", "fable": "Fable 5.2", "opus": "Opus 5.5"}},
+	}
+	r := New(cfg)
+	visible := make(map[string]bool)
+	for _, m := range r.ListModels(false) {
+		visible[m.ID] = true
+	}
+	if visible["claude/fable"] {
+		t.Fatalf("expected duplicate-label alias claude/fable hidden")
+	}
+	if !visible["claude/claude-fable-5-2"] || !visible["claude/opus"] {
+		t.Fatalf("expected full fable id and opus visible, got %v", visible)
+	}
+	hidden := false
+	for _, m := range r.ListModels(true) {
+		if m.ID == "claude/fable" && m.Hidden {
+			hidden = true
+		}
+	}
+	if !hidden {
+		t.Fatalf("expected claude/fable listed as hidden when including hidden models")
+	}
+	if _, err := r.Resolve("claude/fable"); err != nil {
+		t.Fatalf("expected hidden alias to still route: %v", err)
+	}
+}
