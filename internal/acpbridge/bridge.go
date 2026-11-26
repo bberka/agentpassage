@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -92,7 +93,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	defer serveCancel()
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	scanner.Buffer(make([]byte, 64*1024), 64*1024*1024) // prompts carry base64 images, audio and files
 
 	write := func(m rpcMsg) {
 		raw, err := json.Marshal(m)
@@ -203,7 +204,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					},
 					"promptCapabilities": map[string]any{
 						"image":           true,
-						"audio":           false,
+						"audio":           true,
 						"embeddedContext": true,
 					},
 				},
@@ -480,9 +481,13 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					Text     string `json:"text"`
 					Data     string `json:"data"`
 					MimeType string `json:"mimeType"`
+					URI      string `json:"uri"`
+					Name     string `json:"name"`
 					Resource *struct {
-						URI  string `json:"uri"`
-						Text string `json:"text"`
+						URI      string `json:"uri"`
+						Text     string `json:"text"`
+						Blob     string `json:"blob"`
+						MimeType string `json:"mimeType"`
 					} `json:"resource,omitempty"`
 				} `json:"prompt"`
 			}
@@ -497,23 +502,25 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 
 			var promptSB strings.Builder
-			var images []backend.ImageBlock
+			var atts []backend.Attachment
 			for _, b := range p.Prompt {
-				if b.Type == "image" && b.Data != "" {
-					images = append(images, backend.ImageBlock{Data: b.Data, MimeType: b.MimeType})
-				} else if b.Text != "" {
+				switch {
+				case (b.Type == "image" || b.Type == "audio") && b.Data != "":
+					atts = append(atts, backend.Attachment{Kind: b.Type, Data: b.Data, MimeType: b.MimeType, URI: b.URI})
+				case b.Type == "resource" && b.Resource != nil && (b.Resource.Text != "" || b.Resource.Blob != ""):
+					r := b.Resource
+					a := backend.Attachment{Kind: backend.AttachFile, Text: r.Text, Data: r.Blob, MimeType: r.MimeType, URI: r.URI, Name: path.Base(r.URI)}
+					if strings.HasPrefix(r.MimeType, "image/") && r.Blob != "" {
+						a.Kind = backend.AttachImage
+					}
+					atts = append(atts, a)
+				case b.Type == "resource_link" && b.URI != "":
+					atts = append(atts, backend.Attachment{Kind: backend.AttachLink, URI: b.URI, Name: b.Name, MimeType: b.MimeType})
+				case b.Text != "":
 					if promptSB.Len() > 0 {
 						promptSB.WriteString("\n")
 					}
 					promptSB.WriteString(b.Text)
-				} else if b.Resource != nil && b.Resource.Text != "" {
-					if promptSB.Len() > 0 {
-						promptSB.WriteString("\n")
-					}
-					if b.Resource.URI != "" {
-						promptSB.WriteString("[" + b.Resource.URI + "]\n")
-					}
-					promptSB.WriteString(b.Resource.Text)
 				}
 			}
 			userText := promptSB.String()
@@ -524,7 +531,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				replyErr(msg.ID, -32602, "no model configured in apx; add an account first")
 				continue
 			}
-			bs.history = append(bs.history, backend.Message{Role: "user", Content: userText})
+			bs.history = append(bs.history, backend.Message{Role: "user", Content: userText, Attachments: atts})
 			histSnap := append([]backend.Message(nil), bs.history...)
 			reqModel := bs.model
 			reqEffort := bs.effort
@@ -601,7 +608,6 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					ACPMode:           reqMode,
 					PermissionHandler: permHandler,
 					MCPServers:        reqMCP,
-					Images:            images,
 					Messages:          histSnap,
 					Stream:            true,
 					SessionKey:        bs.id,

@@ -34,6 +34,17 @@ type initializeResult struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 	} `json:"agentInfo"`
+	AgentCapabilities struct {
+		PromptCapabilities promptCapabilities `json:"promptCapabilities"`
+	} `json:"agentCapabilities"`
+}
+
+// promptCapabilities lists the prompt content an agent accepts beyond text
+// and resource links.
+type promptCapabilities struct {
+	Image           bool `json:"image"`
+	Audio           bool `json:"audio"`
+	EmbeddedContext bool `json:"embeddedContext"`
 }
 
 type sessionNewParams struct {
@@ -81,10 +92,20 @@ type setModelParams struct {
 }
 
 type promptBlock struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	Data     string `json:"data,omitempty"`
+	Type     string            `json:"type"`
+	Text     string            `json:"text,omitempty"`
+	Data     string            `json:"data,omitempty"`
+	MimeType string            `json:"mimeType,omitempty"`
+	URI      string            `json:"uri,omitempty"`
+	Name     string            `json:"name,omitempty"`
+	Resource *embeddedResource `json:"resource,omitempty"`
+}
+
+type embeddedResource struct {
+	URI      string `json:"uri"`
 	MimeType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
+	Blob     string `json:"blob,omitempty"`
 }
 
 type sessionPromptParams struct {

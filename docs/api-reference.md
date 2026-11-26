@@ -13,6 +13,27 @@ OpenAI-compatible chat completions (streaming SSE and non-streaming). Supports `
 ### `POST /v1/messages`
 Anthropic Messages API compatible endpoint (streaming SSE and non-streaming), including `thinking` and `output_config.effort`.
 
+### `POST /v1/responses`
+OpenAI Responses API compatible endpoint.
+
+### Images, audio and files in chat
+All three chat endpoints accept non-text content, in any of these part types:
+
+| Format | Part types |
+|---|---|
+| Chat Completions | `image_url` (data: or https URL), `input_audio`, `file` (`file_data`) |
+| Responses | `input_image`, `input_file` (`file_data` or `file_url`) |
+| Messages | `image`, `document` (base64, text or URL source) |
+
+Where it goes depends on the account:
+- **API-key and local accounts** get the content in their own format. A Chat Completions request to an OpenAI-compatible account is passed through unchanged.
+- **Subscription (ACP) accounts** get images inline, text files as embedded files, and http(s) URLs downloaded first (up to 32 MB). Content the agent does not accept inline, such as audio for every current agent, is saved to a private temp folder for 24 hours and sent as a file link, so the agent can open it with its own tools.
+- **CLI accounts** get text files inline and the path of a saved temp file for everything else.
+
+Provider `file_id` references cannot be resolved and are passed on as references only. Request bodies may be up to 64 MB.
+
+For image generation and voice, use `POST /v1/images/generations`, `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`. These pass through to API-key or local accounts (OpenAI, OpenRouter, a local server).
+
 ### `POST /v1/embeddings`
 OpenAI-compatible embeddings endpoint routed to HTTP API-key providers:
 

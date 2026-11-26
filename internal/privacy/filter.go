@@ -209,6 +209,16 @@ func (s *Session) RedactMessages(msgs []backend.Message) []backend.Message {
 	out := make([]backend.Message, len(msgs))
 	for i, m := range msgs {
 		m.Content = s.RedactText(m.Content)
+		if len(m.Attachments) > 0 {
+			atts := make([]backend.Attachment, len(m.Attachments))
+			for j, a := range m.Attachments {
+				if a.Text != "" {
+					a.Text = s.RedactText(a.Text)
+				}
+				atts[j] = a
+			}
+			m.Attachments = atts
+		}
 		out[i] = m
 	}
 	return out

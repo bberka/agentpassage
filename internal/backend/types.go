@@ -10,14 +10,10 @@ import (
 	"strings"
 )
 
-type ImageBlock struct {
-	Data     string `json:"data"`
-	MimeType string `json:"mime_type"`
-}
-
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role        string       `json:"role"`
+	Content     string       `json:"content"`
+	Attachments []Attachment `json:"-"` // images, audio and files sent with the message
 }
 
 type ChatRequest struct {
@@ -28,7 +24,6 @@ type ChatRequest struct {
 	ACPMode           string // optional ACP session mode override (e.g. "default", "acceptEdits", "auto", "bypassPermissions", "plan")
 	PermissionHandler func(ctx context.Context, req PermissionRequest) PermissionDecision
 	MCPServers        []any
-	Images            []ImageBlock
 	Messages          []Message
 	Stream            bool
 	Temperature       *float64

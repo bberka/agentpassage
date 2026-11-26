@@ -202,6 +202,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	}
 
 	promptText := formatPrompt(req.Messages, existingSID != "")
+	promptText += attachmentNotes(ctx, backend.PromptAttachments(req.Messages, existingSID != ""))
 	effectiveAcct := acct
 	if req.PermissionMode != "" {
 		effectiveAcct.PermissionMode = req.PermissionMode
@@ -589,4 +590,27 @@ func sanitizeChildEnv(baseEnv, extraEnv []string, acct config.AccountConfig) []s
 		out = append(out, k+"="+v)
 	}
 	return out
+}
+
+// attachmentNotes describes attachments for a CLI agent, which only takes a
+// text prompt: text files are inlined, other content is saved to a private
+// temp file whose path the agent can open with its file tools.
+func attachmentNotes(ctx context.Context, atts []backend.Attachment) string {
+	var sb strings.Builder
+	for _, a := range atts {
+		_ = a.Load(ctx)
+		switch {
+		case a.Text != "":
+			fmt.Fprintf(&sb, "\n\n[Attached file %s]\n%s", a.Name, a.Text)
+		case a.Data != "":
+			if path, err := backend.SaveAttachment(a); err == nil {
+				fmt.Fprintf(&sb, "\n\n[Attached %s saved at %s]", a.Label(), path)
+			} else {
+				fmt.Fprintf(&sb, "\n\n[Attached %s could not be saved: %v]", a.Label(), err)
+			}
+		case a.URI != "":
+			fmt.Fprintf(&sb, "\n\n[Attached %s: %s]", a.Label(), a.URI)
+		}
+	}
+	return sb.String()
 }

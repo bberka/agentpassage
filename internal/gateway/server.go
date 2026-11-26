@@ -1087,32 +1087,13 @@ type openAIMessage struct {
 }
 
 func extractMessageContent(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
-	}
-	var parts []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(raw, &parts); err == nil {
-		var sb strings.Builder
-		for _, p := range parts {
-			if p.Text != "" {
-				sb.WriteString(p.Text)
-			}
-		}
-		return sb.String()
-	}
-	return string(raw)
+	text, _ := parseContent(raw, "")
+	return text
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, maxChatBodyBytes))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return
@@ -1125,9 +1106,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	msgs := make([]backend.Message, 0, len(req.Messages))
 	for _, m := range req.Messages {
+		text, atts := parseContent(m.Content, "")
 		msgs = append(msgs, backend.Message{
-			Role:    m.Role,
-			Content: extractMessageContent(m.Content),
+			Role:        m.Role,
+			Content:     text,
+			Attachments: atts,
 		})
 	}
 	maxTok := req.MaxTokens

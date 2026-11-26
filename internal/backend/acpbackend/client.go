@@ -246,19 +246,12 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	})
 	defer unregister()
 
-	blocks := make([]promptBlock, 0, 1+len(req.Images))
-	if promptText != "" || len(req.Images) == 0 {
+	atts := backend.PromptAttachments(req.Messages, reused)
+	blocks := make([]promptBlock, 0, 1+len(atts))
+	if promptText != "" || len(atts) == 0 {
 		blocks = append(blocks, promptBlock{Type: "text", Text: promptText})
 	}
-	for _, img := range req.Images {
-		if img.Data != "" {
-			mime := img.MimeType
-			if mime == "" {
-				mime = "image/png"
-			}
-			blocks = append(blocks, promptBlock{Type: "image", Data: img.Data, MimeType: mime})
-		}
-	}
+	blocks = append(blocks, attachmentBlocks(ctx, atts, w.promptCaps)...)
 
 	resRaw, err := w.call(ctx, "session/prompt", sessionPromptParams{
 		SessionID: sess.id,
@@ -390,6 +383,8 @@ type worker struct {
 	permByID        map[string]string            // upstream ACP sessionId -> per-request permissionMode override
 	permHandlerByID map[string]PermissionHandler // upstream ACP sessionId -> per-request interactive permission handler
 
+	promptCaps promptCapabilities // set once at initialize
+
 	closed atomic.Bool
 	doneCh chan struct{}
 }
@@ -441,7 +436,7 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 
 	initCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	_, err = w.call(initCtx, "initialize", initializeParams{
+	initRaw, err := w.call(initCtx, "initialize", initializeParams{
 		ProtocolVersion: 1,
 		ClientInfo: clientInfo{
 			Name:    "apx",
@@ -454,8 +449,13 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 		return nil, classifyACPError(fmt.Errorf("ACP initialize failed: %w", err))
 	}
 
+	var initRes initializeResult
+	_ = json.Unmarshal(initRaw, &initRes)
+	w.promptCaps = initRes.AgentCapabilities.PromptCapabilities
+
 	if mgr.logs != nil {
-		mgr.logs.Info("acp", fmt.Sprintf("started ACP worker for %s (%s)", acct.Name, argv[0]))
+		c := w.promptCaps
+		mgr.logs.Info("acp", fmt.Sprintf("started ACP worker for %s (%s; accepts image=%v audio=%v files=%v)", acct.Name, argv[0], c.Image, c.Audio, c.EmbeddedContext))
 	}
 	return w, nil
 }

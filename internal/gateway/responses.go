@@ -92,31 +92,12 @@ func parseResponsesInput(raw json.RawMessage) []backend.Message {
 			role = "user"
 		}
 		text := it.Text
+		var atts []backend.Attachment
 		if text == "" && len(it.Content) > 0 {
-			var s string
-			if json.Unmarshal(it.Content, &s) == nil {
-				text = s
-			} else {
-				var parts []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				}
-				if json.Unmarshal(it.Content, &parts) == nil {
-					var sb strings.Builder
-					for _, p := range parts {
-						if p.Text != "" {
-							if sb.Len() > 0 {
-								sb.WriteString("\n")
-							}
-							sb.WriteString(p.Text)
-						}
-					}
-					text = sb.String()
-				}
-			}
+			text, atts = parseContent(it.Content, "\n")
 		}
-		if text != "" {
-			out = append(out, backend.Message{Role: role, Content: text})
+		if text != "" || len(atts) > 0 {
+			out = append(out, backend.Message{Role: role, Content: text, Attachments: atts})
 		}
 	}
 	return out
@@ -127,7 +108,7 @@ func parseResponsesInput(raw json.RawMessage) []backend.Message {
 // and stateful `previous_response_id` chaining.
 func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxChatBodyBytes))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return

@@ -263,7 +263,7 @@ func buildOpenAIPayload(req backend.ChatRequest, stream bool) ([]byte, error) {
 	}
 	payload := map[string]any{
 		"model":    req.UpstreamModel,
-		"messages": req.Messages,
+		"messages": openAIMessages(req.Messages),
 		"stream":   stream,
 	}
 	if req.Temperature != nil {
@@ -410,7 +410,7 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 
 func buildAnthropicPayload(req backend.ChatRequest, stream bool) ([]byte, error) {
 	var systemParts []string
-	msgs := make([]map[string]string, 0, len(req.Messages))
+	msgs := make([]map[string]any, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		if m.Role == "system" {
 			systemParts = append(systemParts, m.Content)
@@ -420,13 +420,13 @@ func buildAnthropicPayload(req backend.ChatRequest, stream bool) ([]byte, error)
 		if role != "assistant" {
 			role = "user"
 		}
-		msgs = append(msgs, map[string]string{
+		msgs = append(msgs, map[string]any{
 			"role":    role,
-			"content": m.Content,
+			"content": anthropicContent(m),
 		})
 	}
 	if len(msgs) == 0 {
-		msgs = append(msgs, map[string]string{"role": "user", "content": ""})
+		msgs = append(msgs, map[string]any{"role": "user", "content": ""})
 	}
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {

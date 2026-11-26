@@ -37,7 +37,7 @@ type anthropicRequest struct {
 
 func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	rawBody, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	rawBody, err := io.ReadAll(io.LimitReader(r.Body, maxChatBodyBytes))
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
 		return
@@ -55,9 +55,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	for _, m := range req.Messages {
+		text, atts := parseContent(m.Content, "")
 		msgs = append(msgs, backend.Message{
-			Role:    m.Role,
-			Content: extractMessageContent(m.Content),
+			Role:        m.Role,
+			Content:     text,
+			Attachments: atts,
 		})
 	}
 

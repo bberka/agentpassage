@@ -42,7 +42,7 @@ func (s *Server) ResolveDecisionModel(requestedModel string, req backend.ChatReq
 	}
 
 	// 1. Vision / image prompt
-	if len(req.Images) > 0 && strings.TrimSpace(dc.VisionModel) != "" {
+	if backend.HasAttachment(req.Messages, backend.AttachImage) && strings.TrimSpace(dc.VisionModel) != "" {
 		return pick(dc.VisionModel, dc.DefaultModel), "vision", true
 	}
 
