@@ -401,7 +401,7 @@ func cmdAdd(args []string) error {
 	apiKey := fs.String("key", "", "API key (for api_key accounts)")
 	baseURL := fs.String("base-url", "", "base URL override (for api_key accounts)")
 	cwd := fs.String("cwd", "", "default working directory (for acp/cli accounts)")
-	perm := fs.String("permission", config.PermDeny, "ACP/CLI permission mode: deny, auto-approve, ask")
+	perm := fs.String("permission", config.PermAutoApprove, "ACP/CLI permission mode: auto-approve, ask, deny")
 	hostProfile := fs.Bool("host-profile", false, "reuse existing host CLI login (~/.claude, ~/.codex, ~/.gemini) instead of isolated profile")
 	customCmd := fs.String("command", "", "custom ACP/CLI command (space-separated)")
 	modelsCSV := fs.String("models", "", "comma-separated model IDs")

@@ -609,7 +609,7 @@ func (c *Config) Normalize() {
 				a.MaxConcurrency = 1
 			}
 			if a.PermissionMode == "" {
-				a.PermissionMode = PermDeny
+				a.PermissionMode = PermAutoApprove
 			}
 		} else {
 			a.Kind = KindAPIKey

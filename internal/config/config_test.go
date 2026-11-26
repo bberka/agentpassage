@@ -41,7 +41,7 @@ func TestLoadSaveAndProfileIsolation(t *testing.T) {
 	if created2 {
 		t.Fatalf("expected created=false on second load")
 	}
-	if len(loaded.Accounts) != 1 || loaded.Accounts[0].PermissionMode != PermDeny || loaded.Accounts[0].MaxConcurrency != 1 {
+	if len(loaded.Accounts) != 1 || loaded.Accounts[0].PermissionMode != PermAutoApprove || loaded.Accounts[0].MaxConcurrency != 1 {
 		t.Fatalf("unexpected normalized account: %+v", loaded.Accounts)
 	}
 
