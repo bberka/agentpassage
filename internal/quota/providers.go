@@ -488,6 +488,22 @@ func ParseClaudeUsageMarkdown(text, planHint string, now time.Time) (AccountQuot
 			usedIdx[i] = true
 		}
 	}
+	// Preserve any additional model-specific limits (e.g. Fable / Sonnet / Opus when 5h + Weekly
+	// already occupy Primary and Secondary) in Groups so downstream consumers still receive them.
+	for i, l := range limits {
+		if usedIdx[i] {
+			continue
+		}
+		id := strings.ToLower(strings.TrimSpace(l.shortLbl))
+		if id == "" {
+			continue
+		}
+		q.Groups = append(q.Groups, QuotaGroup{
+			ID:        id,
+			Name:      l.shortLbl,
+			Secondary: makeWin(l),
+		})
+	}
 
 	if q.PlanType == "" {
 		q.PlanType = "claude"

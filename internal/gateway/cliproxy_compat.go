@@ -354,6 +354,7 @@ func synthesizeCLIProxyUpstreamResponse(acct config.AccountConfig, aq quota.Acco
 			"cloudaicompanionProject": projID,
 			"project_id":              projID,
 			"project":                 projID,
+			"credits":                 []any{},
 		}
 
 	case strings.Contains(lowerURL, "fetchavailablemodels") || strings.Contains(lowerURL, "retrieveuserquota") || backend == "agy":
@@ -466,6 +467,7 @@ func buildClaudeOAuthUsagePayload(aq quota.AccountQuota, now time.Time) map[stri
 		"seven_day":        nil,
 		"seven_day_opus":   nil,
 		"seven_day_sonnet": nil,
+		"seven_day_fable":  nil,
 		"extra_usage": map[string]any{
 			"is_enabled":    false,
 			"monthly_limit": nil,
@@ -484,7 +486,9 @@ func buildClaudeOAuthUsagePayload(aq quota.AccountQuota, now time.Time) map[stri
 			res["five_hour"] = toBucket(w)
 		case strings.Contains(l, "sonnet"):
 			res["seven_day_sonnet"] = toBucket(w)
-		case strings.Contains(l, "opus") || strings.Contains(l, "fable"):
+		case strings.Contains(l, "fable"):
+			res["seven_day_fable"] = toBucket(w)
+		case strings.Contains(l, "opus"):
 			res["seven_day_opus"] = toBucket(w)
 		default:
 			if res["seven_day"] == nil {
@@ -496,27 +500,40 @@ func buildClaudeOAuthUsagePayload(aq quota.AccountQuota, now time.Time) map[stri
 	}
 	assign(aq.Primary)
 	assign(aq.Secondary)
+	for _, g := range aq.Groups {
+		assign(g.Primary)
+		assign(g.Secondary)
+	}
 	return res
 }
 
 func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuota, now time.Time) map[string]any {
-	// Choose the most constrained remaining fraction across Primary (5h) and Secondary (Weekly).
-	remFrac := 1.0
-	var resetStr string
-	pick := func(w *quota.Window) {
-		if w == nil {
-			return
+	minRem := func(windows ...*quota.Window) (float64, string) {
+		remFrac := 1.0
+		var resetStr string
+		for _, w := range windows {
+			if w == nil {
+				continue
+			}
+			f := math.Max(0, math.Min(1, w.LeftPercent/100.0))
+			if f < remFrac {
+				remFrac = f
+				if w.ResetsAt != nil && !w.ResetsAt.IsZero() {
+					resetStr = w.ResetsAt.UTC().Format(time.RFC3339)
+				}
+			}
+			if resetStr == "" && w.ResetsAt != nil && !w.ResetsAt.IsZero() {
+				resetStr = w.ResetsAt.UTC().Format(time.RFC3339)
+			}
 		}
-		f := math.Max(0, math.Min(1, w.LeftPercent/100.0))
-		if f < remFrac {
-			remFrac = f
-		}
-		if resetStr == "" && w.ResetsAt != nil && !w.ResetsAt.IsZero() {
-			resetStr = w.ResetsAt.UTC().Format(time.RFC3339)
-		}
+		return math.Round(remFrac*1000) / 1000, resetStr
 	}
-	pick(aq.Primary)
-	pick(aq.Secondary)
+
+	defaultRem, defaultReset := minRem(aq.Primary, aq.Secondary)
+	groupByID := make(map[string]quota.QuotaGroup, len(aq.Groups))
+	for _, g := range aq.Groups {
+		groupByID[g.ID] = g
+	}
 
 	modelsMap := make(map[string]any, max(len(acct.Models), 1))
 	quotaBuckets := make([]map[string]any, 0, max(len(acct.Models), 1))
@@ -524,8 +541,13 @@ func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuo
 	if len(modelList) == 0 {
 		modelList = []string{"gemini-4-hydrogen", "gemini-3.8-flash"}
 	}
-	remRounded := math.Round(remFrac*1000) / 1000
 	for _, m := range modelList {
+		remRounded, resetStr := defaultRem, defaultReset
+		if gid := quota.GroupForModel("agy", m); gid != "" {
+			if g, ok := groupByID[gid]; ok {
+				remRounded, resetStr = minRem(g.Primary, g.Secondary)
+			}
+		}
 		qi := map[string]any{
 			"remainingFraction": remRounded,
 		}
@@ -551,23 +573,47 @@ func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuo
 		quotaBuckets = append(quotaBuckets, qb)
 	}
 
-	var buckets []map[string]any
-	addBucket := func(winName string, w *quota.Window) {
-		if w == nil {
-			return
+	makeBuckets := func(primary, secondary *quota.Window) []map[string]any {
+		var out []map[string]any
+		addBucket := func(winName string, w *quota.Window) {
+			if w == nil {
+				return
+			}
+			b := map[string]any{
+				"window":             winName,
+				"usage_fraction":     math.Round((w.UsedPercent/100.0)*1000) / 1000,
+				"remaining_fraction": math.Round((w.LeftPercent/100.0)*1000) / 1000,
+			}
+			if w.ResetsAt != nil && !w.ResetsAt.IsZero() {
+				b["reset_time"] = w.ResetsAt.UTC().Format(time.RFC3339)
+			}
+			out = append(out, b)
 		}
-		b := map[string]any{
-			"window":             winName,
-			"usage_fraction":     math.Round((w.UsedPercent/100.0)*1000) / 1000,
-			"remaining_fraction": math.Round((w.LeftPercent/100.0)*1000) / 1000,
-		}
-		if w.ResetsAt != nil && !w.ResetsAt.IsZero() {
-			b["reset_time"] = w.ResetsAt.UTC().Format(time.RFC3339)
-		}
-		buckets = append(buckets, b)
+		addBucket("5h", primary)
+		addBucket("7d", secondary)
+		return out
 	}
-	addBucket("5h", aq.Primary)
-	addBucket("7d", aq.Secondary)
+
+	var summaryGroups []map[string]any
+	if len(aq.Groups) > 0 {
+		for _, g := range aq.Groups {
+			name := g.Name
+			if name == "" {
+				name = g.ID
+			}
+			summaryGroups = append(summaryGroups, map[string]any{
+				"model_group": name,
+				"buckets":     makeBuckets(g.Primary, g.Secondary),
+			})
+		}
+	} else {
+		summaryGroups = []map[string]any{
+			{
+				"model_group": "Gemini Models",
+				"buckets":     makeBuckets(aq.Primary, aq.Secondary),
+			},
+		}
+	}
 
 	projID := cliProxyProjectID(acct)
 	return map[string]any{
@@ -575,14 +621,10 @@ func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuo
 		"project_id":              projID,
 		"models":                  modelsMap,
 		"buckets":                 quotaBuckets,
+		"credits":                 []any{},
 		"quota_summary": map[string]any{
 			"plan_tier": aq.PlanType,
-			"groups": []map[string]any{
-				{
-					"model_group": "Gemini Models",
-					"buckets":     buckets,
-				},
-			},
+			"groups":    summaryGroups,
 		},
 	}
 }
