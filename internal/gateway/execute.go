@@ -50,21 +50,39 @@ func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, ex
 		QuotaThresholdPct:        plan.Rule.QuotaThresholdPct,
 	}
 
-	if s.quota != nil && (plan.Rule.Strategy == config.StrategyMostQuota || plan.Rule.QuotaThresholdPct > 0) {
-		rep := s.quota.Report()
-		used := make(map[string]float64, len(rep.Accounts))
-		for _, aq := range rep.Accounts {
-			if pct, ok := aq.UsedPercentForGroup(qGroup); ok {
-				used[aq.AccountID] = pct
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+	req.SwitchExhaustedSessions = cfg.Sessions.SwitchAccountWhenExhausted
+
+	if s.quota != nil {
+		candidate := make(map[string]bool, len(plan.CandidateIDs))
+		for _, id := range plan.CandidateIDs {
+			candidate[id] = true
+		}
+		now := time.Now()
+		used := make(map[string]float64, len(plan.CandidateIDs))
+		var out map[string]time.Time
+		for _, aq := range s.quota.Report().Accounts {
+			if !candidate[aq.AccountID] {
+				continue
+			}
+			u := aq.UsageForModel(plan.UpstreamModel, now)
+			if u.HasData {
+				used[aq.AccountID] = u.UsedPct
+			}
+			if u.Exhausted {
+				if out == nil {
+					out = make(map[string]time.Time)
+				}
+				out[aq.AccountID] = u.ResetsAt
 			}
 		}
 		req.QuotaUsedPct = used
+		req.QuotaExhausted = out
 	}
 
 	if s.usage != nil {
-		s.mu.RLock()
-		cfg := s.cfg
-		s.mu.RUnlock()
 		needDay, needMonth := false, false
 		for _, id := range plan.CandidateIDs {
 			if acct := cfg.FindAccount(id); acct != nil {
@@ -189,6 +207,7 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 					_ = cb(backend.StreamChunk{Delta: td, Reasoning: tr})
 				}
 				s.pool.RecordSuccess(acct.ID)
+				s.pool.PinSession(req.SessionKey, acct.ID)
 				s.pool.RecordLatency(acct.ID, time.Since(callStart).Milliseconds())
 				s.recordPrivacyHeader(nil, privSess, plan.RequestedModel)
 				return acctName, nil

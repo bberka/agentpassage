@@ -1352,6 +1352,7 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 
 		if callErr == nil {
 			s.pool.RecordSuccess(acct.ID)
+			s.pool.PinSession(req.SessionKey, acct.ID)
 			s.pool.RecordLatency(acct.ID, time.Since(callStart).Milliseconds())
 			return resp, &acct, http.StatusOK, nil
 		}
@@ -1510,6 +1511,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 
 			if streamErr == nil {
 				s.pool.RecordSuccess(acct.ID)
+				s.pool.PinSession(req.SessionKey, acct.ID)
 				if !headersSent {
 					sendHeaders(acct.Kind == config.KindACP && req.HasTools, "")
 				}

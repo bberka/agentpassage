@@ -437,10 +437,58 @@ func TestGroupForModel(t *testing.T) {
 		{"agy", "orchestrator", "gemini"},
 		{"agy", "mystery", ""},
 		{"codex", "gpt-5", ""},
+		{"claude", "claude-fable-5-2", "fable"},
+		{"claude", "default", ""},
 	}
 	for _, c := range cases {
 		if got := quota.GroupForModel(c.backend, c.model); got != c.want {
 			t.Errorf("GroupForModel(%q, %q) = %q, want %q", c.backend, c.model, got, c.want)
 		}
+	}
+}
+
+func TestUsageForModel(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	later := now.Add(3 * time.Hour)
+	earlier := now.Add(-time.Minute)
+	win := func(label string, used float64, reset *time.Time) *quota.Window {
+		return &quota.Window{Label: label, UsedPercent: used, LeftPercent: 100 - used, ResetsAt: reset}
+	}
+
+	// Claude reports Weekly + Fable: Fable counts only for Fable models.
+	claude := quota.AccountQuota{Backend: "claude", Primary: win("Weekly", 60, &later), Secondary: win("Fable", 100, &later)}
+	if u := claude.UsageForModel("claude-sonnet-5", now); u.UsedPct != 60 || u.Exhausted {
+		t.Fatalf("sonnet usage = %+v", u)
+	}
+	if u := claude.UsageForModel("claude-fable-5-2", now); u.UsedPct != 100 || !u.Exhausted || !u.ResetsAt.Equal(later) {
+		t.Fatalf("fable usage = %+v", u)
+	}
+	// 5h + Weekly + Fable, with Fable kept in Groups.
+	claude3 := quota.AccountQuota{Backend: "claude", Primary: win("5h", 10, &later), Secondary: win("Weekly", 30, &later),
+		Groups: []quota.QuotaGroup{{ID: "fable", Name: "Fable", Secondary: win("Fable", 70, &later)}}}
+	if u := claude3.UsageForModel("fable", now); u.UsedPct != 70 {
+		t.Fatalf("fable group usage = %+v", u)
+	}
+	if u := claude3.UsageForModel("opus", now); u.UsedPct != 30 {
+		t.Fatalf("opus usage = %+v", u)
+	}
+
+	agy := quota.AccountQuota{Backend: "agy", Groups: []quota.QuotaGroup{
+		{ID: quota.GroupGemini, Primary: win("5h", 100, &later), Secondary: win("Weekly", 25, &later)},
+		{ID: quota.GroupClaudeGPT, Primary: win("5h", 0, nil), Secondary: win("Weekly", 100, &later)},
+	}}
+	// Gemini ranks by weekly, but a used-up 5h window still blocks it.
+	if u := agy.UsageForModel("gemini-4-neon", now); u.UsedPct != 25 || !u.Exhausted || !u.ResetsAt.Equal(later) {
+		t.Fatalf("gemini usage = %+v", u)
+	}
+	for _, m := range []string{"claude-opus-5-5", "gpt-oss-120b-medium"} {
+		if u := agy.UsageForModel(m, now); u.UsedPct != 100 || !u.Exhausted {
+			t.Fatalf("%s usage = %+v", m, u)
+		}
+	}
+	// A used-up window whose reset already passed is not exhausted.
+	agy.Groups[1].Secondary = win("Weekly", 100, &earlier)
+	if u := agy.UsageForModel("claude-sonnet-5-5", now); u.Exhausted {
+		t.Fatalf("reset window still exhausted: %+v", u)
 	}
 }

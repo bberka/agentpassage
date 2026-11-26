@@ -60,9 +60,19 @@ type Config struct {
 	Alerts   AlertsConfig    `toml:"alerts"`
 	Cache    CacheConfig     `toml:"cache"`
 	Decision DecisionConfig  `toml:"decision"`
+	Sessions SessionsConfig  `toml:"sessions"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Models   []ModelOverride `toml:"models"`
 	Routing  []RoutingRule   `toml:"routing"`
+}
+
+// SessionsConfig controls how a conversation (requests sharing a session key)
+// is routed once it has run on an account.
+type SessionsConfig struct {
+	// SwitchAccountWhenExhausted moves a conversation to another account when
+	// its account runs out of quota. Off by default: the conversation keeps its
+	// account, and its requests fail with 429 until the quota resets.
+	SwitchAccountWhenExhausted bool `toml:"switch_account_when_exhausted" json:"switch_account_when_exhausted"`
 }
 
 type CacheConfig struct {

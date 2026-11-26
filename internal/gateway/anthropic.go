@@ -294,6 +294,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 
 			if streamErr == nil {
 				s.pool.RecordSuccess(acct.ID)
+				s.pool.PinSession(req.SessionKey, acct.ID)
 				sendStart(acct.Kind == config.KindACP && req.HasTools, "")
 				if tail := deltaRestorer.Flush(); tail != "" {
 					writeAnthropicEvent(w, "content_block_delta", map[string]any{

@@ -46,6 +46,9 @@ type QuotaGroup struct {
 // GroupForModel returns the quota group ID that meters upstreamModel on backend,
 // or "" when the backend or model has no separate group.
 func GroupForModel(backend, upstreamModel string) string {
+	if backend == "claude" {
+		return ModelFamily(upstreamModel)
+	}
 	if backend != "agy" {
 		return ""
 	}
@@ -80,6 +83,98 @@ func (q AccountQuota) UsedPercentForGroup(groupID string) (float64, bool) {
 		return maxUsedPercent(g.Primary, g.Secondary)
 	}
 	return 0, false
+}
+
+// modelFamilies are the model families a provider can meter with their own
+// limit on top of the account-wide windows (e.g. Claude's weekly Fable limit).
+var modelFamilies = []string{"fable", "opus", "sonnet", "haiku"}
+
+// ModelFamily returns the model family named in s (a model ID, window label or
+// group ID), or "" when s names none.
+func ModelFamily(s string) string {
+	l := strings.ToLower(s)
+	for _, f := range modelFamilies {
+		if strings.Contains(l, f) {
+			return f
+		}
+	}
+	return ""
+}
+
+// ModelUsage is the quota state routing weighs for one model on one account.
+type ModelUsage struct {
+	UsedPct   float64   // used % to rank accounts by
+	HasData   bool      // false when the account reports no window for the model
+	Exhausted bool      // a window that meters the model is fully used
+	ResetsAt  time.Time // when the last used-up window resets; zero when unknown
+}
+
+// UsageForModel returns the quota state for a request to upstreamModel.
+//
+// agy meters model groups separately, so only the matching group's windows
+// count; Gemini ranks by its weekly window because its 5h window refills
+// quickly, but a used-up 5h window still marks it exhausted. Other backends
+// count every account window plus any model-family window (Fable, Opus, ...)
+// that matches the model, and ignore family windows for other models.
+func (q AccountQuota) UsageForModel(upstreamModel string, now time.Time) ModelUsage {
+	rank, all := q.windowsForModel(upstreamModel)
+	var u ModelUsage
+	u.UsedPct, u.HasData = maxUsedPercent(rank...)
+	for _, w := range all {
+		if w == nil || w.UsedPercent < 99.95 {
+			continue
+		}
+		var reset time.Time
+		if w.ResetsAt != nil && w.ResetsAt.Year() >= 2000 {
+			reset = *w.ResetsAt
+			if !reset.After(now) {
+				continue // already refilled; the next refresh will show it
+			}
+		}
+		u.Exhausted = true
+		if reset.After(u.ResetsAt) {
+			u.ResetsAt = reset
+		}
+	}
+	return u
+}
+
+func (q AccountQuota) windowsForModel(upstreamModel string) (rank, all []*Window) {
+	if q.Backend == "agy" && len(q.Groups) > 0 {
+		gid := GroupForModel(q.Backend, upstreamModel)
+		if gid == "" {
+			all = []*Window{q.Primary, q.Secondary}
+			return all, all
+		}
+		for _, g := range q.Groups {
+			if g.ID != gid {
+				continue
+			}
+			all = []*Window{g.Primary, g.Secondary}
+			if gid == GroupGemini && g.Secondary != nil {
+				return []*Window{g.Secondary}, all
+			}
+			return all, all
+		}
+		return nil, nil
+	}
+	family := ModelFamily(upstreamModel)
+	add := func(w *Window, scope string) {
+		if w == nil {
+			return
+		}
+		if f := ModelFamily(scope + " " + w.Label); f != "" && f != family {
+			return
+		}
+		all = append(all, w)
+	}
+	add(q.Primary, "")
+	add(q.Secondary, "")
+	for _, g := range q.Groups {
+		add(g.Primary, g.ID)
+		add(g.Secondary, g.ID)
+	}
+	return all, all
 }
 
 func maxUsedPercent(windows ...*Window) (used float64, ok bool) {

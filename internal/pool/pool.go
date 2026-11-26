@@ -25,7 +25,10 @@ const (
 const latencyEWMAWeight = 0.3
 
 var (
-	ErrNoAvailableAccount  = errors.New("no available account for request")
+	ErrNoAvailableAccount = errors.New("no available account for request")
+	// ErrSessionWaitForReset marks a request refused because its conversation's
+	// account has no quota left and the conversation must not switch accounts.
+	ErrSessionWaitForReset = errors.New("conversation's account has no quota left")
 	ErrStrategyOptInNeeded = errors.New("round-robin and least-busy are intended for API-key pools and can cause bans on subscription (ACP/CLI) accounts; use failover or acknowledge the risk in Routing settings")
 )
 
@@ -84,17 +87,19 @@ type Manager struct {
 	accounts      map[string]*config.AccountConfig
 	states        map[string]*runtimeState
 	stickyMap     map[string]string // sessionKey -> accountID
-	rrCursor      map[string]int    // ruleKey -> round-robin index
+	sessionPins   map[string]sessionPin
+	rrCursor      map[string]int // ruleKey -> round-robin index
 	onAutoDisable func(accountID, reason string)
 }
 
 func NewManager(accounts []config.AccountConfig) *Manager {
 	m := &Manager{
-		now:       time.Now,
-		accounts:  make(map[string]*config.AccountConfig),
-		states:    make(map[string]*runtimeState),
-		stickyMap: make(map[string]string),
-		rrCursor:  make(map[string]int),
+		now:         time.Now,
+		accounts:    make(map[string]*config.AccountConfig),
+		states:      make(map[string]*runtimeState),
+		stickyMap:   make(map[string]string),
+		sessionPins: make(map[string]sessionPin),
+		rrCursor:    make(map[string]int),
 	}
 	m.SyncAccounts(accounts)
 	return m
@@ -220,6 +225,111 @@ type SelectRequest struct {
 	QuotaUsedPct             map[string]float64 // accountID -> highest used % across quota windows
 	QuotaThresholdPct        int                // prefer accounts with QuotaUsedPct < threshold when > 0
 	QuotaGroup               string             // model family being requested; "" ignores group cooldowns
+	// QuotaExhausted lists accounts whose quota for the requested model is used
+	// up, with the reset time (zero when unknown). New conversations skip them.
+	QuotaExhausted map[string]time.Time
+	// SwitchExhaustedSessions lets a conversation that already ran on an
+	// account move to another one when that account runs out of quota. When
+	// false the request fails with ErrSessionWaitForReset until the reset.
+	SwitchExhaustedSessions bool
+}
+
+// sessionPin records the account a conversation last succeeded on.
+type sessionPin struct {
+	accountID string
+	at        time.Time
+}
+
+const (
+	maxSessionPins = 4096
+	sessionPinTTL  = 7 * 24 * time.Hour
+)
+
+func sessionPinKey(sessionKey, backendID string) string {
+	return sessionKey + "\x00" + backendID
+}
+
+// PinSession records that sessionKey's conversation ran on accountID, so later
+// requests in it stay on that account. Empty session keys are ignored.
+func (m *Manager) PinSession(sessionKey, accountID string) {
+	if sessionKey == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	a, ok := m.accounts[accountID]
+	if !ok {
+		return
+	}
+	now := m.now()
+	if len(m.sessionPins) >= maxSessionPins {
+		for k, p := range m.sessionPins {
+			if now.Sub(p.at) > sessionPinTTL {
+				delete(m.sessionPins, k)
+			}
+		}
+	}
+	m.sessionPins[sessionPinKey(sessionKey, a.Backend)] = sessionPin{accountID: accountID, at: now}
+}
+
+// pinnedLocked returns the candidate account sessionKey's conversation last
+// succeeded on, or "" for a new conversation.
+func (m *Manager) pinnedLocked(sessionKey string, candidateIDs []string, now time.Time) string {
+	if sessionKey == "" {
+		return ""
+	}
+	seen := make(map[string]bool, 1)
+	for _, id := range candidateIDs {
+		a, ok := m.accounts[id]
+		if !ok || seen[a.Backend] {
+			continue
+		}
+		seen[a.Backend] = true
+		p, ok := m.sessionPins[sessionPinKey(sessionKey, a.Backend)]
+		if !ok || now.Sub(p.at) > sessionPinTTL {
+			continue
+		}
+		for _, cid := range candidateIDs {
+			if cid == p.accountID {
+				return p.accountID
+			}
+		}
+	}
+	return ""
+}
+
+// quotaBlockLocked reports whether the account is out of quota for the request
+// (live quota used up, or a rate-limit cooldown) and when that ends.
+func (m *Manager) quotaBlockLocked(id string, req SelectRequest, now time.Time) (bool, time.Time) {
+	if until, ok := req.QuotaExhausted[id]; ok {
+		return true, until
+	}
+	st := m.states[id]
+	if st == nil {
+		return false, time.Time{}
+	}
+	if now.Before(st.cooldownUntil) {
+		return true, st.cooldownUntil
+	}
+	if until := st.groupCooldowns[req.QuotaGroup]; req.QuotaGroup != "" && now.Before(until) {
+		return true, until
+	}
+	return false, time.Time{}
+}
+
+func sessionWaitError(name string, until, now time.Time) error {
+	be := &backend.BackendError{
+		Kind:       backend.ErrKindRateLimit,
+		StatusCode: 429,
+		Cause:      ErrSessionWaitForReset,
+	}
+	when := "its quota resets"
+	if !until.IsZero() {
+		when = "it resets at " + until.Local().Format("Jan 2 15:04")
+		be.RetryAfter = max(int(until.Sub(now).Seconds()), 1)
+	}
+	be.Message = fmt.Sprintf("%s has no quota left for this model; this conversation stays on that account until %s (set [sessions] switch_account_when_exhausted = true to switch accounts instead)", name, when)
+	return be
 }
 
 type Lease struct {
@@ -265,7 +375,15 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		}
 	}
 
+	pinnedID := m.pinnedLocked(req.SessionKey, req.CandidateIDs, now)
+	if pinnedID != "" && !req.SwitchExhaustedSessions {
+		if blocked, until := m.quotaBlockLocked(pinnedID, req, now); blocked {
+			return nil, sessionWaitError(m.accounts[pinnedID].Backend+"/"+m.accounts[pinnedID].Name, until, now)
+		}
+	}
+
 	eligible := make([]*config.AccountConfig, 0, len(req.CandidateIDs))
+	var exhausted []*config.AccountConfig
 	var reasons []string
 	for _, id := range req.CandidateIDs {
 		if req.ExcludeIDs != nil && req.ExcludeIDs[id] {
@@ -281,12 +399,21 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		}
 		st := m.states[id]
 		if okElig, reason := m.isEligibleLocked(a, st, req.QuotaGroup, now); okElig {
+			if _, out := req.QuotaExhausted[id]; out {
+				exhausted = append(exhausted, a)
+				continue
+			}
 			eligible = append(eligible, a)
 		} else {
 			reasons = append(reasons, fmt.Sprintf("%s (%s)", a.Name, reason))
 		}
 	}
 
+	// Quota data can be a few minutes stale, so when every usable account looks
+	// used up, try them anyway and let the provider decide.
+	if len(eligible) == 0 {
+		eligible = exhausted
+	}
 	if len(eligible) == 0 {
 		if len(reasons) > 0 {
 			return nil, fmt.Errorf("%w: %v", ErrNoAvailableAccount, reasons)
@@ -300,7 +427,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		thresh := float64(req.QuotaThresholdPct)
 		under := make([]*config.AccountConfig, 0, len(eligible))
 		for _, a := range eligible {
-			if used, ok := req.QuotaUsedPct[a.ID]; !ok || used < thresh {
+			if used, ok := req.QuotaUsedPct[a.ID]; !ok || used < thresh || a.ID == pinnedID {
 				under = append(under, a)
 			}
 		}
@@ -310,7 +437,53 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	}
 
 	var chosen *config.AccountConfig
+	if pinnedID != "" && strategy != config.StrategyManual {
+		for _, a := range eligible {
+			if a.ID == pinnedID {
+				chosen = a
+				break
+			}
+		}
+	}
 
+	switch {
+	case chosen != nil:
+		// An existing conversation stays on its account to keep its context.
+		if strategy == config.StrategySticky && req.SessionKey != "" {
+			m.stickyMap[req.SessionKey] = chosen.ID
+		}
+	default:
+		chosen = m.pickLocked(strategy, req, eligible)
+	}
+
+	st := m.states[chosen.ID]
+	st.inFlight++
+	st.totalRequests++
+	st.lastUsedAt = now
+	st.requestTimestamps = append(st.requestTimestamps, now)
+
+	acctCopy := *chosen
+	id := chosen.ID
+	released := false
+	return &Lease{
+		Account: acctCopy,
+		release: func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if released {
+				return
+			}
+			released = true
+			if s, ok := m.states[id]; ok && s.inFlight > 0 {
+				s.inFlight--
+			}
+		},
+	}, nil
+}
+
+// pickLocked chooses among eligible accounts by strategy.
+func (m *Manager) pickLocked(strategy string, req SelectRequest, eligible []*config.AccountConfig) *config.AccountConfig {
+	var chosen *config.AccountConfig
 	switch strategy {
 	case config.StrategyManual, config.StrategyFailover:
 		chosen = eligible[0]
@@ -383,30 +556,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 			m.stickyMap[req.SessionKey] = chosen.ID
 		}
 	}
-
-	st := m.states[chosen.ID]
-	st.inFlight++
-	st.totalRequests++
-	st.lastUsedAt = now
-	st.requestTimestamps = append(st.requestTimestamps, now)
-
-	acctCopy := *chosen
-	id := chosen.ID
-	released := false
-	return &Lease{
-		Account: acctCopy,
-		release: func() {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if released {
-				return
-			}
-			released = true
-			if s, ok := m.states[id]; ok && s.inFlight > 0 {
-				s.inFlight--
-			}
-		},
-	}, nil
+	return chosen
 }
 
 // RecordSuccess resets transient auth/429 counters and clears any stale auth/disable banner.
