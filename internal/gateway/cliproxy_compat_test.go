@@ -76,6 +76,8 @@ func TestCLIProxyCompatManagementEndpoints(t *testing.T) {
 		{"codex-bb", "https://chatgpt.com/backend-api/wham/usage", "rate_limit"},
 		{"claude-main", "https://api.anthropic.com/api/oauth/usage", "seven_day_fable"},
 		{"agy-bb", "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", "models"},
+		{"agy-bb", "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", "groups"},
+		{"claude-main", "https://api.anthropic.com/api/oauth/usage", "limits"},
 		{"agy-bb", "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", "credits"},
 		{"agy-bb", "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchUserCredits", "credits"},
 		{"deepseek-main", "https://api.deepseek.com/user/balance", "balance_infos"},

@@ -360,6 +360,9 @@ func synthesizeCLIProxyUpstreamResponse(acct config.AccountConfig, aq quota.Acco
 			"credits":                 []any{},
 		}
 
+	case strings.Contains(lowerURL, "retrieveuserquotasummary"):
+		return http.StatusOK, buildAntigravityQuotaSummaryPayload(aq)
+
 	case strings.Contains(lowerURL, "fetchavailablemodels") || strings.Contains(lowerURL, "retrieveuserquota") || backend == "agy":
 		return http.StatusOK, buildAntigravityQuotaPayload(acct, aq, now)
 
@@ -507,7 +510,114 @@ func buildClaudeOAuthUsagePayload(aq quota.AccountQuota, now time.Time) map[stri
 		assign(g.Primary)
 		assign(g.Secondary)
 	}
+
+	// Newer clients (T3 Code) read model-specific weekly limits from "limits"
+	// entries of kind "weekly_scoped" rather than the seven_day_<model> fields.
+	limits := []map[string]any{}
+	addScoped := func(w *quota.Window) {
+		if w == nil {
+			return
+		}
+		name := claudeScopedModelName(w.Label)
+		if name == "" {
+			return
+		}
+		l := map[string]any{
+			"kind":    "weekly_scoped",
+			"percent": w.UsedPercent,
+			"scope":   map[string]any{"model": map[string]any{"display_name": name}},
+		}
+		if w.ResetsAt != nil && !w.ResetsAt.IsZero() {
+			l["resets_at"] = w.ResetsAt.UTC().Format(time.RFC3339)
+		}
+		limits = append(limits, l)
+	}
+	addScoped(aq.Primary)
+	addScoped(aq.Secondary)
+	for _, g := range aq.Groups {
+		addScoped(g.Primary)
+		addScoped(g.Secondary)
+	}
+	res["limits"] = limits
 	return res
+}
+
+// claudeScopedModelName returns the model a Claude weekly window is limited to
+// ("Fable", "Opus", "Sonnet"), or "" for the account-wide 5h and weekly windows.
+func claudeScopedModelName(label string) string {
+	l := strings.ToLower(label)
+	for _, m := range []string{"Fable", "Opus", "Sonnet"} {
+		if strings.Contains(l, strings.ToLower(m)) {
+			return m
+		}
+	}
+	return ""
+}
+
+// buildAntigravityQuotaSummaryPayload answers retrieveUserQuotaSummary, the
+// call T3 Code uses for Antigravity usage. Each quota group becomes a group of
+// buckets keyed by bucketId ("gemini-*" or "3p-*" so the client names the
+// family) with a "5h" or "weekly" window.
+func buildAntigravityQuotaSummaryPayload(aq quota.AccountQuota) map[string]any {
+	type src struct {
+		prefix, name string
+		windows      []*quota.Window
+	}
+	var srcs []src
+	if len(aq.Groups) > 0 {
+		for _, g := range aq.Groups {
+			prefix := g.ID + "-"
+			switch g.ID {
+			case quota.GroupGemini:
+				prefix = "gemini-"
+			case quota.GroupClaudeGPT:
+				prefix = "3p-"
+			}
+			name := g.Name
+			if name == "" {
+				name = g.ID
+			}
+			srcs = append(srcs, src{prefix, name, []*quota.Window{g.Primary, g.Secondary}})
+		}
+	} else {
+		srcs = append(srcs, src{"gemini-", "Gemini Models", []*quota.Window{aq.Primary, aq.Secondary}})
+	}
+
+	groups := []map[string]any{}
+	all := []map[string]any{}
+	for _, sg := range srcs {
+		buckets := []map[string]any{}
+		for _, w := range sg.windows {
+			if w == nil {
+				continue
+			}
+			win := antigravitySummaryWindowName(w)
+			b := map[string]any{
+				"bucketId":          sg.prefix + win,
+				"window":            win,
+				"remainingFraction": math.Round(math.Max(0, math.Min(1, w.LeftPercent/100.0))*1000) / 1000,
+			}
+			if w.ResetsAt != nil && !w.ResetsAt.IsZero() {
+				b["resetTime"] = w.ResetsAt.UTC().Format(time.RFC3339)
+			}
+			buckets = append(buckets, b)
+			all = append(all, b)
+		}
+		if len(buckets) > 0 {
+			groups = append(groups, map[string]any{"displayName": sg.name, "buckets": buckets})
+		}
+	}
+	return map[string]any{"groups": groups, "buckets": all}
+}
+
+// antigravitySummaryWindowName maps a quota window to the summary API's window
+// name: "weekly" for multi-day windows, "5h" otherwise.
+func antigravitySummaryWindowName(w *quota.Window) string {
+	l := strings.ToLower(w.Label)
+	if w.WindowMins >= 24*60 || strings.Contains(l, "week") || strings.Contains(l, "7d") {
+		return "weekly"
+	}
+	return "5h"
 }
 
 func buildAntigravityQuotaPayload(acct config.AccountConfig, aq quota.AccountQuota, now time.Time) map[string]any {
