@@ -169,3 +169,81 @@ func TestHealthCooldownAuthDisableAndFailoverRules(t *testing.T) {
 		t.Fatalf("expected SyncAccounts with Enabled=true to clear stale banner, got %+v", got)
 	}
 }
+
+func TestGroupRateLimitCooldownIsolation(t *testing.T) {
+	m := NewManager([]config.AccountConfig{
+		{ID: "agy-1", Name: "one", Kind: config.KindACP, Backend: "agy", Enabled: true, MaxConcurrency: 4},
+	})
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	m.SetNowFunc(func() time.Time { return now })
+	rule := config.RoutingRule{Pattern: "agy/*", Strategy: config.StrategyFailover}
+	limited := &backend.BackendError{Kind: backend.ErrKindRateLimit, StatusCode: 429}
+
+	acquire := func(group string) error {
+		l, err := m.Acquire(SelectRequest{CandidateIDs: []string{"agy-1"}, QuotaGroup: group})
+		if err == nil {
+			l.Release()
+		}
+		return err
+	}
+
+	m.RecordErrorForGroup("agy-1", "claude-gpt", limited, rule)
+	if err := acquire("claude-gpt"); !errors.Is(err, ErrNoAvailableAccount) {
+		t.Fatalf("expected claude-gpt cooling down, got %v", err)
+	}
+	if err := acquire("gemini"); err != nil {
+		t.Fatalf("claude-gpt 429 must not block gemini: %v", err)
+	}
+
+	// A first Gemini 429 gets the base 60s backoff, not one inflated by Claude's.
+	m.RecordErrorForGroup("agy-1", "claude-gpt", limited, rule)
+	m.RecordErrorForGroup("agy-1", "gemini", limited, rule)
+	now = now.Add(61 * time.Second)
+	if err := acquire("gemini"); err != nil {
+		t.Fatalf("expected gemini recovered after 60s: %v", err)
+	}
+	if err := acquire("claude-gpt"); err == nil {
+		t.Fatalf("expected claude-gpt still cooling down on its 120s backoff")
+	}
+
+	m.ClearHealth("agy-1")
+	if err := acquire("claude-gpt"); err != nil {
+		t.Fatalf("expected ClearHealth to reset group cooldowns: %v", err)
+	}
+
+	// A rate limit without a group still cools down the whole account.
+	m.RecordError("agy-1", limited, rule)
+	if err := acquire("gemini"); err == nil {
+		t.Fatalf("expected account-wide cooldown to block every group")
+	}
+}
+
+func TestFastestStrategy(t *testing.T) {
+	m := NewManager([]config.AccountConfig{
+		{ID: "a", Name: "a", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, MaxConcurrency: 4},
+		{ID: "b", Name: "b", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, MaxConcurrency: 4},
+	})
+	pick := func() string {
+		t.Helper()
+		l, err := m.Acquire(SelectRequest{Strategy: config.StrategyFastest, CandidateIDs: []string{"a", "b"}})
+		if err != nil {
+			t.Fatalf("acquire: %v", err)
+		}
+		l.Release()
+		return l.Account.ID
+	}
+
+	m.RecordLatency("a", 100)
+	if got := pick(); got != "b" {
+		t.Fatalf("expected unmeasured b tried first, got %s", got)
+	}
+	m.RecordLatency("b", 500)
+	if got := pick(); got != "a" {
+		t.Fatalf("expected faster a, got %s", got)
+	}
+	// 0.3*2000 + 0.7*100 = 670ms, now slower than b.
+	m.RecordLatency("a", 2000)
+	if got := pick(); got != "b" {
+		t.Fatalf("expected b after a slowed down, got %s", got)
+	}
+}

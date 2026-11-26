@@ -47,11 +47,22 @@ func (a *App) openAccountEditor(acct config.AccountConfig) tea.Cmd {
 		expose = config.ExposePool
 	}
 
+	dailyStr := ""
+	if acct.DailyBudgetUSD > 0 {
+		dailyStr = strconv.FormatFloat(acct.DailyBudgetUSD, 'f', -1, 64)
+	}
+	monthlyStr := ""
+	if acct.MonthlyBudgetUSD > 0 {
+		monthlyStr = strconv.FormatFloat(acct.MonthlyBudgetUSD, 'f', -1, 64)
+	}
+
 	inputs := []textinput.Model{
 		makeInput(acct.Name, "account name (e.g. a, b, work)"),
 		makeInput(urlOrCwd, urlOrCwdPH),
 		makeInput(acct.ModelPrefix, "model prefix (e.g. a-, b-)"),
 		makeInput(strconv.Itoa(acct.MaxConcurrency), "max concurrent requests"),
+		makeInput(dailyStr, "daily USD budget (blank = unlimited)"),
+		makeInput(monthlyStr, "monthly USD budget (blank = unlimited)"),
 	}
 	inputs[0].Focus()
 
@@ -72,9 +83,9 @@ func (a *App) openAccountEditor(acct config.AccountConfig) tea.Cmd {
 
 func (ed *accountEditorState) fieldCount() int {
 	if ed.kind == config.KindAPIKey {
-		return 5 // name, baseURL, prefix, concurrency, exposeMode
+		return 7 // name, baseURL, prefix, concurrency, dailyBudget, monthlyBudget, exposeMode
 	}
-	return 7 // name, cwd, prefix, concurrency, exposeMode, permMode, hostProfile
+	return 9 // name, cwd, prefix, concurrency, dailyBudget, monthlyBudget, exposeMode, permMode, hostProfile
 }
 
 func (a *App) updateAccountEditorModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -125,7 +136,7 @@ func (a *App) updateAccountEditorModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case " ", "left", "right":
 		if ed.focus >= len(ed.inputs) {
 			switch ed.focus {
-			case 4: // exposeMode
+			case 6: // exposeMode
 				switch ed.exposeMode {
 				case config.ExposePool:
 					ed.exposeMode = config.ExposePrefix
@@ -134,7 +145,7 @@ func (a *App) updateAccountEditorModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				default:
 					ed.exposeMode = config.ExposePool
 				}
-			case 5: // permissionMode
+			case 7: // permissionMode
 				switch ed.permissionMode {
 				case config.PermDeny:
 					ed.permissionMode = config.PermAsk
@@ -143,7 +154,7 @@ func (a *App) updateAccountEditorModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				default:
 					ed.permissionMode = config.PermDeny
 				}
-			case 6: // useHostProfile
+			case 8: // useHostProfile
 				ed.useHostProfile = !ed.useHostProfile
 			}
 			return a, nil
@@ -189,6 +200,23 @@ func (a *App) saveAccountEditor() (tea.Model, tea.Cmd) {
 		a.setStatus("Max concurrency must be between 1 and 64", true)
 		return a, nil
 	}
+	var dailyBudget, monthlyBudget float64
+	if s := strings.TrimSpace(ed.inputs[4].Value()); s != "" {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil || v < 0 {
+			a.setStatus("Daily budget must be a non-negative number", true)
+			return a, nil
+		}
+		dailyBudget = v
+	}
+	if s := strings.TrimSpace(ed.inputs[5].Value()); s != "" {
+		v, err := strconv.ParseFloat(s, 64)
+		if err != nil || v < 0 {
+			a.setStatus("Monthly budget must be a non-negative number", true)
+			return a, nil
+		}
+		monthlyBudget = v
+	}
 
 	if newName != ed.origName {
 		if err := a.renameAccount(ed.accountID, newName); err != nil {
@@ -216,6 +244,8 @@ func (a *App) saveAccountEditor() (tea.Model, tea.Cmd) {
 		acct.ModelPrefix = prefix
 		acct.ExposeMode = ed.exposeMode
 		acct.MaxConcurrency = maxConc
+		acct.DailyBudgetUSD = dailyBudget
+		acct.MonthlyBudgetUSD = monthlyBudget
 		_ = a.srv.ReloadConfig(cfg)
 		if urlChanged {
 			a.setStatus(fmt.Sprintf("Saved %s/%s — fetching models from updated URL...", acct.Backend, acct.Name), false)
@@ -320,7 +350,7 @@ func (a *App) viewAccountEditorModal() string {
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
 
-	inputLabels := []string{"Name", urlLabel, "Model Prefix", "Concurrency"}
+	inputLabels := []string{"Name", urlLabel, "Model Prefix", "Concurrency", "Daily Budget $", "Monthly Budget $"}
 	for i, lbl := range inputLabels {
 		prefix := "  "
 		lStyle := a.styles.Muted
@@ -328,7 +358,7 @@ func (a *App) viewAccountEditorModal() string {
 			prefix = a.styles.Highlight.Render("› ")
 			lStyle = a.styles.Highlight
 		}
-		lines = append(lines, fmt.Sprintf("%s%-14s %s", prefix, lStyle.Render(lbl+":"), ed.inputs[i].View()))
+		lines = append(lines, fmt.Sprintf("%s%-16s %s", prefix, lStyle.Render(lbl+":"), ed.inputs[i].View()))
 	}
 
 	renderToggle := func(idx int, lbl, val, hint string) {
@@ -340,17 +370,17 @@ func (a *App) viewAccountEditorModal() string {
 			lStyle = a.styles.Highlight
 			vStyle = a.styles.Highlight
 		}
-		lines = append(lines, fmt.Sprintf("%s%-14s %s  %s", prefix, lStyle.Render(lbl+":"), vStyle.Render("◀ "+val+" ▶"), a.styles.Muted.Render(hint)))
+		lines = append(lines, fmt.Sprintf("%s%-16s %s  %s", prefix, lStyle.Render(lbl+":"), vStyle.Render("◀ "+val+" ▶"), a.styles.Muted.Render(hint)))
 	}
 
-	renderToggle(4, "Expose Mode", ed.exposeMode, "(space: pool / prefix / both)")
+	renderToggle(6, "Expose Mode", ed.exposeMode, "(space: pool / prefix / both)")
 	if ed.kind != config.KindAPIKey {
-		renderToggle(5, "Permissions", ed.permissionMode, "(space: deny / ask / auto-approve)")
+		renderToggle(7, "Permissions", ed.permissionMode, "(space: deny / ask / auto-approve)")
 		prof := "isolated profile"
 		if ed.useHostProfile {
 			prof = "host CLI login"
 		}
-		renderToggle(6, "Profile", prof, "(space: isolated / host)")
+		renderToggle(8, "Profile", prof, "(space: isolated / host)")
 	}
 
 	lines = append(lines, "")

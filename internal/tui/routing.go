@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -15,6 +16,8 @@ var strategyOrder = []string{
 	config.StrategyManual,
 	config.StrategyRoundRobin,
 	config.StrategyLeastBusy,
+	config.StrategyMostQuota,
+	config.StrategyFastest,
 }
 
 func (a *App) ruleHasSubscriptionAccounts(rule config.RoutingRule) bool {
@@ -156,6 +159,53 @@ func (a *App) updateRouting(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.setStatus(fmt.Sprintf("Rule %s cross-account 429 retry = %v",
 			cfg.Routing[a.routingCursor].Pattern, cfg.Routing[a.routingCursor].AllowCrossAccountRetryOn429), false)
 
+	case "t": // Edit quota threshold % (0-100)
+		rule := cfg.Routing[a.routingCursor]
+		return a, a.openEditModal("Quota Threshold %", "Avoid accounts above this used % (0 = off, e.g. 90)", strconv.Itoa(rule.QuotaThresholdPct), func(val string) error {
+			n, err := strconv.Atoi(strings.TrimSpace(val))
+			if err != nil || n < 0 || n > 100 {
+				return fmt.Errorf("enter a number between 0 and 100")
+			}
+			cfg := a.srv.Config()
+			cfg.Routing[a.routingCursor].QuotaThresholdPct = n
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus(fmt.Sprintf("Rule %s quota threshold -> %d%%", rule.Pattern, n), false)
+			return nil
+		})
+
+	case "o": // Cycle default thinking effort ("" -> off -> low -> medium -> high -> xhigh -> max)
+		effs := []string{"", "off", "low", "medium", "high", "xhigh", "max"}
+		cur := cfg.Routing[a.routingCursor].DefaultEffort
+		next := effs[1]
+		for i, v := range effs {
+			if v == cur {
+				next = effs[(i+1)%len(effs)]
+				break
+			}
+		}
+		cfg.Routing[a.routingCursor].DefaultEffort = next
+		_ = a.srv.ReloadConfig(cfg)
+		disp := next
+		if disp == "" {
+			disp = "inherit"
+		}
+		a.setStatus(fmt.Sprintf("Rule %s default thinking -> %s", cfg.Routing[a.routingCursor].Pattern, disp), false)
+
+	case "P": // Edit per-route system prompt
+		rule := cfg.Routing[a.routingCursor]
+		return a, a.openEditModal("Route System Prompt", "Prepended system prompt for matching requests (blank = none)", rule.SystemPrompt, func(val string) error {
+			cfg := a.srv.Config()
+			cfg.Routing[a.routingCursor].SystemPrompt = strings.TrimSpace(val)
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus("Updated system prompt for rule "+rule.Pattern, false)
+			return nil
+		})
+
+	case "c": // Toggle opt-in response caching on this route
+		cfg.Routing[a.routingCursor].Cache = !cfg.Routing[a.routingCursor].Cache
+		_ = a.srv.ReloadConfig(cfg)
+		a.setStatus(fmt.Sprintf("Rule %s response cache = %v", cfg.Routing[a.routingCursor].Pattern, cfg.Routing[a.routingCursor].Cache), false)
+
 	case "x", "delete":
 		pat := cfg.Routing[a.routingCursor].Pattern
 		cfg.Routing = append(cfg.Routing[:a.routingCursor], cfg.Routing[a.routingCursor+1:]...)
@@ -211,6 +261,20 @@ func (a *App) viewRouting(bodyHeight int) string {
 		} else {
 			lines = append(lines, "  "+row)
 		}
+	}
+	if a.routingCursor >= 0 && a.routingCursor < len(cfg.Routing) {
+		sel := cfg.Routing[a.routingCursor]
+		eff := sel.DefaultEffort
+		if eff == "" {
+			eff = "inherit"
+		}
+		sp := "—"
+		if sel.SystemPrompt != "" {
+			sp = truncate(sel.SystemPrompt, max(innerW-50, 16))
+		}
+		lines = append(lines, "")
+		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
+		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Selected: quota_thresh=%d%% (t) · thinking=%s (o) · cache=%v (c) · system_prompt=%s (P)", sel.QuotaThresholdPct, eff, sel.Cache, sp)))
 	}
 	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

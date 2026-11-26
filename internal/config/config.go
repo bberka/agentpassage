@@ -35,6 +35,7 @@ const (
 	StrategyRoundRobin = "round-robin"
 	StrategyLeastBusy  = "least-busy"
 	StrategyMostQuota  = "most-quota"
+	StrategyFastest    = "fastest"
 
 	ToolActivityDrop = "drop"
 	ToolActivityText = "text"
@@ -57,9 +58,27 @@ type Config struct {
 	Health   HealthConfig    `toml:"health"`
 	Privacy  PrivacyConfig   `toml:"privacy"`
 	Alerts   AlertsConfig    `toml:"alerts"`
+	Cache    CacheConfig     `toml:"cache"`
+	Decision DecisionConfig  `toml:"decision"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Models   []ModelOverride `toml:"models"`
 	Routing  []RoutingRule   `toml:"routing"`
+}
+
+type CacheConfig struct {
+	Enabled    bool `toml:"enabled" json:"enabled"`
+	MaxEntries int  `toml:"max_entries,omitempty" json:"max_entries,omitempty"`
+	TTLSeconds int  `toml:"ttl_seconds,omitempty" json:"ttl_seconds,omitempty"`
+}
+
+type DecisionConfig struct {
+	Enabled        bool   `toml:"enabled" json:"enabled"`
+	ModelID        string `toml:"model_id,omitempty" json:"model_id,omitempty"`               // virtual model ID (default "apx/auto")
+	DefaultModel   string `toml:"default_model,omitempty" json:"default_model,omitempty"`     // fallback target model
+	FastModel      string `toml:"fast_model,omitempty" json:"fast_model,omitempty"`           // short/simple queries
+	CodingModel    string `toml:"coding_model,omitempty" json:"coding_model,omitempty"`       // code/debugging queries
+	ReasoningModel string `toml:"reasoning_model,omitempty" json:"reasoning_model,omitempty"` // deep math/architecture/planning queries
+	VisionModel    string `toml:"vision_model,omitempty" json:"vision_model,omitempty"`       // image/multimodal queries
 }
 
 type AlertsConfig struct {
@@ -429,6 +448,7 @@ type RoutingRule struct {
 	QuotaThresholdPct           int      `toml:"quota_threshold_pct,omitempty"`            // avoid accounts above this used % (e.g. 90) when alternatives exist
 	DefaultEffort               string   `toml:"default_effort,omitempty"`                 // default thinking effort ("off", "low", "medium", "high", "xhigh", "max")
 	SystemPrompt                string   `toml:"system_prompt,omitempty"`                  // optional system prompt prepended for requests matching this rule
+	Cache                       bool     `toml:"cache,omitempty"`                          // opt-in response caching for this route
 	FallbackModels              []string `toml:"fallback_models,omitempty"`                // alternate models/providers tried after primary model fails
 	FallbackOn                  []string `toml:"fallback_on,omitempty"`                    // eligible error kinds: rate_limit, transient, unavailable
 }
@@ -623,7 +643,7 @@ func (c *Config) Normalize() {
 	}
 	for i := range c.Routing {
 		switch c.Routing[i].Strategy {
-		case StrategyFailover, StrategySticky, StrategyManual, StrategyRoundRobin, StrategyLeastBusy:
+		case StrategyFailover, StrategySticky, StrategyManual, StrategyRoundRobin, StrategyLeastBusy, StrategyMostQuota, StrategyFastest:
 			// valid (round-robin and least-busy are intended for API keys; subscription accounts require opt-in)
 		default:
 			c.Routing[i].Strategy = StrategyFailover

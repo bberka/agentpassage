@@ -29,28 +29,85 @@ type Window struct {
 	LimitCount  int        `json:"limit_count,omitempty"`
 }
 
+// Quota group IDs for backends that meter model families separately.
+const (
+	GroupGemini    = "gemini"
+	GroupClaudeGPT = "claude-gpt"
+)
+
+// QuotaGroup holds the quota windows for one separately metered model family.
+type QuotaGroup struct {
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	Primary   *Window `json:"primary,omitempty"`
+	Secondary *Window `json:"secondary,omitempty"`
+}
+
+// GroupForModel returns the quota group ID that meters upstreamModel on backend,
+// or "" when the backend or model has no separate group.
+func GroupForModel(backend, upstreamModel string) string {
+	if backend != "agy" {
+		return ""
+	}
+	m := strings.ToLower(upstreamModel)
+	switch {
+	case strings.Contains(m, "claude") || strings.Contains(m, "gpt"):
+		return GroupClaudeGPT
+	case strings.Contains(m, "gemini") || strings.Contains(m, "orchestrator"):
+		return GroupGemini
+	default:
+		return ""
+	}
+}
+
+// UsedPercentForGroup returns the highest used % across the windows of groupID.
+// With an empty groupID, or when the account reports no groups, it uses the
+// account-level windows. ok is false when no matching window exists.
+func (q AccountQuota) UsedPercentForGroup(groupID string) (float64, bool) {
+	if groupID == "" || len(q.Groups) == 0 {
+		return maxUsedPercent(q.Primary, q.Secondary)
+	}
+	for _, g := range q.Groups {
+		if g.ID == groupID {
+			return maxUsedPercent(g.Primary, g.Secondary)
+		}
+	}
+	return 0, false
+}
+
+func maxUsedPercent(windows ...*Window) (used float64, ok bool) {
+	for _, w := range windows {
+		if w != nil {
+			used = math.Max(used, w.UsedPercent)
+			ok = true
+		}
+	}
+	return used, ok
+}
+
 // AccountQuota holds live provider subscription limits (when supported) plus local rolling counts.
 type AccountQuota struct {
-	AccountID   string    `json:"account_id"`
-	AccountName string    `json:"account_name"`
-	Backend     string    `json:"backend"`
-	Kind        string    `json:"kind"`
-	Source      string    `json:"source"` // "codex-live", "grok-live", "local-budget", "local-tracked", "unavailable"
-	PlanType    string    `json:"plan_type,omitempty"`
-	Credits     string    `json:"credits,omitempty"`
-	Primary     *Window   `json:"primary,omitempty"`
-	Secondary   *Window   `json:"secondary,omitempty"`
-	Local1h     int       `json:"local_1h_reqs"`
-	Local5h     int       `json:"local_5h_reqs"`
-	Local24h    int       `json:"local_24h_reqs"`
-	Local7d     int       `json:"local_7d_reqs"`
-	Tokens5h    int       `json:"tokens_5h"`
-	Tokens7d    int       `json:"tokens_7d"`
-	HourlyLimit int       `json:"hourly_limit,omitempty"`
-	DailyLimit  int       `json:"daily_limit,omitempty"`
-	WeeklyLimit int       `json:"weekly_limit,omitempty"`
-	CheckedAt   time.Time `json:"checked_at,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	AccountID   string       `json:"account_id"`
+	AccountName string       `json:"account_name"`
+	Backend     string       `json:"backend"`
+	Kind        string       `json:"kind"`
+	Source      string       `json:"source"` // "codex-live", "grok-live", "local-budget", "local-tracked", "unavailable"
+	PlanType    string       `json:"plan_type,omitempty"`
+	Credits     string       `json:"credits,omitempty"`
+	Primary     *Window      `json:"primary,omitempty"`
+	Secondary   *Window      `json:"secondary,omitempty"`
+	Groups      []QuotaGroup `json:"groups,omitempty"`
+	Local1h     int          `json:"local_1h_reqs"`
+	Local5h     int          `json:"local_5h_reqs"`
+	Local24h    int          `json:"local_24h_reqs"`
+	Local7d     int          `json:"local_7d_reqs"`
+	Tokens5h    int          `json:"tokens_5h"`
+	Tokens7d    int          `json:"tokens_7d"`
+	HourlyLimit int          `json:"hourly_limit,omitempty"`
+	DailyLimit  int          `json:"daily_limit,omitempty"`
+	WeeklyLimit int          `json:"weekly_limit,omitempty"`
+	CheckedAt   time.Time    `json:"checked_at,omitempty"`
+	Error       string       `json:"error,omitempty"`
 }
 
 type Report struct {

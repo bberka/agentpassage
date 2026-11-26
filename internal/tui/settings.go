@@ -14,7 +14,7 @@ import (
 	"github.com/bberka/agentpassage/internal/service"
 )
 
-const settingsCount = 12
+const settingsCount = 16
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -169,6 +169,35 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				a.setStatus("Privacy filter disabled", false)
 			}
+		case 12: // Toggle Desktop Alerts
+			cfg.Alerts.Enabled = !cfg.Alerts.Enabled
+			if cfg.Alerts.Enabled && !cfg.Alerts.Desktop && cfg.Alerts.WebhookURL == "" {
+				cfg.Alerts.Desktop = true
+			}
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus(fmt.Sprintf("Alerts enabled=%v desktop=%v", cfg.Alerts.Enabled, cfg.Alerts.Desktop), false)
+		case 13: // Edit Alerts Webhook URL
+			return a, a.openEditModal("Alerts Webhook URL", "POST JSON alert events to this URL (blank = off)", cfg.Alerts.WebhookURL, func(val string) error {
+				cfg := a.srv.Config()
+				cfg.Alerts.WebhookURL = strings.TrimSpace(val)
+				if cfg.Alerts.WebhookURL != "" {
+					cfg.Alerts.Enabled = true
+				}
+				_ = a.srv.ReloadConfig(cfg)
+				a.setStatus("Saved alerts webhook URL", false)
+				return nil
+			})
+		case 14: // Toggle Local Response Cache
+			cfg.Cache.Enabled = !cfg.Cache.Enabled
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus(fmt.Sprintf("Local response/embedding cache = %v", cfg.Cache.Enabled), false)
+		case 15: // Toggle Decision Auto-Router Model (apx/auto)
+			cfg.Decision.Enabled = !cfg.Decision.Enabled
+			if cfg.Decision.Enabled && cfg.Decision.ModelID == "" {
+				cfg.Decision.ModelID = "apx/auto"
+			}
+			_ = a.srv.ReloadConfig(cfg)
+			a.setStatus(fmt.Sprintf("Decision model (%s) = %v", cfg.Decision.ModelID, cfg.Decision.Enabled), false)
 		}
 	case "S":
 		// Uninstall background service when on Settings
@@ -211,6 +240,27 @@ func (a *App) viewSettings(bodyHeight int) string {
 			cfg.Privacy.RedactAPIKeys, cfg.Privacy.RedactEmails, cfg.Privacy.RedactPhones, len(cfg.Privacy.CustomPatterns))
 	}
 
+	alertsVal := "off   (enter to toggle desktop/webhook alerts)"
+	if cfg.Alerts.Enabled {
+		alertsVal = fmt.Sprintf("ON (desktop=%v webhook=%v)", cfg.Alerts.Desktop, cfg.Alerts.WebhookURL != "")
+	}
+	webhookVal := "none   (enter to set JSON webhook URL)"
+	if cfg.Alerts.WebhookURL != "" {
+		webhookVal = cfg.Alerts.WebhookURL
+	}
+	cacheVal := "off   (enter to toggle local TTL LRU cache)"
+	if cfg.Cache.Enabled {
+		cacheVal = "ON (embeddings, rerank & temperature=0 / X-Apx-Cache: true)"
+	}
+	decID := cfg.Decision.ModelID
+	if decID == "" {
+		decID = "apx/auto"
+	}
+	decVal := fmt.Sprintf("off   (enter to enable virtual %s router model)", decID)
+	if cfg.Decision.Enabled {
+		decVal = fmt.Sprintf("ON (%s -> fast=%s coding=%s reasoning=%s)", decID, cfg.Decision.FastModel, cfg.Decision.CodingModel, cfg.Decision.ReasoningModel)
+	}
+
 	rows := []struct {
 		label string
 		value string
@@ -227,6 +277,10 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"API Keys", fmt.Sprintf("1 primary + %d client key(s)   (enter to create/revoke keys)", len(cfg.Server.APIKeys))},
 		{"Remote Access", "Tailscale Serve & Cloudflare Tunnel setup guide   (enter to open)"},
 		{"Privacy Filter", privVal},
+		{"Alerts", alertsVal},
+		{"Alerts Webhook", webhookVal},
+		{"Response Cache", cacheVal},
+		{"Decision Model", decVal},
 	}
 
 	var lines []string

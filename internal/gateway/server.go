@@ -19,6 +19,7 @@ import (
 	"github.com/bberka/agentpassage/internal/backend/acpbackend"
 	"github.com/bberka/agentpassage/internal/backend/clibackend"
 	"github.com/bberka/agentpassage/internal/backend/httpbackend"
+	"github.com/bberka/agentpassage/internal/cache"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/health"
@@ -51,6 +52,7 @@ type Server struct {
 	quota    *quota.Fetcher
 	privacy  *privacy.Filter
 	alerts   *alerts.Notifier
+	cache    *cache.Store
 
 	srv          *http.Server
 	listener     net.Listener
@@ -85,6 +87,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		usage:    usageTrk,
 		privacy:  privacy.NewFilter(cfg.Privacy),
 		alerts:   alerts.New(cfg.Alerts),
+		cache:    cache.New(cfg.Cache.MaxEntries, time.Duration(cfg.Cache.TTLSeconds)*time.Second),
 	}
 	s.health = health.New(
 		func() []config.AccountConfig {
@@ -663,6 +666,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/messages", s.withAuth(s.handleAnthropicMessages))
 	mux.HandleFunc("POST /v1/embeddings", s.withAuth(s.handleEmbeddings))
 	mux.HandleFunc("POST /v1/rerank", s.withAuth(s.handleRerank))
+	mux.HandleFunc("POST /v1/images/generations", s.withAuth(s.handleOpenAIImages))
+	mux.HandleFunc("POST /v1/audio/speech", s.withAuth(s.handleOpenAIAudioSpeech))
+	mux.HandleFunc("POST /v1/audio/transcriptions", s.withAuth(s.handleOpenAIAudioTranscriptions))
 	s.registerCLIProxyCompatRoutes(mux)
 	return mux
 }
@@ -1045,6 +1051,17 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		}
 		data = append(data, entry)
 	}
+	if decID := EffectiveDecisionModelID(s.Config().Decision); decID != "" {
+		if p == nil || p.Client == nil || p.Client.AllowsModel(decID) {
+			data = append(data, map[string]any{
+				"id":           decID,
+				"object":       "model",
+				"created":      now,
+				"owned_by":     "apx-decision",
+				"display_name": "AgentPassage Auto Router",
+			})
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"object": "list",
 		"data":   data,
@@ -1136,6 +1153,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		RawOpenAIBody:   rawBody,
 	}
 
+	if resolved, reason, ok := s.ResolveDecisionModel(req.Model, chatReq); ok && resolved != "" {
+		req.Model = resolved
+		chatReq.Model = resolved
+		w.Header().Set("X-Apx-Decision-Model", resolved)
+		if reason != "" {
+			w.Header().Set("X-Apx-Decision-Reason", reason)
+		}
+	}
+
 	principal := principalFromContext(r.Context())
 	if principal != nil && principal.Client != nil && !principal.Client.AllowsModel(req.Model) {
 		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", fmt.Sprintf("API key %q is not allowed to access model %q.", principal.KeyName, req.Model))
@@ -1153,6 +1179,23 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chatReq.UpstreamModel = plan.UpstreamModel
+
+	// Opt-in local LRU TTL response cache for non-streaming completions.
+	useCache := !req.Stream && s.cache != nil && (strings.EqualFold(r.Header.Get("X-Apx-Cache"), "true") ||
+		plan.Rule.Cache ||
+		(s.Config().Cache.Enabled && req.Temperature != nil && *req.Temperature == 0))
+	cacheKey := ""
+	if useCache {
+		cacheKey = cache.Key([]byte(req.Model), []byte(chatReq.ReasoningEffort), rawBody)
+		if cached, hit := s.cache.Get(cacheKey); hit {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Apx-Cache", "HIT")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(cached)
+			return
+		}
+		w.Header().Set("X-Apx-Cache", "MISS")
+	}
 
 	privSess := s.newPrivacySession()
 	chatReq = applyPrivacyToRequest(privSess, chatReq)
@@ -1229,6 +1272,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"usage": resp.Usage,
 	}
 	s.logRequest(r, req.Model, acctName, http.StatusOK, start, nil)
+	if useCache && cacheKey != "" {
+		if rawOut, err := json.Marshal(out); err == nil {
+			s.cache.Set(cacheKey, rawOut, 0)
+		}
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -1288,6 +1336,7 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 		acctReq := applyRouteDefaults(req, plan.Rule)
 		acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, req.UpstreamModel, acctReq.ReasoningEffort)
 
+		callStart := time.Now()
 		var resp *backend.ChatResponse
 		var callErr error
 		switch acct.Kind {
@@ -1303,11 +1352,13 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 
 		if callErr == nil {
 			s.pool.RecordSuccess(acct.ID)
+			s.pool.RecordLatency(acct.ID, time.Since(callStart).Milliseconds())
 			return resp, &acct, http.StatusOK, nil
 		}
 
 		lastErr = callErr
-		allowFailover := s.pool.RecordError(acct.ID, callErr, plan.Rule)
+		qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
+		allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, callErr, plan.Rule)
 		if !allowFailover {
 			return nil, &acct, httpStatusFromError(callErr), callErr
 		}

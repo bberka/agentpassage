@@ -21,6 +21,9 @@ const (
 	StateDisabled    AccountState = "disabled"
 )
 
+// latencyEWMAWeight is the weight given to the newest latency sample.
+const latencyEWMAWeight = 0.3
+
 var (
 	ErrNoAvailableAccount  = errors.New("no available account for request")
 	ErrStrategyOptInNeeded = errors.New("round-robin and least-busy are intended for API-key pools and can cause bans on subscription (ACP/CLI) accounts; use failover or acknowledge the risk in Routing settings")
@@ -62,6 +65,9 @@ type runtimeState struct {
 	totalErrors        int64
 	requestTimestamps  []time.Time
 	cooldownUntil      time.Time
+	groupCooldowns     map[string]time.Time // quota group -> cooldown end
+	group429           map[string]int       // quota group -> consecutive 429s
+	ewmaLatencyMs      float64              // 0 until measured
 	consecutive429     int
 	consecutiveAuthErr int
 	loginNeeded        bool
@@ -177,7 +183,7 @@ func (m *Manager) stateLocked(a *config.AccountConfig, st *runtimeState, now tim
 	return StateReady
 }
 
-func (m *Manager) isEligibleLocked(a *config.AccountConfig, st *runtimeState, now time.Time) (bool, string) {
+func (m *Manager) isEligibleLocked(a *config.AccountConfig, st *runtimeState, quotaGroup string, now time.Time) (bool, string) {
 	if !a.Enabled || st.autoDisabled {
 		return false, "disabled"
 	}
@@ -186,6 +192,9 @@ func (m *Manager) isEligibleLocked(a *config.AccountConfig, st *runtimeState, no
 	}
 	if !st.cooldownUntil.IsZero() && now.Before(st.cooldownUntil) {
 		return false, fmt.Sprintf("cooling down until %s", st.cooldownUntil.Format(time.Kitchen))
+	}
+	if until := st.groupCooldowns[quotaGroup]; quotaGroup != "" && now.Before(until) {
+		return false, fmt.Sprintf("%s cooling down until %s", quotaGroup, until.Format(time.Kitchen))
 	}
 	if st.inFlight >= a.MaxConcurrency {
 		return false, "at concurrency cap"
@@ -210,6 +219,7 @@ type SelectRequest struct {
 	BudgetExceededIDs        map[string]bool
 	QuotaUsedPct             map[string]float64 // accountID -> highest used % across quota windows
 	QuotaThresholdPct        int                // prefer accounts with QuotaUsedPct < threshold when > 0
+	QuotaGroup               string             // model family being requested; "" ignores group cooldowns
 }
 
 type Lease struct {
@@ -235,7 +245,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 
 	strategy := req.Strategy
 	switch strategy {
-	case config.StrategyFailover, config.StrategySticky, config.StrategyManual, config.StrategyRoundRobin, config.StrategyLeastBusy, config.StrategyMostQuota:
+	case config.StrategyFailover, config.StrategySticky, config.StrategyManual, config.StrategyRoundRobin, config.StrategyLeastBusy, config.StrategyMostQuota, config.StrategyFastest:
 		// valid
 	default:
 		strategy = config.StrategyFailover
@@ -270,7 +280,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 			continue
 		}
 		st := m.states[id]
-		if okElig, reason := m.isEligibleLocked(a, st, now); okElig {
+		if okElig, reason := m.isEligibleLocked(a, st, req.QuotaGroup, now); okElig {
 			eligible = append(eligible, a)
 		} else {
 			reasons = append(reasons, fmt.Sprintf("%s (%s)", a.Name, reason))
@@ -313,6 +323,14 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 			if u < bestUsed {
 				chosen = a
 				bestUsed = u
+			}
+		}
+
+	case config.StrategyFastest:
+		chosen = eligible[0]
+		for _, a := range eligible[1:] {
+			if m.states[a.ID].ewmaLatencyMs < m.states[chosen.ID].ewmaLatencyMs {
+				chosen = a
 			}
 		}
 
@@ -397,6 +415,7 @@ func (m *Manager) RecordSuccess(accountID string) {
 	defer m.mu.Unlock()
 	if st, ok := m.states[accountID]; ok {
 		st.consecutive429 = 0
+		st.group429 = nil
 		st.consecutiveAuthErr = 0
 		st.loginNeeded = false
 		st.autoDisabled = false
@@ -405,9 +424,35 @@ func (m *Manager) RecordSuccess(accountID string) {
 	}
 }
 
+// RecordLatency folds a request duration into the account's moving average,
+// which StrategyFastest selects on. Non-positive durations are ignored.
+func (m *Manager) RecordLatency(accountID string, durMs int64) {
+	if durMs <= 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, ok := m.states[accountID]
+	if !ok {
+		return
+	}
+	if st.ewmaLatencyMs == 0 {
+		st.ewmaLatencyMs = float64(durMs)
+		return
+	}
+	st.ewmaLatencyMs = latencyEWMAWeight*float64(durMs) + (1-latencyEWMAWeight)*st.ewmaLatencyMs
+}
+
 // RecordError updates health state according to section 7 rules.
 // Returns whether the gateway is allowed to fail over to another account.
 func (m *Manager) RecordError(accountID string, err error, rule config.RoutingRule) (allowFailover bool) {
+	return m.RecordErrorForGroup(accountID, "", err, rule)
+}
+
+// RecordErrorForGroup is RecordError for a request against one quota group: a
+// rate limit then cools down only that group. Other error kinds affect the
+// whole account.
+func (m *Manager) RecordErrorForGroup(accountID, quotaGroup string, err error, rule config.RoutingRule) (allowFailover bool) {
 	m.mu.Lock()
 	now := m.now()
 	a, okA := m.accounts[accountID]
@@ -433,18 +478,35 @@ func (m *Manager) RecordError(accountID string, err error, rule config.RoutingRu
 		allowFailover = rule.Strategy == config.StrategyFailover
 
 	case backend.ErrKindRateLimit:
-		st.consecutive429++
+		var count int
+		if quotaGroup != "" {
+			if st.group429 == nil {
+				st.group429 = make(map[string]int)
+			}
+			st.group429[quotaGroup]++
+			count = st.group429[quotaGroup]
+		} else {
+			st.consecutive429++
+			count = st.consecutive429
+		}
 		cooldown := 60 * time.Second
 		if be.RetryAfter > 0 {
 			cooldown = time.Duration(be.RetryAfter) * time.Second
 		} else {
-			mult := 1 << min(st.consecutive429-1, 4)
+			mult := 1 << min(count-1, 4)
 			cooldown = time.Duration(mult) * 60 * time.Second
 			if cooldown > 10*time.Minute {
 				cooldown = 10 * time.Minute
 			}
 		}
-		st.cooldownUntil = now.Add(cooldown)
+		if quotaGroup != "" {
+			if st.groupCooldowns == nil {
+				st.groupCooldowns = make(map[string]time.Time)
+			}
+			st.groupCooldowns[quotaGroup] = now.Add(cooldown)
+		} else {
+			st.cooldownUntil = now.Add(cooldown)
+		}
 		allowFailover = rule.AllowCrossAccountRetryOn429 && rule.Strategy != config.StrategyManual
 
 	case backend.ErrKindAuth:
@@ -484,6 +546,8 @@ func (m *Manager) ClearHealth(accountID string) {
 	defer m.mu.Unlock()
 	if st, ok := m.states[accountID]; ok {
 		st.cooldownUntil = time.Time{}
+		st.groupCooldowns = nil
+		st.group429 = nil
 		st.consecutive429 = 0
 		st.consecutiveAuthErr = 0
 		st.loginNeeded = false

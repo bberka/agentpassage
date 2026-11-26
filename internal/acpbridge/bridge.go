@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,11 +43,24 @@ type bridgeSession struct {
 	model      string
 	effort     string
 	mode       string
+	title      string
+	updatedAt  time.Time
 	mcpServers []any
 	history    []backend.Message
 
 	promptMu sync.Mutex
 	cancel   context.CancelFunc
+}
+
+type persistedSession struct {
+	ID        string            `json:"id"`
+	Cwd       string            `json:"cwd,omitempty"`
+	Model     string            `json:"model,omitempty"`
+	Effort    string            `json:"effort,omitempty"`
+	Mode      string            `json:"mode,omitempty"`
+	Title     string            `json:"title,omitempty"`
+	UpdatedAt time.Time         `json:"updated_at"`
+	History   []backend.Message `json:"history,omitempty"`
 }
 
 // Server exposes apx itself as an ACP JSON-RPC 2.0 stdio server (`apx acp`).
@@ -179,7 +194,13 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					"version": gateway.Version,
 				},
 				"agentCapabilities": map[string]any{
-					"loadSession": false,
+					"loadSession": true,
+					"sessionCapabilities": map[string]any{
+						"load":   map[string]any{},
+						"list":   map[string]any{},
+						"fork":   map[string]any{},
+						"resume": map[string]any{},
+					},
 					"promptCapabilities": map[string]any{
 						"image":           true,
 						"audio":           false,
@@ -200,16 +221,19 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			configOpts, availModels, defaultModel, defaultEffort := s.buildModelOptions("", "", defaultMode)
 
 			sid := s.newSessionID()
-			s.sessMu.Lock()
-			s.sess[sid] = &bridgeSession{
+			bs := &bridgeSession{
 				id:         sid,
 				cwd:        p.Cwd,
 				model:      defaultModel,
 				effort:     defaultEffort,
 				mode:       defaultMode,
+				updatedAt:  time.Now(),
 				mcpServers: p.MCPServers,
 			}
+			s.sessMu.Lock()
+			s.sess[sid] = bs
 			s.sessMu.Unlock()
+			s.saveSession(bs)
 
 			replyOK(msg.ID, map[string]any{
 				"sessionId":     sid,
@@ -220,6 +244,128 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				},
 				"models": map[string]any{
 					"currentModelId":  defaultModel,
+					"availableModels": availModels,
+				},
+			})
+
+		case "session/load", "session/resume":
+			var p struct {
+				SessionID  string `json:"sessionId"`
+				Cwd        string `json:"cwd"`
+				MCPServers []any  `json:"mcpServers"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			bs, ok := s.loadOrGetSession(p.SessionID)
+			if !ok {
+				replyErr(msg.ID, -32602, "session not found: "+p.SessionID)
+				continue
+			}
+			s.sessMu.Lock()
+			if p.Cwd != "" {
+				bs.cwd = p.Cwd
+			}
+			if len(p.MCPServers) > 0 {
+				bs.mcpServers = p.MCPServers
+			}
+			curModel, curEffort, curMode := bs.model, bs.effort, bs.mode
+			hist := append([]backend.Message(nil), bs.history...)
+			s.sessMu.Unlock()
+
+			configOpts, availModels, resolvedModel, resolvedEffort := s.buildModelOptions(curModel, curEffort, curMode)
+			s.sessMu.Lock()
+			bs.model = resolvedModel
+			bs.effort = resolvedEffort
+			s.sessMu.Unlock()
+
+			// Replay persisted turns as session/update chunks per ACP loadSession spec.
+			for _, m := range hist {
+				updType := "user_message_chunk"
+				if m.Role == "assistant" {
+					updType = "agent_message_chunk"
+				}
+				notify("session/update", map[string]any{
+					"sessionId": bs.id,
+					"update": map[string]any{
+						"sessionUpdate": updType,
+						"content": map[string]any{
+							"type": "text",
+							"text": m.Content,
+						},
+					},
+				})
+			}
+
+			replyOK(msg.ID, map[string]any{
+				"sessionId":     bs.id,
+				"configOptions": configOpts,
+				"modes": map[string]any{
+					"currentModeId":  normalizeBridgeMode(curMode),
+					"availableModes": bridgeAvailableModes(),
+				},
+				"models": map[string]any{
+					"currentModelId":  resolvedModel,
+					"availableModels": availModels,
+				},
+			})
+
+		case "session/list":
+			list := s.listPersistedSessions()
+			replyOK(msg.ID, map[string]any{
+				"sessions": list,
+			})
+
+		case "session/fork":
+			var p struct {
+				SessionID  string `json:"sessionId"`
+				Cwd        string `json:"cwd"`
+				MCPServers []any  `json:"mcpServers"`
+			}
+			_ = json.Unmarshal(msg.Params, &p)
+			orig, ok := s.loadOrGetSession(p.SessionID)
+			if !ok {
+				replyErr(msg.ID, -32602, "session not found: "+p.SessionID)
+				continue
+			}
+			s.sessMu.Lock()
+			forkCwd := orig.cwd
+			if p.Cwd != "" {
+				forkCwd = p.Cwd
+			}
+			forkMCP := orig.mcpServers
+			if len(p.MCPServers) > 0 {
+				forkMCP = p.MCPServers
+			}
+			forkModel, forkEffort, forkMode, forkTitle := orig.model, orig.effort, orig.mode, orig.title
+			forkHist := append([]backend.Message(nil), orig.history...)
+			s.sessMu.Unlock()
+
+			newSID := s.newSessionID()
+			configOpts, availModels, resolvedModel, resolvedEffort := s.buildModelOptions(forkModel, forkEffort, forkMode)
+			forked := &bridgeSession{
+				id:         newSID,
+				cwd:        forkCwd,
+				model:      resolvedModel,
+				effort:     resolvedEffort,
+				mode:       normalizeBridgeMode(forkMode),
+				title:      forkTitle,
+				updatedAt:  time.Now(),
+				mcpServers: forkMCP,
+				history:    forkHist,
+			}
+			s.sessMu.Lock()
+			s.sess[newSID] = forked
+			s.sessMu.Unlock()
+			s.saveSession(forked)
+
+			replyOK(msg.ID, map[string]any{
+				"sessionId":     newSID,
+				"configOptions": configOpts,
+				"modes": map[string]any{
+					"currentModeId":  forked.mode,
+					"availableModes": bridgeAvailableModes(),
+				},
+				"models": map[string]any{
+					"currentModelId":  resolvedModel,
 					"availableModels": availModels,
 				},
 			})
@@ -506,7 +652,16 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 				s.sessMu.Lock()
 				bs.history = append(bs.history, backend.Message{Role: "assistant", Content: replySB.String()})
+				if bs.title == "" && userText != "" {
+					t := strings.TrimSpace(strings.SplitN(userText, "\n", 2)[0])
+					if len(t) > 64 {
+						t = t[:64] + "..."
+					}
+					bs.title = t
+				}
+				bs.updatedAt = time.Now()
 				s.sessMu.Unlock()
+				s.saveSession(bs)
 				replyOK(msgID, map[string]any{"stopReason": "end_turn"})
 			}()
 
@@ -756,6 +911,135 @@ func (s *Server) newSessionID() string {
 		return fmt.Sprintf("apx-sess-%s-%d", hex.EncodeToString(b[:]), s.nextID.Add(1))
 	}
 	return fmt.Sprintf("apx-sess-%d", s.nextID.Add(1))
+}
+
+func (s *Server) sessionsDir() string {
+	if s.gw == nil || s.gw.DataDir() == "" {
+		return ""
+	}
+	return filepath.Join(s.gw.DataDir(), "sessions")
+}
+
+func (s *Server) saveSession(bs *bridgeSession) {
+	dir := s.sessionsDir()
+	if dir == "" || bs == nil || bs.id == "" {
+		return
+	}
+	_ = os.MkdirAll(dir, 0o700)
+	s.sessMu.Lock()
+	ps := persistedSession{
+		ID:        bs.id,
+		Cwd:       bs.cwd,
+		Model:     bs.model,
+		Effort:    bs.effort,
+		Mode:      bs.mode,
+		Title:     bs.title,
+		UpdatedAt: bs.updatedAt,
+		History:   append([]backend.Message(nil), bs.history...),
+	}
+	s.sessMu.Unlock()
+	if ps.UpdatedAt.IsZero() {
+		ps.UpdatedAt = time.Now()
+	}
+	raw, err := json.MarshalIndent(ps, "", "  ")
+	if err != nil {
+		return
+	}
+	safe := filepath.Base(bs.id)
+	target := filepath.Join(dir, safe+".json")
+	tmp := target + ".tmp"
+	if os.WriteFile(tmp, raw, 0o600) == nil {
+		_ = os.Rename(tmp, target)
+	}
+}
+
+func (s *Server) loadOrGetSession(sid string) (*bridgeSession, bool) {
+	if sid == "" {
+		return nil, false
+	}
+	s.sessMu.Lock()
+	if bs, ok := s.sess[sid]; ok {
+		s.sessMu.Unlock()
+		return bs, true
+	}
+	s.sessMu.Unlock()
+
+	dir := s.sessionsDir()
+	if dir == "" {
+		return nil, false
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, filepath.Base(sid)+".json"))
+	if err != nil {
+		return nil, false
+	}
+	var ps persistedSession
+	if json.Unmarshal(raw, &ps) != nil || ps.ID == "" {
+		return nil, false
+	}
+	bs := &bridgeSession{
+		id:        ps.ID,
+		cwd:       ps.Cwd,
+		model:     ps.Model,
+		effort:    ps.Effort,
+		mode:      ps.Mode,
+		title:     ps.Title,
+		updatedAt: ps.UpdatedAt,
+		history:   ps.History,
+	}
+	s.sessMu.Lock()
+	s.sess[bs.id] = bs
+	s.sessMu.Unlock()
+	return bs, true
+}
+
+func (s *Server) listPersistedSessions() []map[string]any {
+	byID := make(map[string]persistedSession)
+	if dir := s.sessionsDir(); dir != "" {
+		if entries, err := os.ReadDir(dir); err == nil {
+			for _, e := range entries {
+				if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+					continue
+				}
+				raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+				if err != nil {
+					continue
+				}
+				var ps persistedSession
+				if json.Unmarshal(raw, &ps) == nil && ps.ID != "" {
+					byID[ps.ID] = ps
+				}
+			}
+		}
+	}
+	s.sessMu.Lock()
+	for _, bs := range s.sess {
+		byID[bs.id] = persistedSession{
+			ID:        bs.id,
+			Cwd:       bs.cwd,
+			Model:     bs.model,
+			Title:     bs.title,
+			UpdatedAt: bs.updatedAt,
+		}
+	}
+	s.sessMu.Unlock()
+
+	items := make([]persistedSession, 0, len(byID))
+	for _, ps := range byID {
+		items = append(items, ps)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].UpdatedAt.After(items[j].UpdatedAt)
+	})
+	out := make([]map[string]any, 0, len(items))
+	for _, ps := range items {
+		out = append(out, map[string]any{
+			"sessionId": ps.ID,
+			"cwd":       ps.Cwd,
+			"title":     ps.Title,
+			"updatedAt": ps.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	return out
 }
 
 func formatEffortLabel(eff string) string {

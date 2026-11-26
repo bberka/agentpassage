@@ -351,3 +351,91 @@ func TestParseClaudeUsageMarkdown(t *testing.T) {
 		t.Fatalf("unexpected pro secondary: %+v", qp.Secondary)
 	}
 }
+
+func TestParseAgyUsageCommandGroups(t *testing.T) {
+	now := time.Date(2026, 6, 5, 18, 0, 0, 0, time.UTC)
+	raw := []byte(`{
+		"status": "SUCCESS",
+		"response": "",
+		"command": {
+			"name": "usage",
+			"data": {
+				"groups": [
+					{
+						"display_name": "Gemini Models",
+						"buckets": [
+							{"bucket_id": "gemini-weekly", "window": "weekly", "remaining_fraction": 0.84, "reset_time": "2026-06-12T00:00:00Z"},
+							{"bucket_id": "gemini-5h", "window": "5h", "remaining_fraction": 0.79, "reset_time": "2026-06-05T20:40:00Z"}
+						]
+					},
+					{
+						"display_name": "Claude and GPT models",
+						"buckets": [
+							{"bucket_id": "3p-weekly", "display_name": "Weekly Limit", "remaining_fraction": 0.55, "reset_time": "2026-06-08T14:30:00Z"},
+							{"bucket_id": "3p-5h", "display_name": "Five Hour Limit", "remaining_fraction": 0, "reset_time": "2026-06-05T19:00:00Z"}
+						]
+					}
+				]
+			}
+		}
+	}`)
+	q, err := quota.ParseAgyUsageOutput(raw, now)
+	if err != nil {
+		t.Fatalf("ParseAgyUsageOutput: %v", err)
+	}
+	if len(q.Groups) != 2 {
+		t.Fatalf("expected 2 groups, got %+v", q.Groups)
+	}
+	want := []struct {
+		id, name           string
+		fiveH, weekly      float64
+		fiveReset, wkReset string
+	}{
+		{"gemini", "Gemini", 79, 84, "2026-06-05T20:40:00Z", "2026-06-12T00:00:00Z"},
+		{"claude-gpt", "Claude & GPT", 0, 55, "2026-06-05T19:00:00Z", "2026-06-08T14:30:00Z"},
+	}
+	for i, w := range want {
+		g := q.Groups[i]
+		if g.ID != w.id || g.Name != w.name || g.Primary == nil || g.Secondary == nil {
+			t.Fatalf("unexpected group %d: %+v", i, g)
+		}
+		if g.Primary.Label != "5h" || g.Primary.LeftPercent != w.fiveH || g.Secondary.Label != "Weekly" || g.Secondary.LeftPercent != w.weekly {
+			t.Fatalf("%s windows: 5h=%+v weekly=%+v", w.id, g.Primary, g.Secondary)
+		}
+		if g.Primary.ResetsAt.Format(time.RFC3339) != w.fiveReset || g.Secondary.ResetsAt.Format(time.RFC3339) != w.wkReset {
+			t.Fatalf("%s resets: 5h=%v weekly=%v", w.id, g.Primary.ResetsAt, g.Secondary.ResetsAt)
+		}
+	}
+	// Account-level windows stay at the most constrained bucket.
+	if q.Primary == nil || q.Primary.LeftPercent != 0 || q.Secondary == nil || q.Secondary.LeftPercent != 55 {
+		t.Fatalf("account windows: p=%+v s=%+v", q.Primary, q.Secondary)
+	}
+	if q.Credits != "Gemini 79% · Claude/GPT 0%" {
+		t.Fatalf("unexpected credits %q", q.Credits)
+	}
+
+	for group, wantUsed := range map[string]float64{"gemini": 21, "claude-gpt": 100, "": 100} {
+		if used, ok := q.UsedPercentForGroup(group); !ok || used != wantUsed {
+			t.Fatalf("UsedPercentForGroup(%q) = %v, %v; want %v", group, used, ok, wantUsed)
+		}
+	}
+	if _, ok := q.UsedPercentForGroup("other"); ok {
+		t.Fatalf("expected unknown group to report no data")
+	}
+}
+
+func TestGroupForModel(t *testing.T) {
+	cases := []struct{ backend, model, want string }{
+		{"agy", "Claude-Opus-4", "claude-gpt"},
+		{"agy", "gpt-oss-120b", "claude-gpt"},
+		{"agy", "gemini-3-pro", "gemini"},
+		{"agy", "orchestrator", "gemini"},
+		{"agy", "mystery", ""},
+		{"codex", "gpt-5", ""},
+	}
+	for _, c := range cases {
+		if got := quota.GroupForModel(c.backend, c.model); got != c.want {
+			t.Errorf("GroupForModel(%q, %q) = %q, want %q", c.backend, c.model, got, c.want)
+		}
+	}
+}

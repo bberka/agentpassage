@@ -82,6 +82,10 @@ func run(args []string) error {
 			return cmdKeys(args[1:])
 		case "remote":
 			return cmdRemote(args[1:])
+		case "bench":
+			return cmdBench(args[1:])
+		case "decision":
+			return cmdDecision(args[1:])
 		case "registry":
 			return cmdRegistry(args[1:])
 		case "export-env":
@@ -683,6 +687,9 @@ func cmdModels(args []string) error {
 			}
 		}
 		return nil
+
+	case "import-local":
+		return cmdModelsImportLocal(dataDir, cfg)
 
 	case "fetch", "refresh":
 		srv := gateway.New(dataDir, cfg, sec, reg, logs)
@@ -1498,7 +1505,10 @@ func cmdKeys(args []string) error {
 	}
 }
 
-func cmdRemote(_ []string) error {
+func cmdRemote(args []string) error {
+	if len(args) > 0 && args[0] == "start" {
+		return runRemoteStart(args[1:])
+	}
 	_, cfg, _, _, logs, err := loadRuntime(0, "", false)
 	if err != nil {
 		return err

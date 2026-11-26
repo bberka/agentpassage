@@ -3,10 +3,12 @@ package gateway
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/router"
 )
 
@@ -36,6 +38,7 @@ func applyRouteDefaults(req backend.ChatRequest, rule config.RoutingRule) backen
 // buildPoolSelectRequest builds a pool.SelectRequest enriched with live quota percentages
 // and USD spend budget checks for the candidate accounts.
 func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, exclude map[string]bool) pool.SelectRequest {
+	qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
 	req := pool.SelectRequest{
 		RuleKey:                  plan.Rule.Pattern,
 		Strategy:                 plan.Rule.Strategy,
@@ -43,6 +46,7 @@ func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, ex
 		SessionKey:               sessionKey,
 		SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
 		ExcludeIDs:               exclude,
+		QuotaGroup:               qGroup,
 		QuotaThresholdPct:        plan.Rule.QuotaThresholdPct,
 	}
 
@@ -50,14 +54,9 @@ func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, ex
 		rep := s.quota.Report()
 		used := make(map[string]float64, len(rep.Accounts))
 		for _, aq := range rep.Accounts {
-			maxPct := 0.0
-			if aq.Primary != nil && aq.Primary.UsedPercent > maxPct {
-				maxPct = aq.Primary.UsedPercent
+			if pct, ok := aq.UsedPercentForGroup(qGroup); ok {
+				used[aq.AccountID] = pct
 			}
-			if aq.Secondary != nil && aq.Secondary.UsedPercent > maxPct {
-				maxPct = aq.Secondary.UsedPercent
-			}
-			used[aq.AccountID] = maxPct
 		}
 		req.QuotaUsedPct = used
 	}
@@ -116,6 +115,9 @@ func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, ex
 // StreamDirect executes a chat completion directly through the router, pool, and backend
 // without an HTTP hop (used by the `apx acp` stdio bridge server).
 func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb backend.StreamCallback) (string, error) {
+	if resolved, _, ok := s.ResolveDecisionModel(req.Model, req); ok && resolved != "" {
+		req.Model = resolved
+	}
 	primaryPlan, err := s.router.Resolve(req.Model)
 	if err != nil {
 		return "", err
@@ -169,6 +171,7 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 			acctReq.Model = plan.RequestedModel
 			acctReq.UpstreamModel = router.ResolveAccountEffortModel(acct, plan.UpstreamModel, acctReq.ReasoningEffort)
 
+			callStart := time.Now()
 			var streamErr error
 			switch acct.Kind {
 			case config.KindACP:
@@ -186,13 +189,15 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 					_ = cb(backend.StreamChunk{Delta: td, Reasoning: tr})
 				}
 				s.pool.RecordSuccess(acct.ID)
+				s.pool.RecordLatency(acct.ID, time.Since(callStart).Milliseconds())
 				s.recordPrivacyHeader(nil, privSess, plan.RequestedModel)
 				return acctName, nil
 			}
 
 			planErr = streamErr
 			lastErr = streamErr
-			allowFailover := s.pool.RecordError(acct.ID, streamErr, plan.Rule)
+			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
+			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
 			if emitted {
 				return acctName, streamErr
 			}

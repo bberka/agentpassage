@@ -21,14 +21,14 @@ func (a *App) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.usageQuotaOffset--
 		}
 	case "down", "j":
-		total := len(a.srv.LiveQuota().Accounts)
+		total := len(quotaRows(a.srv.LiveQuota().Accounts))
 		if a.usageQuotaOffset < max(total-1, 0) {
 			a.usageQuotaOffset++
 		}
 	case "pgup":
 		a.usageQuotaOffset = max(a.usageQuotaOffset-6, 0)
 	case "pgdown":
-		total := len(a.srv.LiveQuota().Accounts)
+		total := len(quotaRows(a.srv.LiveQuota().Accounts))
 		a.usageQuotaOffset = min(a.usageQuotaOffset+6, max(total-1, 0))
 	case "u":
 		a.copyToClipboard("Usage Hub URL", a.srv.UsageHubURL(true))
@@ -62,6 +62,32 @@ func (a *App) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.refreshQuotaCmd()
 	}
 	return a, nil
+}
+
+// quotaRow is one line of the subscription limits table.
+type quotaRow struct {
+	quota.AccountQuota
+	name      string
+	showLocal bool // account-wide request counts appear on the first row only
+}
+
+// quotaRows expands accounts that report quota groups into one row per group.
+func quotaRows(accounts []quota.AccountQuota) []quotaRow {
+	rows := make([]quotaRow, 0, len(accounts))
+	for _, q := range accounts {
+		if len(q.Groups) == 0 {
+			rows = append(rows, quotaRow{AccountQuota: q, name: q.AccountName, showLocal: true})
+			continue
+		}
+		for i, g := range q.Groups {
+			r := quotaRow{AccountQuota: q, name: q.AccountName + " · " + g.Name, showLocal: i == 0}
+			r.Primary, r.Secondary = g.Primary, g.Secondary
+			// Credits summarizes all groups, so it does not belong on a group row.
+			r.Credits = ""
+			rows = append(rows, r)
+		}
+	}
+	return rows
 }
 
 func openBrowser(url string) error {
@@ -217,7 +243,14 @@ func (a *App) viewUsage(bodyHeight int) string {
 	if !qRep.UpdatedAt.IsZero() {
 		qMeta = "updated " + qRep.UpdatedAt.Format("15:04:05")
 	}
-	totalQ := len(qRep.Accounts)
+	rows := quotaRows(qRep.Accounts)
+	totalQ := len(rows)
+	nameW := 16
+	for _, r := range rows {
+		if len(r.Groups) > 0 {
+			nameW = clamp(lipgloss.Width(r.name), nameW, 28)
+		}
+	}
 	maxQ := availForQuota
 	startQ := 0
 	if totalQ > maxQ {
@@ -231,13 +264,13 @@ func (a *App) viewUsage(bodyHeight int) string {
 	}
 	endQ := min(startQ+maxQ, totalQ)
 
-	qHeader := a.styles.Subtitle.Render(fmt.Sprintf("Subscription Limits (Hourly / Weekly) (%d)", totalQ)) + a.styles.ColGap(3) + a.styles.Muted.Render(qMeta)
+	qHeader := a.styles.Subtitle.Render(fmt.Sprintf("Subscription Limits (Hourly / Weekly) (%d)", len(qRep.Accounts))) + a.styles.ColGap(3) + a.styles.Muted.Render(qMeta)
 	if totalQ > maxQ {
 		qHeader += a.styles.ColGap(2) + a.styles.Highlight.Render(fmt.Sprintf("[%d–%d of %d · j/k scroll]", startQ+1, endQ, totalQ))
 	}
 	qLines = append(qLines, qHeader)
 	qLines = append(qLines, a.styles.JoinRow(2,
-		a.styles.TableHeader.Render(fmt.Sprintf("%-16s", "ACCOUNT")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-*s", nameW, "ACCOUNT")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "PLAN")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-34s", "PRIMARY / HOURLY")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-26s", "WEEKLY / SECONDARY")),
@@ -246,7 +279,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 	if totalQ == 0 {
 		qLines = append(qLines, a.styles.Muted.Render("No accounts configured yet."))
 	} else {
-		for _, q := range qRep.Accounts[startQ:endQ] {
+		for _, q := range rows[startQ:endQ] {
 			plan := q.PlanType
 			if plan == "" {
 				switch q.Source {
@@ -277,12 +310,15 @@ func (a *App) viewUsage(bodyHeight int) string {
 			if q.Tokens5h > 0 || q.Tokens7d > 0 {
 				localCol = fmt.Sprintf("%d/%d req · %s/%s", q.Local5h, q.Local7d, quota.FormatCompactTokens(q.Tokens5h), quota.FormatCompactTokens(q.Tokens7d))
 			}
+			if !q.showLocal {
+				localCol = ""
+			}
 			qLines = append(qLines, a.styles.JoinRow(2,
-				a.styles.PadCell(a.surfaceText(truncate(q.AccountName, 16)), 16),
+				a.styles.PadCell(a.surfaceText(truncate(q.name, nameW)), nameW),
 				a.styles.PadCell(a.styles.Muted.Render(truncate(plan, 8)), 8),
 				a.styles.PadCell(prim, 34),
 				a.styles.PadCell(sec, 26),
-				a.styles.Muted.Render(truncate(localCol, max(innerW-94, 8))),
+				a.styles.Muted.Render(truncate(localCol, max(innerW-78-nameW, 8))),
 			))
 		}
 		if totalQ > maxQ {

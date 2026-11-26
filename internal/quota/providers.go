@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -861,6 +862,24 @@ func fetchAgyQuota(ctx context.Context, acct config.AccountConfig, dataDir strin
 	return ParseAgyUsageOutput(raw, time.Now())
 }
 
+type agyUsageGroup struct {
+	ModelGroup  string `json:"model_group"`
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	Buckets     []struct {
+		BucketID          string   `json:"bucket_id"`
+		DisplayName       string   `json:"display_name"`
+		Window            string   `json:"window"`
+		Label             string   `json:"label"`
+		UsageFraction     *float64 `json:"usage_fraction"`
+		RemainingFraction *float64 `json:"remaining_fraction"`
+		UsedPercent       *float64 `json:"used_percent"`
+		RemainingPercent  *float64 `json:"remaining_percent"`
+		ResetTime         string   `json:"reset_time"`
+		ResetInSeconds    int      `json:"reset_in_seconds"`
+	} `json:"buckets"`
+}
+
 type agyUsageEnvelope struct {
 	Status       string `json:"status"`
 	Response     string `json:"response"`
@@ -868,22 +887,15 @@ type agyUsageEnvelope struct {
 	PlanTier     string `json:"plan_tier"`
 	Plan         string `json:"plan"`
 	QuotaSummary *struct {
-		PlanTier string `json:"plan_tier"`
-		Groups   []struct {
-			ModelGroup string `json:"model_group"`
-			Name       string `json:"name"`
-			Buckets    []struct {
-				Window            string   `json:"window"`
-				Label             string   `json:"label"`
-				UsageFraction     *float64 `json:"usage_fraction"`
-				RemainingFraction *float64 `json:"remaining_fraction"`
-				UsedPercent       *float64 `json:"used_percent"`
-				RemainingPercent  *float64 `json:"remaining_percent"`
-				ResetTime         string   `json:"reset_time"`
-				ResetInSeconds    int      `json:"reset_in_seconds"`
-			} `json:"buckets"`
-		} `json:"groups"`
+		PlanTier string          `json:"plan_tier"`
+		Groups   []agyUsageGroup `json:"groups"`
 	} `json:"quota_summary"`
+	Command *struct {
+		Name string `json:"name"`
+		Data *struct {
+			Groups []agyUsageGroup `json:"groups"`
+		} `json:"data"`
+	} `json:"command"`
 	Quota map[string]struct {
 		RemainingFraction *float64 `json:"remaining_fraction"`
 		UsageFraction     *float64 `json:"usage_fraction"`
@@ -916,7 +928,7 @@ func ParseAgyUsageOutput(raw []byte, now time.Time) (AccountQuota, error) {
 	}
 
 	var env agyUsageEnvelope
-	if err := json.Unmarshal(jsonSlice, &env); err == nil && (env.Status != "" || env.Response != "" || env.Error != "" || env.QuotaSummary != nil || len(env.Quota) > 0) {
+	if err := json.Unmarshal(jsonSlice, &env); err == nil && (env.Status != "" || env.Response != "" || env.Error != "" || env.QuotaSummary != nil || env.Command != nil || len(env.Quota) > 0) {
 		q := AccountQuota{
 			Source:   "agy-live",
 			PlanType: firstNonEmpty(env.PlanTier, env.Plan),
@@ -925,33 +937,15 @@ func ParseAgyUsageOutput(raw []byte, now time.Time) (AccountQuota, error) {
 			q.PlanType = env.QuotaSummary.PlanTier
 		}
 
-		// 1. Structured quota_summary.groups[]
-		if env.QuotaSummary != nil {
-			var groupNotes []string
-			for _, g := range env.QuotaSummary.Groups {
-				gName := firstNonEmpty(g.ModelGroup, g.Name)
-				var gMinLeft *float64
-				for _, b := range g.Buckets {
-					left, ok := agyBucketLeftPercent(b.RemainingFraction, b.UsageFraction, b.RemainingPercent, b.UsedPercent)
-					if !ok {
-						continue
-					}
-					if gMinLeft == nil || left < *gMinLeft {
-						v := left
-						gMinLeft = &v
-					}
-					lbl := normalizeAgyWindowLabel(firstNonEmpty(b.Window, b.Label))
-					w := makeAgyWindow(lbl, left, b.ResetTime, b.ResetInSeconds, now)
-					assignAgyWindow(&q, w, lbl)
-				}
-				if gName != "" && gMinLeft != nil {
-					groupNotes = append(groupNotes, fmt.Sprintf("%s %d%%", shortAgyGroup(gName), int(math.Round(*gMinLeft))))
-				}
-			}
-			if len(groupNotes) > 1 {
-				q.Credits = strings.Join(groupNotes, " · ")
-			}
+		// 1. Structured groups[] from command.data and quota_summary
+		var groups []agyUsageGroup
+		if env.Command != nil && env.Command.Data != nil {
+			groups = append(groups, env.Command.Data.Groups...)
 		}
+		if env.QuotaSummary != nil {
+			groups = append(groups, env.QuotaSummary.Groups...)
+		}
+		applyAgyGroups(&q, groups, now)
 
 		// 2. Structured quota map (statusline schema: {"gemini-weekly": {...}, "gemini-5h": {...}})
 		if len(env.Quota) > 0 {
@@ -991,6 +985,66 @@ func ParseAgyUsageOutput(raw []byte, now time.Time) (AccountQuota, error) {
 		return q, nil
 	}
 	return classifyAgyUsageError(string(trimmed)), nil
+}
+
+// applyAgyGroups fills q.Groups per model family, keeps the account-level
+// windows at the most constrained bucket, and summarizes remaining % in Credits.
+func applyAgyGroups(q *AccountQuota, groups []agyUsageGroup, now time.Time) {
+	var names []string
+	minLeft := make(map[string]float64)
+	for _, g := range groups {
+		gName := firstNonEmpty(g.ModelGroup, g.Name, g.DisplayName)
+		id, title := agyGroupIdentity(gName)
+		for _, b := range g.Buckets {
+			left, ok := agyBucketLeftPercent(b.RemainingFraction, b.UsageFraction, b.RemainingPercent, b.UsedPercent)
+			if !ok {
+				continue
+			}
+			lbl := normalizeAgyWindowLabel(firstNonEmpty(b.Window, b.Label, b.DisplayName, b.BucketID))
+			w := makeAgyWindow(lbl, left, b.ResetTime, b.ResetInSeconds, now)
+			assignAgyWindow(q, w, lbl)
+
+			if id != "" {
+				i := slices.IndexFunc(q.Groups, func(qg QuotaGroup) bool { return qg.ID == id })
+				if i < 0 {
+					q.Groups = append(q.Groups, QuotaGroup{ID: id, Name: title})
+					i = len(q.Groups) - 1
+				}
+				scoped := AccountQuota{Primary: q.Groups[i].Primary, Secondary: q.Groups[i].Secondary}
+				assignAgyWindow(&scoped, w, lbl)
+				q.Groups[i].Primary, q.Groups[i].Secondary = scoped.Primary, scoped.Secondary
+			}
+
+			if gName == "" {
+				continue
+			}
+			short := shortAgyGroup(gName)
+			if cur, seen := minLeft[short]; !seen {
+				names = append(names, short)
+				minLeft[short] = left
+			} else if left < cur {
+				minLeft[short] = left
+			}
+		}
+	}
+	notes := make([]string, 0, len(names))
+	for _, n := range names {
+		notes = append(notes, fmt.Sprintf("%s %d%%", n, int(math.Round(minLeft[n]))))
+	}
+	q.Credits = strings.Join(notes, " · ")
+}
+
+// agyGroupIdentity maps a provider group name to a stable group ID and title.
+func agyGroupIdentity(name string) (id, title string) {
+	l := strings.ToLower(name)
+	switch {
+	case strings.Contains(l, "gemini"):
+		return GroupGemini, "Gemini"
+	case strings.Contains(l, "claude") || strings.Contains(l, "gpt"):
+		return GroupClaudeGPT, "Claude & GPT"
+	default:
+		return "", ""
+	}
 }
 
 func classifyAgyUsageError(raw string) AccountQuota {
