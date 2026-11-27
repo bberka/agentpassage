@@ -41,6 +41,9 @@ type initializeResult struct {
 	AgentCapabilities struct {
 		PromptCapabilities promptCapabilities   `json:"promptCapabilities"`
 		MCPCapabilities    hostmcp.Capabilities `json:"mcpCapabilities"`
+		Session            struct {
+			Close json.RawMessage `json:"close"`
+		} `json:"sessionCapabilities"`
 	} `json:"agentCapabilities"`
 }
 

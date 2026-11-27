@@ -25,12 +25,18 @@ import (
 
 // Manager executes direct CLI proxy requests (claude -p, codex exec, agy --print, opencode run, etc.)
 // without requiring an external ACP adapter.
+// cliSession is a CLI conversation that later turns can resume.
+type cliSession struct {
+	id      string
+	history string // see backend.ContinueSession
+}
+
 type Manager struct {
 	mu       sync.Mutex
 	dataDir  string
 	registry *descriptors.Registry
 	logs     *logbuf.Buffer
-	sessions map[string]string // "<accountID>:<sessionKey>" -> CLI conversation/session ID
+	sessions map[string]cliSession // by "<accountID>:<sessionKey>"
 }
 
 func NewManager(dataDir string, reg *descriptors.Registry, logs *logbuf.Buffer) *Manager {
@@ -38,7 +44,7 @@ func NewManager(dataDir string, reg *descriptors.Registry, logs *logbuf.Buffer) 
 		dataDir:  dataDir,
 		registry: reg,
 		logs:     logs,
-		sessions: make(map[string]string),
+		sessions: make(map[string]cliSession),
 	}
 }
 
@@ -207,7 +213,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		cwd, _ = os.Getwd()
 	}
 
-	var existingSID string
+	var existingSID, history string
 	sessMapKey := ""
 	if req.SessionKey != "" {
 		sessMapKey = acct.ID + ":" + req.SessionKey
@@ -215,7 +221,13 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		if backend.AnsweredElsewhere(req.SessionKey, acct.ID) {
 			delete(m.sessions, sessMapKey)
 		}
-		existingSID = m.sessions[sessMapKey]
+		if kept := m.sessions[sessMapKey]; kept.id != "" {
+			if _, ok := backend.ContinueSession(kept.history, req); ok {
+				existingSID, history = kept.id, kept.history
+			} else {
+				delete(m.sessions, sessMapKey)
+			}
+		}
 		m.mu.Unlock()
 	}
 	var discoveredSID string
@@ -228,7 +240,8 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 			// The session may not hold this turn; replay full history next time.
 			delete(m.sessions, sessMapKey)
 		} else if discoveredSID != "" {
-			m.sessions[sessMapKey] = discoveredSID
+			next, _ := backend.ContinueSession(history, req)
+			m.sessions[sessMapKey] = cliSession{id: discoveredSID, history: next}
 		}
 		m.mu.Unlock()
 		if err == nil {

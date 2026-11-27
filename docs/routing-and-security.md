@@ -40,6 +40,10 @@ As a local proxy, `apx` routes by project using an explicit identifier supplied 
 
 Configure project-scoped routing rules with `apx routing add <pattern> --project <name>` or `p` in the TUI (`4 Routing`). Matching project rules always take priority over global rules.
 
+## Conversations and agent sessions
+
+An ACP or CLI account continues its own session for a conversation only when the request's earlier user messages are the ones that session saw. Otherwise apx starts a new session and sends the whole history. A request with only the newest message also continues a conversation named by `X-Apx-Session` or `previous_response_id`, but not one named only by the OpenAI `user` field or Anthropic `metadata.user_id`. Each client key has its own sessions. A session of an API conversation closes after an hour without use.
+
 ## Health & protection rules
 
 Applied automatically across all strategies:

@@ -214,7 +214,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	}
 
 	if backend.AnsweredElsewhere(req.SessionKey, acct.ID) {
-		w.forgetSession(req.SessionKey, nil)
+		w.forgetSession(req.SessionKey)
 	}
 	mcpServers := req.MCPServers
 	if !acct.UseHostProfile {
@@ -226,18 +226,17 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 			mcpServers = m.withHostMCP(mcpServers, acct.Backend, cwd, w.mcpCaps)
 		}
 	}
-	sess, reused, err := w.acquireSession(ctx, req.SessionKey, cwd, req.UpstreamModel, req.ReasoningEffort, req.PermissionMode, req.ACPMode, mcpServers, req.PermissionHandler)
+	sess, reused, err := w.acquireSession(ctx, req, cwd, mcpServers)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err != nil {
-			// The session may not hold this turn; drop it so a later request
-			// replays the full history into a fresh one.
-			w.forgetSession(req.SessionKey, sess)
-			return
+		// A failed turn may be missing from the session, so a later request
+		// replays the full history into a fresh one.
+		w.releaseSession(req, sess, err == nil)
+		if err == nil {
+			backend.RecordAnswer(req.SessionKey, acct.ID)
 		}
-		backend.RecordAnswer(req.SessionKey, acct.ID)
 	}()
 
 	promptText := backend.FormatPrompt(req.Messages, reused)
@@ -444,6 +443,12 @@ type acpSession struct {
 	availableEfforts []string
 	hasDefaultEffort bool
 	modelLabels      map[string]string
+
+	// Guarded by worker.sessMu.
+	history  string // sum of the user turns sent, see backend.ContinueSession
+	busy     bool   // a turn is running
+	host     bool   // belongs to a local ACP host, which keeps it open
+	lastUsed time.Time
 }
 
 type worker struct {
@@ -470,6 +475,7 @@ type worker struct {
 	hostTools  bool                 // set once at start
 	promptCaps promptCapabilities   // set once at initialize
 	mcpCaps    hostmcp.Capabilities // set once at initialize
+	canClose   bool                 // set once at initialize
 
 	closed atomic.Bool
 	doneCh chan struct{}
@@ -539,6 +545,8 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 	_ = json.Unmarshal(initRaw, &initRes)
 	w.promptCaps = initRes.AgentCapabilities.PromptCapabilities
 	w.mcpCaps = initRes.AgentCapabilities.MCPCapabilities
+	closeCap := string(initRes.AgentCapabilities.Session.Close)
+	w.canClose = closeCap != "" && closeCap != "null" && closeCap != "false"
 
 	if mgr.logs != nil {
 		c := w.promptCaps
@@ -960,31 +968,91 @@ func applyEffortConfigOption(s *acpSession, opt configOption) {
 	collect(opt.Options)
 }
 
-// forgetSession drops a conversation's upstream session. A non-nil sess limits
-// the drop to that session, so a newer one is kept.
-func (w *worker) forgetSession(sessionKey string, sess *acpSession) {
+// sessionIdleLimit is how long an API conversation may sit unused before its
+// upstream session is closed.
+const sessionIdleLimit = time.Hour
+
+// forgetSession drops a conversation's upstream session.
+func (w *worker) forgetSession(sessionKey string) {
 	w.sessMu.Lock()
-	defer w.sessMu.Unlock()
-	cached, ok := w.sessions[sessionKey]
-	if !ok || (sess != nil && cached != sess) {
-		return
-	}
+	sess := w.sessions[sessionKey]
 	delete(w.sessions, sessionKey)
-	delete(w.permByID, cached.id)
-	delete(w.permHandlerByID, cached.id)
+	idle := sess != nil && !sess.busy
+	w.sessMu.Unlock()
+	if idle {
+		w.closeSession(sess)
+	}
 }
 
-func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamModel, reasoningEffort, permissionMode, acpMode string, mcpServers []any, permHandler PermissionHandler) (*acpSession, bool, error) {
+// releaseSession ends a turn. The session stays only if the turn succeeded and
+// it is still the one kept for the conversation.
+func (w *worker) releaseSession(req backend.ChatRequest, sess *acpSession, ok bool) {
 	w.sessMu.Lock()
-	var sess *acpSession
-	reused := false
-	if sessionKey != "" {
-		if existing, ok := w.sessions[sessionKey]; ok && existing.cwd == cwd {
-			sess = existing
-			reused = true
+	sess.busy = false
+	kept := req.SessionKey != "" && w.sessions[req.SessionKey] == sess
+	if kept && ok {
+		sess.history, _ = backend.ContinueSession(sess.history, req)
+		sess.lastUsed = time.Now()
+	} else if kept {
+		delete(w.sessions, req.SessionKey)
+	}
+	w.sessMu.Unlock()
+	if !kept || !ok {
+		w.closeSession(sess)
+	}
+}
+
+// closeSession frees a session apx will not use again.
+func (w *worker) closeSession(sess *acpSession) {
+	w.sessMu.Lock()
+	delete(w.permByID, sess.id)
+	delete(w.permHandlerByID, sess.id)
+	w.sessMu.Unlock()
+	if w.canClose && w.alive() {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, _ = w.call(ctx, "session/close", map[string]string{"sessionId": sess.id})
+		}()
+	}
+}
+
+// takeSession returns the session to continue req in, or nil when it needs a
+// new one. keep says whether that new one may be stored for the conversation.
+func (w *worker) takeSession(req backend.ChatRequest, cwd string) (sess *acpSession, keep bool) {
+	var closing []*acpSession
+	w.sessMu.Lock()
+	for key, s := range w.sessions {
+		if key != req.SessionKey && !s.busy && !s.host && time.Since(s.lastUsed) > sessionIdleLimit {
+			delete(w.sessions, key)
+			closing = append(closing, s)
+		}
+	}
+	keep = req.SessionKey != ""
+	if s, ok := w.sessions[req.SessionKey]; ok && keep {
+		_, continues := backend.ContinueSession(s.history, req)
+		switch {
+		case s.busy:
+			// Another turn holds it; two prompts can't share a session.
+			keep = false
+		case continues && s.cwd == cwd:
+			s.busy, sess = true, s
+		default:
+			delete(w.sessions, req.SessionKey)
+			closing = append(closing, s)
 		}
 	}
 	w.sessMu.Unlock()
+	for _, s := range closing {
+		w.closeSession(s)
+	}
+	return sess, keep
+}
+
+func (w *worker) acquireSession(ctx context.Context, req backend.ChatRequest, cwd string, mcpServers []any) (*acpSession, bool, error) {
+	upstreamModel, reasoningEffort, acpMode := req.UpstreamModel, req.ReasoningEffort, req.ACPMode
+	sess, keep := w.takeSession(req, cwd)
+	reused := sess != nil
 
 	if sess == nil {
 		var err error
@@ -992,19 +1060,20 @@ func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamMo
 		if err != nil {
 			return nil, false, err
 		}
-		if sessionKey != "" {
-			w.sessMu.Lock()
-			w.sessions[sessionKey] = sess
-			w.sessMu.Unlock()
+		w.sessMu.Lock()
+		sess.busy, sess.host, sess.lastUsed = true, req.HostTools, time.Now()
+		if keep {
+			w.sessions[req.SessionKey] = sess
 		}
+		w.sessMu.Unlock()
 	}
 
 	w.sessMu.Lock()
-	if permissionMode != "" {
-		w.permByID[sess.id] = permissionMode
+	if req.PermissionMode != "" {
+		w.permByID[sess.id] = req.PermissionMode
 	}
-	if permHandler != nil {
-		w.permHandlerByID[sess.id] = permHandler
+	if req.PermissionHandler != nil {
+		w.permHandlerByID[sess.id] = req.PermissionHandler
 	}
 	w.sessMu.Unlock()
 

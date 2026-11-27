@@ -482,10 +482,14 @@ func TestSessionReplaysHistoryAfterAnotherAccountAnswers(t *testing.T) {
 
 	// A failed turn drops the session, even without an account switch.
 	failed := errors.New("client gone")
-	err := mgr.Stream(context.Background(), a, backend.ChatRequest{Messages: history, SessionKey: "conv-switch"},
+	err := mgr.Stream(context.Background(), a, backend.ChatRequest{Messages: append(history, backend.Message{Role: "user", Content: "lost"}), SessionKey: "conv-switch"},
 		func(backend.StreamChunk) error { return failed })
 	if !errors.Is(err, failed) {
 		t.Fatalf("want callback error, got %v", err)
 	}
 	expect(a, "eight", "sess-4", "seven")
+
+	// Another conversation reusing the key starts a session of its own.
+	history = []backend.Message{{Role: "user", Content: "unrelated"}, {Role: "assistant", Content: "ok"}}
+	expect(a, "nine", "sess-5", "unrelated")
 }

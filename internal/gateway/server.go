@@ -1103,8 +1103,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		maxTok = req.MaxCompTok
 	}
 	sessionKey := headerFirst(r, "X-Apx-Session", "X-Acpx-Session")
+	sharedSession := false
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(req.User)
+		sharedSession = true
 	}
 	project := projectFromRequest(r)
 	sessionKey = sessionScope(principalFromContext(r.Context()), sessionKey)
@@ -1117,6 +1119,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		Temperature:     req.Temperature,
 		MaxTokens:       maxTok,
 		SessionKey:      sessionKey,
+		SharedSession:   sharedSession,
 		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
 		HasTools:        len(req.Tools) > 0 || len(req.Functions) > 0,
 		RawOpenAIBody:   rawBody,

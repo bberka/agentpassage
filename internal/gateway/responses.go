@@ -162,8 +162,10 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	if session == "" {
 		session = prev.session
 	}
+	shared := false
 	if session == "" {
 		session = sessionScope(principal, strings.TrimSpace(req.User))
+		shared = session != ""
 	}
 	if session == "" {
 		session = sessionScope(principal, respID)
@@ -177,6 +179,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		Temperature:     req.Temperature,
 		MaxTokens:       req.MaxOutputTokens,
 		SessionKey:      session,
+		SharedSession:   shared,
 		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
 	}
 	if resolved, _, ok := s.ResolveDecisionModel(req.Model, chatReq); ok && resolved != "" {

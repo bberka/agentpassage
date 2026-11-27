@@ -63,8 +63,10 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	sessionKey := headerFirst(r, "X-Apx-Session", "X-Acpx-Session")
+	sharedSession := false
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(req.Metadata.UserID)
+		sharedSession = true
 	}
 	project := projectFromRequest(r)
 	sessionKey = sessionScope(principalFromContext(r.Context()), sessionKey)
@@ -84,6 +86,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		Temperature:     req.Temperature,
 		MaxTokens:       req.MaxTokens,
 		SessionKey:      sessionKey,
+		SharedSession:   sharedSession,
 		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
 		HasTools:        len(req.Tools) > 0,
 	}

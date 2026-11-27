@@ -144,7 +144,9 @@ func TestResumeIsDroppedAfterAnotherAccountOrFailure(t *testing.T) {
 	reg, _ := descriptors.LoadRegistry(dir)
 	mgr := NewManager(dir, reg, nil)
 
+	history := []backend.Message{{Role: "user", Content: "earlier"}, {Role: "assistant", Content: "ok"}}
 	send := func(id, text string) (string, error) {
+		turn := append(history, backend.Message{Role: "user", Content: text})
 		resp, err := mgr.Complete(context.Background(), config.AccountConfig{
 			ID:             id,
 			Name:           id,
@@ -155,15 +157,12 @@ func TestResumeIsDroppedAfterAnotherAccountOrFailure(t *testing.T) {
 			CustomEnv:      map[string]string{"APX_TEST_CLI_MODE": "resume"},
 		}, backend.ChatRequest{
 			SessionKey: "conv-switch",
-			Messages: []backend.Message{
-				{Role: "user", Content: "earlier"},
-				{Role: "assistant", Content: "ok"},
-				{Role: "user", Content: text},
-			},
+			Messages:   turn,
 		})
 		if err != nil {
 			return "", err
 		}
+		history = append(turn, backend.Message{Role: "assistant", Content: "ok"})
 		return resp.Content, nil
 	}
 	expect := func(id, text string, resumed bool) {
