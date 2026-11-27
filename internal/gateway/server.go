@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -408,6 +409,9 @@ func postDaemon[T any](ctx context.Context, url, key string) (out T, err error) 
 		return out, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("daemon returned HTTP %d", resp.StatusCode)
+	}
 	err = json.NewDecoder(resp.Body).Decode(&out)
 	return out, err
 }
@@ -438,7 +442,7 @@ func (s *Server) RefreshQuotaNow(ctx context.Context, accountID string) (quota.R
 	if attached && addr != "" {
 		url := "http://" + addr + "/admin/quota/refresh"
 		if accountID != "" {
-			url += "?account=" + accountID
+			url += "?account=" + neturl.QueryEscape(accountID)
 		}
 		rep, err := postDaemon[quota.Report](ctx, url, key)
 		if err != nil {
@@ -485,7 +489,7 @@ func (s *Server) CheckHealthNow(ctx context.Context, accountID string) (health.R
 	if attached && addr != "" {
 		url := "http://" + addr + "/admin/health/check"
 		if accountID != "" {
-			url += "?account=" + accountID
+			url += "?account=" + neturl.QueryEscape(accountID)
 		}
 		rep, err := postDaemon[health.Report](ctx, url, key)
 		if err != nil {

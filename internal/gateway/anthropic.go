@@ -10,7 +10,6 @@ import (
 
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
-	"github.com/bberka/agentpassage/internal/pool"
 	"github.com/bberka/agentpassage/internal/privacy"
 	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/router"
@@ -334,12 +333,9 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	if lastErr == nil {
-		lastErr = pool.ErrNoAvailableAccount
-	}
-	status := httpStatusFromError(lastErr)
-	s.logRequest(r, req.Model, lastAcct, status, start, lastErr)
-	writeAnthropicError(w, status, "api_error", lastErr.Error())
+	status, failure := finalFailure(lastErr)
+	s.logRequest(r, req.Model, lastAcct, status, start, failure)
+	writeAnthropicError(w, status, "api_error", failure.Error())
 }
 
 func writeAnthropicEvent(w io.Writer, event string, payload any) {
