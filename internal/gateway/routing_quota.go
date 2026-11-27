@@ -32,9 +32,7 @@ func (s *Server) FollowQuota(ctx context.Context) {
 		s.mu.Unlock()
 		if !ok && time.Since(lastLocal) >= localQuotaInterval {
 			lastLocal = time.Now()
-			rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-			defer cancel()
-			s.quota.RefreshAll(rctx)
+			s.quota.RefreshAll(ctx)
 		}
 	}
 	go func() {

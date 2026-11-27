@@ -61,6 +61,15 @@ Applied automatically across all strategies:
     desktop = true
     quota_threshold_pct = 90
   ```
+- **Low-balance alerts:** `balance_threshold` alerts when a prepaid balance drops below that amount, in the balance's own currency. It works for DeepSeek and for OpenRouter keys that have a spending limit, with or without `quota_threshold_pct`. An account with several currencies is low only when all of them are below the threshold, so an unused `0.00 CNY` entry next to a funded USD balance stays quiet. `reminder_hours` repeats the alert while the balance stays low (`0` alerts once). Once the balance is back at or above the threshold, the next drop alerts again:
+  ```toml
+  [alerts]
+    enabled = true
+    desktop = true
+    balance_threshold = 5.0
+    reminder_hours = 24
+  ```
+  Balances are checked every 5 minutes, and config changes apply at the next check. Sent alerts are remembered only while apx runs, so a restart can repeat one. Failed desktop or webhook deliveries are logged as warnings.
 
 ## Security Model
 

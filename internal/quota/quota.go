@@ -187,6 +187,12 @@ func maxUsedPercent(windows ...*Window) (used float64, ok bool) {
 	return used, ok
 }
 
+// Balance is a prepaid credit balance left on an account.
+type Balance struct {
+	Currency string  `json:"currency"`
+	Amount   float64 `json:"amount"`
+}
+
 // AccountQuota holds live provider subscription limits (when supported) plus local rolling counts.
 type AccountQuota struct {
 	AccountID   string       `json:"account_id"`
@@ -196,6 +202,7 @@ type AccountQuota struct {
 	Source      string       `json:"source"` // "codex-live", "grok-live", "local-budget", "local-tracked", "unavailable"
 	PlanType    string       `json:"plan_type,omitempty"`
 	Credits     string       `json:"credits,omitempty"`
+	Balances    []Balance    `json:"balances,omitempty"`
 	Primary     *Window      `json:"primary,omitempty"`
 	Secondary   *Window      `json:"secondary,omitempty"`
 	Groups      []QuotaGroup `json:"groups,omitempty"`
@@ -291,9 +298,8 @@ func (f *Fetcher) Start() {
 			return
 		}
 		for {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			f.RefreshAll(ctx)
-			cancel()
+			// No overall deadline: RefreshAll bounds each account on its own.
+			f.RefreshAll(context.Background())
 
 			select {
 			case <-time.After(5 * time.Minute):
@@ -310,7 +316,11 @@ func (f *Fetcher) Stop() {
 	})
 }
 
+// accountRefreshTimeout bounds one account's check within RefreshAll.
+const accountRefreshTimeout = 30 * time.Second
+
 // RefreshAll queries live subscription limits across enabled accounts concurrently (bounded to 4 workers).
+// Each account gets its own timeout, counted from when a worker picks it up.
 func (f *Fetcher) RefreshAll(ctx context.Context) Report {
 	accts := f.getAccounts()
 	sem := make(chan struct{}, 4)
@@ -324,7 +334,9 @@ func (f *Fetcher) RefreshAll(ctx context.Context) Report {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			f.RefreshOne(ctx, a)
+			actx, cancel := context.WithTimeout(ctx, accountRefreshTimeout)
+			defer cancel()
+			f.RefreshOne(actx, a)
 		}(acct)
 	}
 	wg.Wait()

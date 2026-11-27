@@ -97,6 +97,12 @@ type AlertsConfig struct {
 	Desktop           bool   `toml:"desktop" json:"desktop"`
 	WebhookURL        string `toml:"webhook_url,omitempty" json:"webhook_url,omitempty"`
 	QuotaThresholdPct int    `toml:"quota_threshold_pct,omitempty" json:"quota_threshold_pct,omitempty"`
+	// BalanceThreshold alerts when a prepaid balance (DeepSeek, OpenRouter)
+	// drops below this amount, in the balance's own currency. 0 = off.
+	BalanceThreshold float64 `toml:"balance_threshold,omitempty" json:"balance_threshold,omitempty"`
+	// ReminderHours repeats the low-balance alert while the balance stays low.
+	// 0 = alert once.
+	ReminderHours int `toml:"reminder_hours,omitempty" json:"reminder_hours,omitempty"`
 }
 
 type PrivacyPattern struct {

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -14,7 +15,7 @@ import (
 	"github.com/bberka/agentpassage/internal/service"
 )
 
-const settingsCount = 17
+const settingsCount = 20
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -187,18 +188,60 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.setStatus("Saved alerts webhook URL", false)
 				return nil
 			})
-		case 14: // Toggle Local Response Cache
+		case 14:
+			return a, a.openEditModal("Quota Alert %", "Alert when a limit reaches this percent used (blank or 0 = off)", strconv.Itoa(cfg.Alerts.QuotaThresholdPct), func(val string) error {
+				v, err := strconv.Atoi(orZero(val))
+				if err != nil || v < 0 || v > 100 {
+					return fmt.Errorf("enter a whole percent from 0 to 100")
+				}
+				c := a.srv.Config()
+				c.Alerts.QuotaThresholdPct = v
+				if v > 0 {
+					enableAlertDestination(c)
+				}
+				_ = a.srv.ReloadConfig(c)
+				a.setStatus("Saved quota alert threshold", false)
+				return nil
+			})
+		case 15:
+			return a, a.openEditModal("Low Balance Alert", "Alert below this amount, in the balance's own currency (blank or 0 = off)", strconv.FormatFloat(cfg.Alerts.BalanceThreshold, 'f', -1, 64), func(val string) error {
+				v, err := strconv.ParseFloat(orZero(val), 64)
+				if err != nil || v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+					return fmt.Errorf("enter an amount of 0 or more")
+				}
+				c := a.srv.Config()
+				c.Alerts.BalanceThreshold = v
+				if v > 0 {
+					enableAlertDestination(c)
+				}
+				_ = a.srv.ReloadConfig(c)
+				a.setStatus("Saved low balance threshold", false)
+				return nil
+			})
+		case 16:
+			return a, a.openEditModal("Balance Reminder", "Repeat the low balance alert every N hours (blank or 0 = once)", strconv.Itoa(cfg.Alerts.ReminderHours), func(val string) error {
+				v, err := strconv.Atoi(orZero(val))
+				if err != nil || v < 0 {
+					return fmt.Errorf("enter a whole number of hours, 0 or more")
+				}
+				c := a.srv.Config()
+				c.Alerts.ReminderHours = v
+				_ = a.srv.ReloadConfig(c)
+				a.setStatus("Saved balance reminder interval", false)
+				return nil
+			})
+		case 17: // Toggle Local Response Cache
 			cfg.Cache.Enabled = !cfg.Cache.Enabled
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus(fmt.Sprintf("Local response/embedding cache = %v", cfg.Cache.Enabled), false)
-		case 15: // Toggle Decision Auto-Router Model (apx/auto)
+		case 18: // Toggle Decision Auto-Router Model (apx/auto)
 			cfg.Decision.Enabled = !cfg.Decision.Enabled
 			if cfg.Decision.Enabled && cfg.Decision.ModelID == "" {
 				cfg.Decision.ModelID = "apx/auto"
 			}
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus(fmt.Sprintf("Decision model (%s) = %v", cfg.Decision.ModelID, cfg.Decision.Enabled), false)
-		case 16: // Toggle Session Wait-for-Reset on Quota Exhaustion
+		case 19: // Toggle Session Wait-for-Reset on Quota Exhaustion
 			cfg.Sessions.WaitForResetWhenExhausted = !cfg.Sessions.WaitForResetWhenExhausted
 			_ = a.srv.ReloadConfig(cfg)
 			if cfg.Sessions.WaitForResetWhenExhausted {
@@ -218,6 +261,22 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return a, nil
+}
+
+func orZero(val string) string {
+	if v := strings.TrimSpace(val); v != "" {
+		return v
+	}
+	return "0"
+}
+
+// enableAlertDestination turns alerts on, using desktop notifications when no
+// other destination is configured.
+func enableAlertDestination(cfg *config.Config) {
+	cfg.Alerts.Enabled = true
+	if !cfg.Alerts.Desktop && cfg.Alerts.WebhookURL == "" {
+		cfg.Alerts.Desktop = true
+	}
 }
 
 func (a *App) viewSettings(bodyHeight int) string {
@@ -251,6 +310,18 @@ func (a *App) viewSettings(bodyHeight int) string {
 	alertsVal := "off"
 	if cfg.Alerts.Enabled {
 		alertsVal = fmt.Sprintf("ON (desktop=%v webhook=%v)", cfg.Alerts.Desktop, cfg.Alerts.WebhookURL != "")
+	}
+	quotaVal := "off"
+	if cfg.Alerts.QuotaThresholdPct > 0 {
+		quotaVal = fmt.Sprintf("%d%% used", cfg.Alerts.QuotaThresholdPct)
+	}
+	balanceVal := "off"
+	if cfg.Alerts.BalanceThreshold > 0 {
+		balanceVal = strconv.FormatFloat(cfg.Alerts.BalanceThreshold, 'f', -1, 64)
+	}
+	reminderVal := "once"
+	if cfg.Alerts.ReminderHours > 0 {
+		reminderVal = fmt.Sprintf("every %dh", cfg.Alerts.ReminderHours)
 	}
 	webhookVal := "none"
 	if cfg.Alerts.WebhookURL != "" {
@@ -291,6 +362,9 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Privacy Filter", privVal},
 		{"Alerts", alertsVal},
 		{"Alerts Webhook", webhookVal},
+		{"Quota Alert %", quotaVal},
+		{"Low Balance Alert", balanceVal},
+		{"Balance Reminder", reminderVal},
 		{"Response Cache", cacheVal},
 		{"Decision Model", decVal},
 		{"Wait on Quota", waitVal},
@@ -300,7 +374,12 @@ func (a *App) viewSettings(bodyHeight int) string {
 	lines = append(lines, a.styles.Title.Render("Settings"))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 	lines = append(lines, "")
-	for i, r := range rows {
+	// Scroll so the selected row stays visible on short terminals (the card
+	// border and the three header lines take the rest of the height).
+	visible := min(max(bodyHeight-7, 1), len(rows))
+	first := max(a.settingCursor-visible+1, 0)
+	for i := first; i < first+visible; i++ {
+		r := rows[i]
 		line := fmt.Sprintf("%-20s %s", r.label, truncate(r.value, max(innerW-24, 16)))
 		if i == a.settingCursor {
 			lines = append(lines, a.styles.Selected.Width(innerW).Render("> "+line))

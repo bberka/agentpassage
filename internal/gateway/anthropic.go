@@ -12,6 +12,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/pool"
 	"github.com/bberka/agentpassage/internal/privacy"
+	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/router"
 )
 
@@ -256,6 +257,12 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 
 			deltaRestorer := privSess.NewStreamRestorer()
 			cb := func(ch backend.StreamChunk) error {
+				if ch.Delta == "" && ch.FinishReason == "" {
+					if ch.Usage != nil && ch.Usage.CompletionTokens > 0 {
+						outputTokens = ch.Usage.CompletionTokens
+					}
+					return nil
+				}
 				sendStart(ch.ToolsIgnored, ch.SessionID)
 				restored := deltaRestorer.Push(ch.Delta)
 				if ch.FinishReason != "" {
@@ -325,7 +332,8 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 
 			planErr = streamErr
 			lastErr = streamErr
-			allowFailover := s.pool.RecordError(acct.ID, streamErr, plan.Rule)
+			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
+			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
 			if headersSent {
 				s.logRequest(r, usedModel, acctName, httpStatusFromError(streamErr), start, streamErr)
 				writeAnthropicEvent(w, "error", map[string]any{

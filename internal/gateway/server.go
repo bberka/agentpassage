@@ -54,6 +54,8 @@ type Server struct {
 	alerts   *alerts.Notifier
 	// quotaAlerts tracks which limit windows already sent a low-quota alert.
 	quotaAlerts quotaAlertState
+	// balanceAlerts tracks which accounts have an open low-balance alert.
+	balanceAlerts balanceAlertState
 	cache    *cache.Store
 
 	srv          *http.Server
@@ -135,6 +137,9 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		},
 	)
 	s.quota.SetOnRefresh(s.checkQuotaAlerts)
+	if logs != nil {
+		s.alerts.SetErrorHook(func(err error) { logs.Warn("system", err.Error()) })
+	}
 	s.httpBE.SetHeaderHook(s.quota.RecordHTTPHeaders)
 	if logs != nil {
 		logs.RegisterSecret(cfg.Server.LocalKey)
@@ -1437,6 +1442,9 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 			deltaRestorer := privSess.NewStreamRestorer()
 			reasonRestorer := privSess.NewStreamRestorer()
 			cb := func(ch backend.StreamChunk) error {
+				if ch.Delta == "" && ch.Reasoning == "" && ch.FinishReason == "" && ch.Usage == nil {
+					return nil
+				}
 				sendHeaders(ch.ToolsIgnored, ch.SessionID)
 				restoredDelta := deltaRestorer.Push(ch.Delta)
 				restoredReason := reasonRestorer.Push(ch.Reasoning)
@@ -1546,10 +1554,14 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 
 			planErr = streamErr
 			lastErr = streamErr
-			allowFailover := s.pool.RecordError(acct.ID, streamErr, plan.Rule)
+			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
+			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
 			if headersSent {
-				// Cannot retry after streaming started; emit error comment/event and close.
+				// Cannot retry after streaming started; report the error and close.
 				s.logRequest(r, usedModel, acctName, httpStatusFromError(streamErr), start, streamErr)
+				writeSSE(w, map[string]any{
+					"error": map[string]any{"type": "upstream_error", "message": streamErr.Error()},
+				})
 				_, _ = io.WriteString(w, "data: [DONE]\n\n")
 				flusher.Flush()
 				return

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -78,6 +79,9 @@ func ParseDeepSeekBalance(raw []byte) (AccountQuota, error) {
 	for _, b := range p.BalanceInfos {
 		if b.TotalBalance != "" {
 			parts = append(parts, fmt.Sprintf("%s %s", b.TotalBalance, b.Currency))
+		}
+		if amt, err := strconv.ParseFloat(strings.TrimSpace(b.TotalBalance), 64); err == nil && !math.IsNaN(amt) && !math.IsInf(amt, 0) {
+			q.Balances = append(q.Balances, Balance{Currency: b.Currency, Amount: amt})
 		}
 	}
 	if len(parts) > 0 {
@@ -157,6 +161,7 @@ func ParseOpenRouterKey(raw []byte) (AccountQuota, error) {
 		rem := 0.0
 		if d.LimitRemaining != nil {
 			rem = *d.LimitRemaining
+			q.Balances = []Balance{{Currency: "USD", Amount: rem}}
 		} else {
 			rem = math.Max(0, *d.Limit-d.Usage)
 		}
@@ -842,16 +847,31 @@ func fetchAgyQuota(ctx context.Context, acct config.AccountConfig, dataDir strin
 	if err != nil {
 		return AccountQuota{}, fmt.Errorf("agy binary not on PATH")
 	}
-	qctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	q, timedOut, err := runAgyUsage(ctx, bin, acct, dataDir)
+	// A cold start (such as right after boot) can exceed the timeout once.
+	if timedOut && ctx.Err() == nil {
+		q, _, err = runAgyUsage(ctx, bin, acct, dataDir)
+	}
+	return q, err
+}
+
+// agyUsageTimeout bounds one `agy /usage` run.
+var agyUsageTimeout = 12 * time.Second
+
+// runAgyUsage runs `agy /usage` once. timedOut reports that the run was killed
+// at its deadline without printing anything.
+func runAgyUsage(ctx context.Context, bin string, acct config.AccountConfig, dataDir string) (q AccountQuota, timedOut bool, err error) {
+	qctx, cancel := context.WithTimeout(ctx, agyUsageTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(qctx, bin, "--print", "/usage", "--output-format", "json")
+	cmd.WaitDelay = time.Second      // don't wait on pipes held open by agy's children
 	cmd.Stdin = bytes.NewReader(nil) // never hang waiting for interactive auth code
 	env := os.Environ()
 	if !acct.UseHostProfile {
 		pdir, err := config.ProfileDir(dataDir, acct.Backend, acct.Name)
 		if err != nil {
-			return AccountQuota{}, err
+			return AccountQuota{}, false, err
 		}
 		env = setEnvVar(env, "HOME", pdir)
 		env = setEnvVar(env, "XDG_CONFIG_HOME", filepath.Join(pdir, ".config"))
@@ -873,9 +893,13 @@ func fetchAgyQuota(ctx context.Context, acct config.AccountConfig, dataDir strin
 		raw = bytes.TrimSpace(stderr.Bytes())
 	}
 	if len(raw) == 0 && runErr != nil {
-		return AccountQuota{}, runErr
+		if errors.Is(qctx.Err(), context.DeadlineExceeded) {
+			return AccountQuota{}, true, fmt.Errorf("agy /usage timed out: %w", runErr)
+		}
+		return AccountQuota{}, false, runErr
 	}
-	return ParseAgyUsageOutput(raw, time.Now())
+	q, err = ParseAgyUsageOutput(raw, time.Now())
+	return q, false, err
 }
 
 type agyUsageGroup struct {
