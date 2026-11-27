@@ -115,6 +115,20 @@ func TestHelperACPProcess(t *testing.T) {
 				}
 			}
 
+			if strings.Contains(text, "NEED_QUOTA") && profile == os.Getenv("APX_TEST_QUOTA_PROFILE") {
+				upd, _ := json.Marshal(map[string]any{
+					"sessionId": p.SessionID,
+					"update": map[string]any{
+						"sessionUpdate": "agent_message_chunk",
+						"content":       map[string]any{"type": "text", "text": "\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 38m2s.\n"},
+					},
+				})
+				writeMsg(rpcMessage{JSONRPC: "2.0", Method: "session/update", Params: upd})
+				quotaDone, _ := json.Marshal(sessionPromptResult{StopReason: "end_turn"})
+				writeMsg(rpcMessage{JSONRPC: "2.0", ID: msg.ID, Result: quotaDone})
+				continue
+			}
+
 			// Emit tool activity + two streaming text chunks
 			toolUpd, _ := json.Marshal(map[string]any{
 				"sessionId": p.SessionID,
@@ -320,5 +334,67 @@ func TestACPThoughtLevelDiscoveryAndForwarding(t *testing.T) {
 	}
 	if !strings.Contains(resp.Content, "effort=high") {
 		t.Fatalf("expected thought_level=high forwarded to ACP worker, got %q", resp.Content)
+	}
+}
+
+func TestAgyQuotaReplyBecomesRateLimitError(t *testing.T) {
+	dataDir := t.TempDir()
+	reg, _ := descriptors.LoadRegistry(dataDir)
+	mgr := NewManager(dataDir, reg, nil, config.ToolActivityDrop)
+	defer mgr.Close()
+
+	acct := config.AccountConfig{
+		ID:            "agy-work",
+		Name:          "work",
+		Kind:          config.KindACP,
+		Backend:       "agy",
+		Enabled:       true,
+		CustomCommand: []string{os.Args[0], "-test.run=TestHelperACPProcess"},
+		CustomEnv: map[string]string{
+			"APX_TEST_ACP_HELPER":    "1",
+			"APX_TEST_PROFILE":       "p",
+			"APX_TEST_QUOTA_PROFILE": "p",
+		},
+	}
+
+	var got strings.Builder
+	send := func(text string) error {
+		return mgr.Stream(context.Background(), acct, backend.ChatRequest{
+			Messages:   []backend.Message{{Role: "user", Content: text}},
+			SessionKey: "conv-1",
+		}, func(ch backend.StreamChunk) error {
+			got.WriteString(ch.Delta)
+			return nil
+		})
+	}
+
+	err := send("NEED_QUOTA")
+	be, ok := backend.AsBackendError(err)
+	if !ok || be.Kind != backend.ErrKindRateLimit || be.RetryAfter != 38*60+2 {
+		t.Fatalf("want rate limit error with 2282s retry, got %#v", err)
+	}
+	if got.String() != "" {
+		t.Fatalf("quota notice reached the client: %q", got.String())
+	}
+
+	// The failed session is dropped, so the next turn starts a fresh one.
+	if err := send("hello"); err != nil {
+		t.Fatalf("follow-up failed: %v", err)
+	}
+	if !strings.Contains(got.String(), "sess-2|") {
+		t.Fatalf("expected a new upstream session, got %q", got.String())
+	}
+}
+
+func TestIsAgyQuotaReply(t *testing.T) {
+	for text, want := range map[string]bool{
+		"\n⚠ Individual quota reached. Resets in 38m2s.\n":    true,
+		"The log says: Individual quota reached.":             false,
+		"⚠ Individual quota reached.\nHere is how to fix it.": false,
+		"⚠ This command deletes files.":                       false,
+	} {
+		if got := isAgyQuotaReply(text); got != want {
+			t.Errorf("isAgyQuotaReply(%q) = %v, want %v", text, got, want)
+		}
 	}
 }

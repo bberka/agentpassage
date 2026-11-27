@@ -63,7 +63,7 @@ func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, ex
 		now := time.Now()
 		used := make(map[string]float64, len(plan.CandidateIDs))
 		var out map[string]time.Time
-		for _, aq := range s.quota.Report().Accounts {
+		for _, aq := range s.routingQuotaReport().Accounts {
 			if !candidate[aq.AccountID] {
 				continue
 			}

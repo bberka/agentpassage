@@ -221,6 +221,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 
 	var cbErr error
 	var cbMu sync.Mutex
+	var quotaReply string
 	unregister := w.registerStream(sess.id, func(update json.RawMessage) {
 		delta, thought, passthrough := extractUpdateParts(update, toolMode)
 		if delta == "" && thought == "" && !passthrough {
@@ -228,6 +229,10 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		}
 		cbMu.Lock()
 		defer cbMu.Unlock()
+		if acct.Backend == "agy" && isAgyQuotaReply(delta) {
+			quotaReply = strings.TrimSpace(delta)
+			return
+		}
 		if cbErr != nil {
 			return
 		}
@@ -267,7 +272,14 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 
 	cbMu.Lock()
 	firstErr := cbErr
+	quotaMsg := quotaReply
 	cbMu.Unlock()
+	if quotaMsg != "" {
+		// This session never answered the turn; drop it so a later request
+		// replays the full history into a fresh one.
+		w.forgetSession(req.SessionKey, sess)
+		return classifyACPError(errors.New(quotaMsg))
+	}
 	if firstErr != nil {
 		return firstErr
 	}
@@ -887,6 +899,15 @@ func applyEffortConfigOption(s *acpSession, opt configOption) {
 	collect(opt.Options)
 }
 
+// forgetSession drops a conversation's upstream session.
+func (w *worker) forgetSession(sessionKey string, sess *acpSession) {
+	w.sessMu.Lock()
+	defer w.sessMu.Unlock()
+	if w.sessions[sessionKey] == sess {
+		delete(w.sessions, sessionKey)
+	}
+}
+
 func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamModel, reasoningEffort, permissionMode, acpMode string, mcpServers []any, permHandler PermissionHandler) (*acpSession, bool, error) {
 	w.sessMu.Lock()
 	var sess *acpSession
@@ -1112,6 +1133,14 @@ func extractTextFromContent(raw json.RawMessage) string {
 		return sb.String()
 	}
 	return ""
+}
+
+// isAgyQuotaReply reports whether an agent message chunk is agy's quota notice.
+// agy sends it as reply text and ends the turn normally, not as an RPC error.
+func isAgyQuotaReply(delta string) bool {
+	t := strings.TrimSpace(delta)
+	return strings.HasPrefix(t, "⚠") && len(t) < 400 && !strings.Contains(t, "\n") &&
+		strings.Contains(strings.ToLower(t), "quota reached")
 }
 
 func classifyACPError(err error) error {

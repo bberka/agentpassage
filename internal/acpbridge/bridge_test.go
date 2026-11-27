@@ -15,6 +15,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/gateway"
+	"github.com/bberka/agentpassage/internal/router"
 	"github.com/bberka/agentpassage/internal/secrets"
 )
 
@@ -351,16 +352,31 @@ func TestACPBridgeCleanModelDisplayNames(t *testing.T) {
 		m := raw.(map[string]any)
 		byID[m["modelId"].(string)] = m["name"].(string)
 	}
-	if byID["agy/gemini-4-neon"] != "Gemini 4 Neon" {
-		t.Fatalf("expected clean unique name 'Gemini 4 Neon', got %q", byID["agy/gemini-4-neon"])
+	if byID["agy/gemini-4-neon"] != "AGY Gemini 4 Neon" {
+		t.Fatalf("expected name 'AGY Gemini 4 Neon', got %q", byID["agy/gemini-4-neon"])
 	}
-	if byID["claude/fable"] != "Fable 5.2" {
-		t.Fatalf("expected clean unique name 'Fable 5.2', got %q", byID["claude/fable"])
+	if byID["claude/fable"] != "Claude Fable 5.2" {
+		t.Fatalf("expected name 'Claude Fable 5.2', got %q", byID["claude/fable"])
 	}
-	if byID["agy/claude-opus-5-5"] != "Claude Opus 5.5 (agy)" {
-		t.Fatalf("expected disambiguated name 'Claude Opus 5.5 (agy)', got %q", byID["agy/claude-opus-5-5"])
+	if byID["agy/claude-opus-5-5"] != "AGY Claude Opus 5.5" {
+		t.Fatalf("expected name 'AGY Claude Opus 5.5', got %q", byID["agy/claude-opus-5-5"])
 	}
-	if byID["claude/claude-opus-5-5"] != "Claude Opus 5.5 (claude)" {
-		t.Fatalf("expected disambiguated name 'Claude Opus 5.5 (claude)', got %q", byID["claude/claude-opus-5-5"])
+	if byID["claude/claude-opus-5-5"] != "Claude Opus 5.5" {
+		t.Fatalf("expected name 'Claude Opus 5.5', got %q", byID["claude/claude-opus-5-5"])
+	}
+}
+
+func TestFormatACPModelLabel(t *testing.T) {
+	for want, m := range map[string]router.ModelEntry{
+		"AGY Claude Sonnet 5.5":    {Backend: "agy", DisplayName: "Claude Sonnet 5.5"},
+		"Claude Sonnet 5.5":        {Backend: "claude", DisplayName: "Sonnet 5.5"},
+		"Codex GPT-6 Luna":         {Backend: "codex", Upstream: "gpt-6-luna", DisplayName: "6 Luna"},
+		"Codex GPT-5.6 Terra (bx)": {Backend: "codex", Upstream: "gpt-5.6-terra", DisplayName: "5.6 Terra", AccountName: "bx"},
+		"Grok 4.7":                 {Backend: "grok", Upstream: "grok-4.7", DisplayName: "Grok 4.7"},
+		"AGY Gemini 4 Neon (zdk)":  {Backend: "agy", Upstream: "gemini-4-neon", AccountName: "zdk"},
+	} {
+		if got := formatACPModelLabel(m); got != want {
+			t.Errorf("formatACPModelLabel(%+v) = %q, want %q", m, got, want)
+		}
 	}
 }

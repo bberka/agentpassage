@@ -791,11 +791,6 @@ func (s *Server) watchConfig(ctx context.Context, dataDir string, notify func(st
 
 func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode string) ([]map[string]any, []map[string]string, string, string) {
 	models := s.gw.Router().ListModels(false)
-	nameCounts := make(map[string]int, len(models))
-	for _, m := range models {
-		key := strings.ToLower(cleanModelDisplayName(m))
-		nameCounts[key]++
-	}
 	opts := make([]map[string]string, 0, len(models)+1)
 	availModels := make([]map[string]string, 0, len(models)+1)
 	defaultModel := ""
@@ -809,7 +804,7 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 			hasSelected = true
 			selectedEfforts = m.Efforts
 		}
-		label := formatACPModelLabel(m, nameCounts)
+		label := formatACPModelLabel(m)
 		opts = append(opts, map[string]string{"value": m.ID, "name": label})
 		availModels = append(availModels, map[string]string{"modelId": m.ID, "name": label})
 	}
@@ -1128,21 +1123,37 @@ func cleanModelDisplayName(m router.ModelEntry) string {
 	return prettifyModelID(raw)
 }
 
-func formatACPModelLabel(m router.ModelEntry, nameCounts map[string]int) string {
+// formatACPModelLabel names a model as "Provider Model", so the same model
+// served by two providers is told apart in the host's picker.
+func formatACPModelLabel(m router.ModelEntry) string {
 	base := cleanModelDisplayName(m)
 	if base == "" {
 		return m.ID
 	}
+	// Codex reports its GPT models without the family name ("6 Luna").
+	if strings.HasPrefix(m.Upstream, "gpt-") && base[0] >= '0' && base[0] <= '9' {
+		base = "GPT-" + base
+	}
+	if provider := providerLabel(m.Backend); provider != "" && !strings.HasPrefix(strings.ToLower(base), strings.ToLower(provider)+" ") {
+		base = provider + " " + base
+	}
 	if m.AccountName != "" {
-		if m.Backend != "" {
-			return fmt.Sprintf("%s (%s/%s)", base, m.Backend, m.AccountName)
-		}
 		return fmt.Sprintf("%s (%s)", base, m.AccountName)
 	}
-	if m.Backend != "" && nameCounts[strings.ToLower(base)] > 1 {
-		return fmt.Sprintf("%s (%s)", base, m.Backend)
-	}
 	return base
+}
+
+func providerLabel(backendID string) string {
+	switch backendID {
+	case "agy":
+		return "AGY"
+	case "openai":
+		return "OpenAI"
+	case "openrouter":
+		return "OpenRouter"
+	default:
+		return prettifyModelID(backendID)
+	}
 }
 
 func prettifyModelID(raw string) string {

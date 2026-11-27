@@ -393,6 +393,7 @@ func cmdACPBridge(_ []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	srv.FollowQuota(ctx)
 	bridge := acpbridge.New(srv)
 	return bridge.Serve(ctx, os.Stdin, os.Stdout)
 }
