@@ -34,7 +34,7 @@ func TestQuotaAlertsCoverGroupsAndFireOnce(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("want 2 alerts (agy Claude & GPT, Claude Fable), got %+v", got)
 	}
-	if !strings.Contains(got[0].title, "Claude & GPT Weekly") || !strings.Contains(got[1].title, "Fable Weekly") {
+	if !strings.Contains(got[0].title, "Claude & GPT weekly") || !strings.Contains(got[1].title, "Fable weekly") {
 		t.Fatalf("unexpected titles: %q, %q", got[0].title, got[1].title)
 	}
 
@@ -86,7 +86,7 @@ func TestBalanceAlertMultiCurrency(t *testing.T) {
 		t.Fatalf("funded USD next to 0.00 CNY should stay quiet, got %+v", got)
 	}
 	got := st.pending(lowBalanceReport(cny, usd(1)), 5, 0, time.Now(), true)
-	if len(got) != 1 || !strings.Contains(got[0].message, "0.00 CNY / 1.00 USD") {
+	if len(got) != 1 || !strings.Contains(got[0].title, "0.00 CNY / 1.00 USD") {
 		t.Fatalf("want one alert listing both balances, got %+v", got)
 	}
 }

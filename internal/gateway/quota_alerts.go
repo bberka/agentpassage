@@ -34,35 +34,61 @@ func quotaAlertsFor(rep quota.Report, thresholdPct int) []quotaAlert {
 		if w == nil || w.UsedPercent < float64(thresholdPct) {
 			return
 		}
-		name := w.Label
+		name := strings.ToLower(w.Label)
 		if scope != "" {
-			name = scope + " " + w.Label
+			name = strings.TrimSuffix(scope, " Models") + " " + name
 		}
 		reset := ""
 		resetKey := "none"
 		var resets time.Time
 		if w.ResetsAt != nil {
 			resets = *w.ResetsAt
-			reset = ", resets " + w.ResetsAt.Local().Format("Jan 2 15:04")
+			reset = "Resets " + w.ResetsAt.Local().Format("Jan 2 15:04")
 			resetKey = w.ResetsAt.UTC().Truncate(time.Hour).Format(time.RFC3339)
 		}
 		out = append(out, quotaAlert{
 			key:     fmt.Sprintf("quota:%s:%s:%s:%s", aq.AccountID, scope, w.Label, resetKey),
 			resets:  resets,
 			account: aq.AccountID,
-			title:   fmt.Sprintf("apx: %s %s limit at %.0f%%", aq.AccountName, name, w.UsedPercent),
-			message: fmt.Sprintf("%s has used %.0f%% of its %s limit (%.0f%% left%s).", aq.AccountName, w.UsedPercent, name, w.LeftPercent, reset),
+			title:   fmt.Sprintf("%s: %s %.0f%% used", aq.AccountName, name, w.UsedPercent),
+			message: reset,
 		})
 	}
 	for _, aq := range rep.Accounts {
-		add(aq, "", aq.Primary)
-		add(aq, "", aq.Secondary)
+		for _, w := range []*quota.Window{aq.Primary, aq.Secondary} {
+			if !repeatedInGroup(w, aq.Groups) {
+				add(aq, "", w)
+			}
+		}
 		for _, g := range aq.Groups {
 			add(aq, g.Name, g.Primary)
 			add(aq, g.Name, g.Secondary)
 		}
 	}
 	return out
+}
+
+// repeatedInGroup reports whether an account-wide window is just a copy of a
+// model group's window (agy reports its tightest group both ways).
+func repeatedInGroup(w *quota.Window, groups []quota.QuotaGroup) bool {
+	if w == nil {
+		return false
+	}
+	for _, g := range groups {
+		for _, gw := range []*quota.Window{g.Primary, g.Secondary} {
+			if gw != nil && gw.Label == w.Label && gw.UsedPercent == w.UsedPercent && sameTime(gw.ResetsAt, w.ResetsAt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameTime(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
 }
 
 // checkQuotaAlerts sends a quota_threshold alert for each limit window that
@@ -177,8 +203,8 @@ func (st *balanceAlertState) pending(accounts []quota.AccountQuota, threshold fl
 		out = append(out, quotaAlert{
 			key:     "balance:" + aq.AccountID,
 			account: aq.AccountID,
-			title:   fmt.Sprintf("apx: %s balance low (%s)", aq.AccountName, left),
-			message: fmt.Sprintf("%s has %s left, below the alert threshold of %.2f.", aq.AccountName, left, threshold),
+			title:   fmt.Sprintf("%s: %s left", aq.AccountName, left),
+			message: fmt.Sprintf("Below %.2f", threshold),
 		})
 	}
 	return out

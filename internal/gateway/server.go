@@ -167,11 +167,19 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 				Kind:     "auth_disabled",
 				Severity: "critical",
 				Account:  accountID,
-				Title:    "apx: Account disabled (" + accountID + ")",
-				Message:  reason,
+				Title:    accountID + " disabled",
+				Message:  shortText(reason, 100),
 			})
 		}
 	})
+	return s
+}
+
+// shortText cuts s to at most n characters for a notification body.
+func shortText(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
 	return s
 }
 

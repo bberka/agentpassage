@@ -133,12 +133,12 @@ func (n *Notifier) sendWebhook(url string, ev Event) {
 
 func sendDesktopNotification(title, body string) error {
 	if title == "" {
-		title = "AgentPassage (apx)"
+		title = "apx"
 	}
 	var args []string
 	switch runtime.GOOS {
 	case "linux":
-		args = []string{"notify-send", title, body}
+		args = []string{"notify-send", "--app-name=apx", title, body}
 	case "darwin":
 		esc := func(s string) string { return strings.ReplaceAll(s, `"`, `\"`) }
 		script := `display notification "` + esc(body) + `" with title "` + esc(title) + `"`
