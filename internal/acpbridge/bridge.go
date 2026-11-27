@@ -538,6 +538,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			reqModel := bs.model
 			reqEffort := bs.effort
 			reqMode := bs.mode
+			reqHostMode := bs.hostMode
 			reqCwd := bs.cwd
 			reqMCP := bs.mcpServers
 			s.sessMu.Unlock()
@@ -551,10 +552,21 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			bs.cancel = promptCancel
 			bs.promptMu.Unlock()
 
-			permMode := bridgeModeToPermission(reqMode)
+			// Only override the account's configured permission_mode when the host
+			// explicitly set a mode (or when [acp] expose_modes is on). Otherwise
+			// let each account's permission_mode (default: auto-approve) decide, while
+			// still supplying permHandler in case an account is set to "ask".
+			permMode := ""
+			upstreamACPMode := ""
+			if reqHostMode || s.exposeModes() {
+				permMode = bridgeModeToPermission(reqMode)
+				upstreamACPMode = reqMode
+				if normalizeBridgeMode(reqMode) == "default" {
+					permMode = config.PermAsk
+				}
+			}
 			var permHandler func(context.Context, backend.PermissionRequest) backend.PermissionDecision
-			if normalizeBridgeMode(reqMode) == "default" {
-				permMode = config.PermAsk
+			if permMode == "" || permMode == config.PermAsk {
 				permHandler = func(pCtx context.Context, req backend.PermissionRequest) backend.PermissionDecision {
 					opts := make([]map[string]string, 0, len(req.Options))
 					for _, o := range req.Options {
@@ -564,11 +576,26 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 							"kind":     o.Kind,
 						})
 					}
-					toolCall := map[string]any{
-						"title": req.Title,
-						"name":  req.ToolName,
+					toolCall := make(map[string]any)
+					if len(req.RawToolCall) > 0 {
+						_ = json.Unmarshal(req.RawToolCall, &toolCall)
 					}
-					if req.Arguments != "" {
+					if id, _ := toolCall["toolCallId"].(string); id == "" {
+						if req.ToolCallID != "" {
+							toolCall["toolCallId"] = req.ToolCallID
+						} else if req.ID != "" {
+							toolCall["toolCallId"] = "apx-call-" + req.ID
+						} else {
+							toolCall["toolCallId"] = fmt.Sprintf("apx-call-%d", s.nextCallID.Add(1))
+						}
+					}
+					if _, ok := toolCall["title"]; !ok && req.Title != "" {
+						toolCall["title"] = req.Title
+					}
+					if _, ok := toolCall["kind"]; !ok && req.Kind != "" {
+						toolCall["kind"] = req.Kind
+					}
+					if _, ok := toolCall["rawInput"]; !ok && req.Arguments != "" && json.Valid([]byte(req.Arguments)) {
 						toolCall["rawInput"] = json.RawMessage(req.Arguments)
 					}
 					resRaw, err := callHost(pCtx, "session/request_permission", map[string]any{
@@ -577,6 +604,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 						"options":   opts,
 					})
 					if err != nil {
+						if logs := s.gw.Logs(); logs != nil {
+							logs.Warn("acp", fmt.Sprintf("host session/request_permission error (session=%s toolCallId=%v): %v", bs.id, toolCall["toolCallId"], err))
+						}
 						return backend.PermissionDecision{Approved: false}
 					}
 					var out struct {
@@ -587,6 +617,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					}
 					if json.Unmarshal(resRaw, &out) == nil && out.Outcome.Outcome == "selected" {
 						return backend.PermissionDecision{Approved: true, OptionID: out.Outcome.OptionID}
+					}
+					if logs := s.gw.Logs(); logs != nil {
+						logs.Warn("acp", fmt.Sprintf("host session/request_permission not selected (session=%s toolCallId=%v resp=%s)", bs.id, toolCall["toolCallId"], string(resRaw)))
 					}
 					return backend.PermissionDecision{Approved: false}
 				}
@@ -607,7 +640,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					Model:             reqModel,
 					ReasoningEffort:   reqEffort,
 					PermissionMode:    permMode,
-					ACPMode:           reqMode,
+					ACPMode:           upstreamACPMode,
 					PermissionHandler: permHandler,
 					MCPServers:        reqMCP,
 					Messages:          histSnap,
@@ -758,6 +791,11 @@ func (s *Server) watchConfig(ctx context.Context, dataDir string, notify func(st
 
 func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode string) ([]map[string]any, []map[string]string, string, string) {
 	models := s.gw.Router().ListModels(false)
+	nameCounts := make(map[string]int, len(models))
+	for _, m := range models {
+		key := strings.ToLower(cleanModelDisplayName(m))
+		nameCounts[key]++
+	}
 	opts := make([]map[string]string, 0, len(models)+1)
 	availModels := make([]map[string]string, 0, len(models)+1)
 	defaultModel := ""
@@ -771,14 +809,7 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 			hasSelected = true
 			selectedEfforts = m.Efforts
 		}
-		label := m.ID
-		if m.DisplayName != "" && m.DisplayName != m.ID {
-			if strings.Contains(strings.ToLower(m.DisplayName), strings.ToLower(m.ID)) {
-				label = m.DisplayName
-			} else {
-				label = m.ID + " — " + m.DisplayName
-			}
-		}
+		label := formatACPModelLabel(m, nameCounts)
 		opts = append(opts, map[string]string{"value": m.ID, "name": label})
 		availModels = append(availModels, map[string]string{"modelId": m.ID, "name": label})
 	}
@@ -1081,6 +1112,91 @@ func (s *Server) listPersistedSessions() []map[string]any {
 		})
 	}
 	return out
+}
+
+func cleanModelDisplayName(m router.ModelEntry) string {
+	if dn := strings.TrimSpace(m.DisplayName); dn != "" {
+		return dn
+	}
+	raw := strings.TrimSpace(m.Upstream)
+	if raw == "" {
+		raw = strings.TrimSpace(m.ID)
+		if idx := strings.LastIndex(raw, "/"); idx >= 0 && idx+1 < len(raw) {
+			raw = raw[idx+1:]
+		}
+	}
+	return prettifyModelID(raw)
+}
+
+func formatACPModelLabel(m router.ModelEntry, nameCounts map[string]int) string {
+	base := cleanModelDisplayName(m)
+	if base == "" {
+		return m.ID
+	}
+	if m.AccountName != "" {
+		if m.Backend != "" {
+			return fmt.Sprintf("%s (%s/%s)", base, m.Backend, m.AccountName)
+		}
+		return fmt.Sprintf("%s (%s)", base, m.AccountName)
+	}
+	if m.Backend != "" && nameCounts[strings.ToLower(base)] > 1 {
+		return fmt.Sprintf("%s (%s)", base, m.Backend)
+	}
+	return base
+}
+
+func prettifyModelID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '-' || r == '_'
+	})
+	if len(parts) == 0 {
+		return raw
+	}
+	isSingleDigit := func(s string) bool {
+		return len(s) == 1 && s[0] >= '0' && s[0] <= '9'
+	}
+	var out []string
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		lower := strings.ToLower(p)
+		// Join adjacent single-digit version numbers like "5", "5" -> "5.5" or "4", "6" -> "4.6".
+		if isSingleDigit(p) && i+1 < len(parts) && isSingleDigit(parts[i+1]) {
+			out = append(out, p+"."+parts[i+1])
+			i++
+			continue
+		}
+		switch lower {
+		case "gpt":
+			// Combine "gpt", "6" -> "GPT-6"
+			if i+1 < len(parts) && len(parts[i+1]) > 0 && parts[i+1][0] >= '0' && parts[i+1][0] <= '9' {
+				out = append(out, "GPT-"+parts[i+1])
+				i++
+			} else {
+				out = append(out, "GPT")
+			}
+		case "oss":
+			out = append(out, "OSS")
+		case "deepseek":
+			out = append(out, "DeepSeek")
+		case "glm":
+			out = append(out, "GLM")
+		case "ai", "api", "llm":
+			out = append(out, strings.ToUpper(lower))
+		default:
+			if len(lower) >= 2 && lower[len(lower)-1] == 'b' && lower[0] >= '0' && lower[0] <= '9' {
+				out = append(out, strings.ToUpper(lower))
+			} else if len(p) > 0 && p[0] >= 'a' && p[0] <= 'z' {
+				out = append(out, strings.ToUpper(p[:1])+p[1:])
+			} else {
+				out = append(out, p)
+			}
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 func formatEffortLabel(eff string) string {

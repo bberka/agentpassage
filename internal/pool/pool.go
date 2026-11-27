@@ -698,13 +698,26 @@ func (m *Manager) RecordErrorForGroup(accountID, quotaGroup string, err error, r
 	case backend.ErrKindAuth:
 		st.consecutiveAuthErr++
 		st.loginNeeded = true
-		if st.consecutiveAuthErr >= 2 {
-			st.autoDisabled = true
-			a.Enabled = false
-			autoDisableReason = fmt.Sprintf("Disabled after repeated auth errors (%d): stop using this account and re-authenticate or check provider status.", be.StatusCode)
-			st.banner = autoDisableReason
+		if a.Kind == config.KindAPIKey {
+			// API-key providers (e.g. DeepSeek) can return transient 401s during
+			// server/governor outages; back off temporarily instead of permanently
+			// disabling the account so it recovers automatically once the server is back.
+			mult := 1 << min(st.consecutiveAuthErr-1, 3)
+			cooldown := time.Duration(mult) * 2 * time.Minute
+			if cooldown > 10*time.Minute {
+				cooldown = 10 * time.Minute
+			}
+			st.cooldownUntil = now.Add(cooldown)
+			allowFailover = rule.Strategy != config.StrategyManual
+		} else {
+			if st.consecutiveAuthErr >= 2 {
+				st.autoDisabled = true
+				a.Enabled = false
+				autoDisableReason = fmt.Sprintf("Disabled after repeated auth errors (%d): stop using this account and re-authenticate or check provider status.", be.StatusCode)
+				st.banner = autoDisableReason
+			}
+			allowFailover = false
 		}
-		allowFailover = false
 
 	case backend.ErrKindRestricted:
 		st.autoDisabled = true

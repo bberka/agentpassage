@@ -314,3 +314,53 @@ func TestACPBridgeModesHiddenByDefault(t *testing.T) {
 		t.Fatalf("expected host-set mode plan kept across reload, got %+v", reloaded)
 	}
 }
+
+func TestACPBridgeCleanModelDisplayNames(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Accounts = []config.AccountConfig{
+		{
+			ID: "agy-bb", Name: "bb", Kind: config.KindAPIKey, Backend: "agy", Enabled: true,
+			BaseURL: "http://127.0.0.1:1/v1", AuthStyle: config.AuthNone, ExposeMode: config.ExposePool,
+			Models:      []string{"gemini-4-neon", "claude-opus-5-5"},
+			ModelLabels: map[string]string{"gemini-4-neon": "Gemini 4 Neon", "claude-opus-5-5": "Claude Opus 5.5"},
+		},
+		{
+			ID: "claude-main", Name: "main", Kind: config.KindAPIKey, Backend: "claude", Enabled: true,
+			BaseURL: "http://127.0.0.1:1/v1", AuthStyle: config.AuthNone, ExposeMode: config.ExposePool,
+			Models:      []string{"fable", "claude-opus-5-5"},
+			ModelLabels: map[string]string{"fable": "Fable 5.2", "claude-opus-5-5": "Claude Opus 5.5"},
+		},
+	}
+	sec := secrets.NewFileOnly(dir)
+	reg, _ := descriptors.LoadRegistry(dir)
+	gw := gateway.New(dir, cfg, sec, reg, nil)
+
+	var avail []any
+	runBridgeInteractive(t, gw, func(send func(string), readLine func() map[string]any) {
+		send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+		_ = readLine()
+		send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp"}}`)
+		res := readLine()
+		modelsObj := res["result"].(map[string]any)["models"].(map[string]any)
+		avail = modelsObj["availableModels"].([]any)
+	})
+
+	byID := make(map[string]string)
+	for _, raw := range avail {
+		m := raw.(map[string]any)
+		byID[m["modelId"].(string)] = m["name"].(string)
+	}
+	if byID["agy/gemini-4-neon"] != "Gemini 4 Neon" {
+		t.Fatalf("expected clean unique name 'Gemini 4 Neon', got %q", byID["agy/gemini-4-neon"])
+	}
+	if byID["claude/fable"] != "Fable 5.2" {
+		t.Fatalf("expected clean unique name 'Fable 5.2', got %q", byID["claude/fable"])
+	}
+	if byID["agy/claude-opus-5-5"] != "Claude Opus 5.5 (agy)" {
+		t.Fatalf("expected disambiguated name 'Claude Opus 5.5 (agy)', got %q", byID["agy/claude-opus-5-5"])
+	}
+	if byID["claude/claude-opus-5-5"] != "Claude Opus 5.5 (claude)" {
+		t.Fatalf("expected disambiguated name 'Claude Opus 5.5 (claude)', got %q", byID["claude/claude-opus-5-5"])
+	}
+}

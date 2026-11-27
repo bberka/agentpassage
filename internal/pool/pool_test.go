@@ -168,6 +168,22 @@ func TestHealthCooldownAuthDisableAndFailoverRules(t *testing.T) {
 	if got := m2.Banners(); len(got) != 0 {
 		t.Fatalf("expected SyncAccounts with Enabled=true to clear stale banner, got %+v", got)
 	}
+
+	// API-key accounts (e.g. DeepSeek) should back off temporarily on 401s instead of auto-disabling.
+	disabled := false
+	mAPI := NewManager([]config.AccountConfig{
+		{ID: "deepseek-main", Name: "main", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true, MaxConcurrency: 8},
+	})
+	mAPI.SetAutoDisableHook(func(id, reason string) { disabled = true })
+	mAPI.RecordError("deepseek-main", &backend.BackendError{Kind: backend.ErrKindAuth, StatusCode: 401, Message: "Authentication Fails (governor)"}, ruleNo429)
+	mAPI.RecordError("deepseek-main", &backend.BackendError{Kind: backend.ErrKindAuth, StatusCode: 401, Message: "Authentication Fails (governor)"}, ruleNo429)
+	if disabled || len(mAPI.Banners()) != 0 {
+		t.Fatalf("expected api_key account not to auto-disable on repeated 401 (disabled=%v banners=%+v)", disabled, mAPI.Banners())
+	}
+	snaps := mAPI.Snapshots()
+	if len(snaps) != 1 || snaps[0].State == StateDisabled || snaps[0].CooldownUntil.IsZero() {
+		t.Fatalf("expected api_key account in cooldown without auto-disable, got %+v", snaps)
+	}
 }
 
 func TestGroupRateLimitCooldownIsolation(t *testing.T) {

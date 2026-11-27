@@ -231,32 +231,32 @@ func (a *App) viewSettings(bodyHeight int) string {
 	}
 
 	svc := service.Status()
-	svcVal := fmt.Sprintf("%s: %s   (enter: install/start/restart, S: uninstall)", svc.Manager, svc.Detail)
-	autoStartVal := "disabled   (enter to enable on login/boot)"
+	svcVal := fmt.Sprintf("%s: %s", svc.Manager, svc.Detail)
+	autoStartVal := "disabled"
 	if svc.Enabled {
-		autoStartVal = "enabled   (enter to disable)"
+		autoStartVal = "enabled"
 	}
 
-	healthVal := "off   (enter to cycle: off / 1m / 5m / 15m / 30m)"
+	healthVal := "off"
 	if cfg.Health.Enabled && cfg.Health.IntervalSeconds > 0 {
-		healthVal = fmt.Sprintf("every %s   (enter to cycle: off / 1m / 5m / 15m / 30m)", formatHealthInterval(cfg.Health.IntervalSeconds))
+		healthVal = fmt.Sprintf("every %s", formatHealthInterval(cfg.Health.IntervalSeconds))
 	}
 
-	privVal := "off   (enter to toggle reversible API-key/email/phone redaction)"
+	privVal := "off"
 	if cfg.Privacy.Enabled {
-		privVal = fmt.Sprintf("ON (keys=%v emails=%v phones=%v custom=%d)   (enter to toggle)",
+		privVal = fmt.Sprintf("ON (keys=%v emails=%v phones=%v custom=%d)",
 			cfg.Privacy.RedactAPIKeys, cfg.Privacy.RedactEmails, cfg.Privacy.RedactPhones, len(cfg.Privacy.CustomPatterns))
 	}
 
-	alertsVal := "off   (enter to toggle desktop/webhook alerts)"
+	alertsVal := "off"
 	if cfg.Alerts.Enabled {
 		alertsVal = fmt.Sprintf("ON (desktop=%v webhook=%v)", cfg.Alerts.Desktop, cfg.Alerts.WebhookURL != "")
 	}
-	webhookVal := "none   (enter to set JSON webhook URL)"
+	webhookVal := "none"
 	if cfg.Alerts.WebhookURL != "" {
 		webhookVal = cfg.Alerts.WebhookURL
 	}
-	cacheVal := "off   (enter to toggle local TTL LRU cache)"
+	cacheVal := "off"
 	if cfg.Cache.Enabled {
 		cacheVal = "ON (embeddings, rerank & temperature=0 / X-Apx-Cache: true)"
 	}
@@ -264,13 +264,13 @@ func (a *App) viewSettings(bodyHeight int) string {
 	if decID == "" {
 		decID = "apx/auto"
 	}
-	decVal := fmt.Sprintf("off   (enter to enable virtual %s router model)", decID)
+	decVal := fmt.Sprintf("off (%s)", decID)
 	if cfg.Decision.Enabled {
 		decVal = fmt.Sprintf("ON (%s -> fast=%s coding=%s reasoning=%s)", decID, cfg.Decision.FastModel, cfg.Decision.CodingModel, cfg.Decision.ReasoningModel)
 	}
-	waitVal := "off   (switch accounts mid-conversation when exhausted; enter to toggle)"
+	waitVal := "off (switch accounts when exhausted)"
 	if cfg.Sessions.WaitForResetWhenExhausted {
-		waitVal = "ON    (wait for quota reset on same account; enter to toggle)"
+		waitVal = "ON (wait for quota reset on same account)"
 	}
 
 	rows := []struct {
@@ -279,15 +279,15 @@ func (a *App) viewSettings(bodyHeight int) string {
 	}{
 		{"Port", strconv.Itoa(cfg.Server.Port)},
 		{"Bind Address", cfg.Server.Bind},
-		{"Local Key", keyDisp + "   (v:reveal  c:copy  g:rotate)"},
-		{"Theme", cfg.UI.Theme + "   (enter to cycle: auto / dark / light / transparent / ansi16)"},
-		{"ACP Tool Activity", cfg.ACP.ToolActivity + "   (enter to toggle: drop / text)"},
-		{"Data Directory", a.srv.DataDir() + "   (secrets: " + a.srv.Secrets().Backend() + ")"},
+		{"Local Key", keyDisp},
+		{"Theme", cfg.UI.Theme},
+		{"ACP Tool Activity", cfg.ACP.ToolActivity},
+		{"Data Directory", a.srv.DataDir() + "  (" + a.srv.Secrets().Backend() + ")"},
 		{"Background Service", svcVal},
 		{"Auto-Start on Login", autoStartVal},
 		{"Health Check", healthVal},
-		{"API Keys", fmt.Sprintf("1 primary + %d client key(s)   (enter to create/revoke keys)", len(cfg.Server.APIKeys))},
-		{"Remote Access", "Tailscale Serve & Cloudflare Tunnel setup guide   (enter to open)"},
+		{"API Keys", fmt.Sprintf("1 primary + %d client key(s)", len(cfg.Server.APIKeys))},
+		{"Remote Access", "Tailscale Serve & Cloudflare Tunnel"},
 		{"Privacy Filter", privVal},
 		{"Alerts", alertsVal},
 		{"Alerts Webhook", webhookVal},

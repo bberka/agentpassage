@@ -822,32 +822,61 @@ func (a *App) renderBanners() []string {
 func (a *App) renderFooter() string {
 	var hints []string
 	if a.modal != modalNone {
-		hints = []string{
-			a.styles.KeyHint("esc", "close"),
-			a.styles.KeyHint("ctrl+c", "quit"),
+		switch a.modal {
+		case modalConnect:
+			if a.connectConfirmAction != "" {
+				hints = []string{
+					a.styles.KeyHint("y/enter", "confirm"),
+					a.styles.KeyHint("n/esc", "cancel"),
+				}
+			} else {
+				hints = []string{
+					a.styles.KeyHint("j/k", "move"),
+					a.styles.KeyHint("/", "search"),
+					a.styles.KeyHint("enter", "connect"),
+					a.styles.KeyHint("u", "disconnect"),
+					a.styles.KeyHint("U", "disconnect all"),
+					a.styles.KeyHint("c", "copy"),
+					a.styles.KeyHint("esc", "close"),
+				}
+			}
+		default:
+			hints = []string{
+				a.styles.KeyHint("esc", "close"),
+				a.styles.KeyHint("ctrl+c", "quit"),
+			}
 		}
 	} else {
 		switch a.screen {
 		case ScreenDashboard:
 			hints = []string{
 				a.styles.KeyHint("a", "add"),
-				a.styles.KeyHint("i", "ACP registry"),
+				a.styles.KeyHint("i", "install"),
 				a.styles.KeyHint("C", "connect"),
 				a.styles.KeyHint("S", "service"),
 				a.styles.KeyHint("T", "health"),
 				a.styles.KeyHint("c", "copy URL"),
+				a.styles.KeyHint("k", "copy key"),
+				a.styles.KeyHint("v", "reveal"),
 				a.styles.KeyHint("?", "help"),
 				a.styles.KeyHint("q", "quit"),
 			}
 		case ScreenAccounts:
 			hints = []string{
 				a.styles.KeyHint("a", "add"),
-				a.styles.KeyHint("i", "installed"),
+				a.styles.KeyHint("i", "install"),
 				a.styles.KeyHint("c", "logins"),
 				a.styles.KeyHint("e", "edit"),
 				a.styles.KeyHint("M", "models"),
+				a.styles.KeyHint("d", "toggle"),
+				a.styles.KeyHint("m", "expose"),
+				a.styles.KeyHint("P", "prefix"),
+				a.styles.KeyHint("p", "perms"),
+				a.styles.KeyHint("H", "host-prof"),
+				a.styles.KeyHint("r", "rename"),
 				a.styles.KeyHint("l", "login"),
 				a.styles.KeyHint("t", "test"),
+				a.styles.KeyHint("x", "del"),
 				a.styles.KeyHint("C", "connect"),
 			}
 		case ScreenModels:
@@ -858,20 +887,29 @@ func (a *App) renderFooter() string {
 				a.styles.KeyHint("H", "show off"),
 				a.styles.KeyHint("v", "names"),
 				a.styles.KeyHint("t", "thinking"),
+				a.styles.KeyHint("r", "rename"),
+				a.styles.KeyHint("a", "alias"),
 				a.styles.KeyHint("/", "filter"),
 				a.styles.KeyHint("f", "fetch"),
 			}
 		case ScreenRouting:
 			hints = []string{
-				a.styles.KeyHint("a", "add rule"),
+				a.styles.KeyHint("a", "add"),
 				a.styles.KeyHint("s", "strategy"),
 				a.styles.KeyHint("e", "accounts"),
+				a.styles.KeyHint("p", "project"),
+				a.styles.KeyHint("b", "balance-opt"),
 				a.styles.KeyHint("4", "429-retry"),
+				a.styles.KeyHint("t", "quota%"),
+				a.styles.KeyHint("o", "thinking"),
+				a.styles.KeyHint("P", "prompt"),
+				a.styles.KeyHint("c", "cache"),
 				a.styles.KeyHint("x", "del"),
 			}
 		case ScreenLogs:
 			hints = []string{
 				a.styles.KeyHint("j/k", "scroll"),
+				a.styles.KeyHint("enter", "inspect"),
 				a.styles.KeyHint("l", "level"),
 				a.styles.KeyHint("/", "filter"),
 				a.styles.KeyHint("q", "back"),
@@ -879,34 +917,67 @@ func (a *App) renderFooter() string {
 		case ScreenUsage:
 			hints = []string{
 				a.styles.KeyHint("j/k", "scroll"),
-				a.styles.KeyHint("R", "refresh limits"),
+				a.styles.KeyHint("v", "accounts/total"),
+				a.styles.KeyHint("R", "refresh"),
 				a.styles.KeyHint("p", "period"),
-				a.styles.KeyHint("t", "24h / 14d"),
+				a.styles.KeyHint("t", "24h/14d"),
+				a.styles.KeyHint("u", "copy URL"),
 				a.styles.KeyHint("o", "web hub"),
 				a.styles.KeyHint("q", "back"),
 			}
 		case ScreenSettings:
 			hints = []string{
+				a.styles.KeyHint("j/k", "move"),
 				a.styles.KeyHint("enter", "edit/toggle"),
+				a.styles.KeyHint("S", "uninstall svc"),
 				a.styles.KeyHint("v", "reveal key"),
 				a.styles.KeyHint("c", "copy key"),
 				a.styles.KeyHint("g", "rotate key"),
+				a.styles.KeyHint("?", "help"),
+				a.styles.KeyHint("q", "quit"),
 			}
 		}
 	}
 
-	left := strings.Join(hints, "  ")
-	right := ""
+	maxW := max(a.width-2, 20)
+	var hintLines []string
+	curLine := ""
+	for _, h := range hints {
+		if curLine == "" {
+			curLine = h
+			continue
+		}
+		if lipgloss.Width(curLine)+2+lipgloss.Width(h) <= maxW {
+			curLine += "  " + h
+		} else {
+			hintLines = append(hintLines, curLine)
+			curLine = h
+		}
+	}
+	if curLine != "" {
+		hintLines = append(hintLines, curLine)
+	}
+	if len(hintLines) == 0 {
+		hintLines = []string{""}
+	}
+
 	if a.statusMsg != "" {
 		st := a.styles.StateReady
 		if a.statusErr {
 			st = a.styles.StateErr
 		}
-		avail := max(a.width-lipgloss.Width(left)-6, 12)
-		right = st.Render(truncate(a.statusMsg, avail))
+		last := hintLines[len(hintLines)-1]
+		avail := maxW - lipgloss.Width(last) - 2
+		if avail >= 16 {
+			right := st.Render(truncate(a.statusMsg, avail))
+			gap := max(maxW-lipgloss.Width(last)-lipgloss.Width(right), 1)
+			hintLines[len(hintLines)-1] = last + strings.Repeat(" ", gap) + right
+		} else {
+			hintLines = append(hintLines, st.Render(truncate(a.statusMsg, maxW)))
+		}
 	}
-	gap := max(a.width-lipgloss.Width(left)-lipgloss.Width(right)-2, 1)
-	return a.styles.FooterBar.Width(a.width).Render(left + strings.Repeat(" ", gap) + right)
+
+	return a.styles.FooterBar.Width(a.width).Render(strings.Join(hintLines, "\n"))
 }
 
 func (a *App) View() string {

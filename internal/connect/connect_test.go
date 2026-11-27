@@ -252,4 +252,46 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 	if d, err := DisconnectAtPath(tPi, piPath); err != nil || !d.Removed || IsConnectedAtPath("pi", piPath) {
 		t.Fatalf("pi disconnect failed: %+v %v", d, err)
 	}
+
+	// 10. GetBB (bb), Paseo, Goose, Crush, Droid, Kiro connect & disconnect
+	for _, tc := range []struct {
+		alias string
+		id    string
+		file  string
+		seed  string
+	}{
+		{"getbb", "bb", "bb-config.json", `{"theme":"dark"}`},
+		{"paseo", "paseo", "paseo-config.json", `{"version":1,"agents":{"providers":{"copilot":{"enabled":true}}}}`},
+		{"goose", "goose", "goose-apx.json", ""},
+		{"crush", "crush", "crush.json", `{"providers":{"other":{"type":"openai-compat"}}}`},
+		{"factory", "droid", "factory-settings.json", `{"customModels":[{"model":"keep-me","displayName":"Keep"}]}`},
+		{"kiro-cli", "kiro", "kiro-apx.json", ""},
+		{"clawdbot", "openclaw", "openclaw.json", `{"models":{"providers":{"other":{"baseUrl":"https://example.com"}}}}`},
+		{"mistral-vibe", "vibe", "vibe.toml", "active_model = \"devstral\"\n"},
+		{"qwen-code", "qwen", "qwen-settings.json", `{"modelProviders":{"openai":[{"id":"keep","name":"Keep"}]}}`},
+		{"kimi-cli", "kimi", "kimi.toml", "default_model = \"kimi-k2\"\n"},
+		{"allhands", "openhands", "openhands-settings.json", `{"language":"en"}`},
+	} {
+		target, ok := FindTarget(tc.alias)
+		if !ok || target.ID != tc.id {
+			t.Fatalf("expected alias %q -> %q, got ok=%v id=%q", tc.alias, tc.id, ok, target.ID)
+		}
+		p := filepath.Join(dir, tc.file)
+		if tc.seed != "" {
+			if err := os.WriteFile(p, []byte(tc.seed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		res, err := ApplyAtPath(target, p, cfg, models, true)
+		if err != nil || !res.Applied {
+			t.Fatalf("%s connect failed: res=%+v err=%v", tc.id, res, err)
+		}
+		if !IsConnectedAtPath(tc.id, p) {
+			t.Fatalf("expected %s connected at %s", tc.id, p)
+		}
+		d, err := DisconnectAtPath(target, p)
+		if err != nil || !d.Removed || IsConnectedAtPath(tc.id, p) {
+			t.Fatalf("%s disconnect failed: res=%+v err=%v", tc.id, d, err)
+		}
+	}
 }

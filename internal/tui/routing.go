@@ -274,7 +274,7 @@ func (a *App) viewRouting(bodyHeight int) string {
 		}
 		lines = append(lines, "")
 		lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
-		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Selected: quota_thresh=%d%% (t) · thinking=%s (o) · cache=%v (c) · system_prompt=%s (P)", sel.QuotaThresholdPct, eff, sel.Cache, sp)))
+		lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Selected: quota_thresh=%d%% · thinking=%s · cache=%v · system_prompt=%s", sel.QuotaThresholdPct, eff, sel.Cache, sp)))
 	}
 	return a.styles.Card.Width(fullW).Height(bodyHeight - 2).Render(strings.Join(lines, "\n"))
 }

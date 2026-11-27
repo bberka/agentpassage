@@ -92,6 +92,17 @@ func deltaDataDir() string {
 	}
 }
 
+func gooseCustomProviderPath() string {
+	home := homeDir()
+	if runtime.GOOS == "windows" {
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			return filepath.Join(appData, "Block", "goose", "config", "custom_providers", "apx.json")
+		}
+		return filepath.Join(home, "AppData", "Roaming", "Block", "goose", "config", "custom_providers", "apx.json")
+	}
+	return filepath.Join(home, ".config", "goose", "custom_providers", "apx.json")
+}
+
 func detectJetBrains(home string) bool {
 	if _, err := os.Stat(filepath.Join(home, ".jetbrains")); err == nil {
 		return true
@@ -148,6 +159,22 @@ func ListTargets() []Target {
 			ConfigPath:  filepath.Join(home, ".t3", "userdata", "settings.json"),
 			AutoApply:   true,
 			Detected:    exists(filepath.Join(home, ".t3")),
+		},
+		{
+			ID:          "bb",
+			Name:        "GetBB (bb)",
+			Description: "Native ACP custom agent (`apx acp`) + customModels in ~/.bb/config.json",
+			ConfigPath:  filepath.Join(home, ".bb", "config.json"),
+			AutoApply:   true,
+			Detected:    hasBin("bb") || exists(filepath.Join(home, ".bb")),
+		},
+		{
+			ID:          "paseo",
+			Name:        "Paseo",
+			Description: "Native ACP provider (`apx acp`) in ~/.paseo/config.json",
+			ConfigPath:  filepath.Join(home, ".paseo", "config.json"),
+			AutoApply:   true,
+			Detected:    hasBin("paseo") || exists(filepath.Join(home, ".paseo")),
 		},
 		{
 			ID:          "zed",
@@ -262,6 +289,126 @@ func ListTargets() []Target {
 			Detected:    hasBin("aider") || exists(filepath.Join(home, ".aider.conf.yml")),
 		},
 		{
+			ID:          "goose",
+			Name:        "Goose",
+			Description: "Custom OpenAI-compatible provider in ~/.config/goose/custom_providers/apx.json",
+			ConfigPath:  gooseCustomProviderPath(),
+			AutoApply:   true,
+			Detected:    hasBin("goose") || exists(filepath.Dir(filepath.Dir(gooseCustomProviderPath()))),
+		},
+		{
+			ID:          "crush",
+			Name:        "Charm Crush",
+			Description: "OpenAI-compatible `apx` provider in ~/.config/crush/crush.json",
+			ConfigPath:  filepath.Join(home, ".config", "crush", "crush.json"),
+			AutoApply:   true,
+			Detected:    hasBin("crush") || exists(filepath.Join(home, ".config", "crush")),
+		},
+		{
+			ID:          "droid",
+			Name:        "Factory Droid",
+			Description: "Custom models in ~/.factory/settings.json",
+			ConfigPath:  filepath.Join(home, ".factory", "settings.json"),
+			AutoApply:   true,
+			Detected:    hasBin("droid") || exists(filepath.Join(home, ".factory")),
+		},
+		{
+			ID:          "kiro",
+			Name:        "Kiro",
+			Description: "Custom ACP agent in ~/.kiro/agents/apx.json",
+			ConfigPath:  filepath.Join(home, ".kiro", "agents", "apx.json"),
+			AutoApply:   true,
+			Detected:    hasBin("kiro") || hasBin("kiro-cli") || exists(filepath.Join(home, ".kiro")),
+		},
+		{
+			ID:          "openclaw",
+			Name:        "OpenClaw",
+			Description: "OpenAI-compatible `apx` provider in ~/.openclaw/openclaw.json",
+			ConfigPath:  filepath.Join(home, ".openclaw", "openclaw.json"),
+			AutoApply:   true,
+			Detected:    hasBin("openclaw") || exists(filepath.Join(home, ".openclaw")),
+		},
+		{
+			ID:          "vibe",
+			Name:        "Mistral Vibe",
+			Description: "OpenAI-compatible `apx` provider & models in ~/.vibe/config.toml",
+			ConfigPath:  filepath.Join(home, ".vibe", "config.toml"),
+			AutoApply:   true,
+			Detected:    hasBin("vibe") || exists(filepath.Join(home, ".vibe")),
+		},
+		{
+			ID:          "qwen",
+			Name:        "Qwen Code",
+			Description: "OpenAI-compatible `apx` models in ~/.qwen/settings.json",
+			ConfigPath:  filepath.Join(home, ".qwen", "settings.json"),
+			AutoApply:   true,
+			Detected:    hasBin("qwen") || exists(filepath.Join(home, ".qwen")),
+		},
+		{
+			ID:          "kimi",
+			Name:        "Kimi CLI",
+			Description: "`[providers.apx]` block in ~/.kimi/config.toml",
+			ConfigPath:  filepath.Join(home, ".kimi", "config.toml"),
+			AutoApply:   true,
+			Detected:    hasBin("kimi") || exists(filepath.Join(home, ".kimi")),
+		},
+		{
+			ID:          "openhands",
+			Name:        "OpenHands",
+			Description: "OpenAI-compatible gateway in ~/.openhands/settings.json",
+			ConfigPath:  filepath.Join(home, ".openhands", "settings.json"),
+			AutoApply:   true,
+			Detected:    hasBin("openhands") || exists(filepath.Join(home, ".openhands")),
+		},
+		{
+			ID:          "vibekanban",
+			Name:        "Vibe Kanban",
+			Description: "Custom ACP agent (`apx acp`) JSON snippet for Settings -> Agents",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("vibe-kanban") || exists(filepath.Join(home, ".config", "vibe-kanban")),
+		},
+		{
+			ID:          "warp",
+			Name:        "Warp",
+			Description: "Custom ACP agent (`apx acp`) & OpenAI-compatible gateway for Warp",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("warp") || hasBin("warp-terminal") || exists(filepath.Join(home, ".config", "warp-terminal")),
+		},
+		{
+			ID:          "conductor",
+			Name:        "Conductor / Emdash / Superset",
+			Description: "Native ACP (`apx acp`) & OpenAI-compatible setup for multi-agent orchestrators",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("conductor") || hasBin("emdash") || hasBin("superset"),
+		},
+		{
+			ID:          "copilot",
+			Name:        "GitHub Copilot CLI",
+			Description: "OpenAI-compatible endpoint & ACP setup for GitHub Copilot CLI",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("copilot") || exists(filepath.Join(home, ".copilot")),
+		},
+		{
+			ID:          "gemini",
+			Name:        "Gemini CLI",
+			Description: "OpenAI/Anthropic gateway exports & ACP setup for Gemini CLI",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("gemini") || exists(filepath.Join(home, ".gemini")),
+		},
+		{
+			ID:          "amp",
+			Name:        "Amp",
+			Description: "ACP & OpenAI-compatible gateway settings for Sourcegraph Amp",
+			ConfigPath:  "",
+			AutoApply:   false,
+			Detected:    hasBin("amp") || exists(filepath.Join(home, ".config", "amp")),
+		},
+		{
 			ID:          "cursor",
 			Name:        "Cursor",
 			Description: "OpenAI Base URL override + API key for Cursor Settings",
@@ -323,6 +470,26 @@ var targetAliases = map[string]string{
 	"roocode":       "cline",
 	"kilo":          "cline",
 	"t3":            "t3code",
+	"getbb":         "bb",
+	"get-bb":        "bb",
+	"getpaseo":      "paseo",
+	"factory":       "droid",
+	"factory-droid": "droid",
+	"kiro-cli":      "kiro",
+	"clawdbot":      "openclaw",
+	"moltbot":       "openclaw",
+	"mistral-vibe":  "vibe",
+	"qwen-code":     "qwen",
+	"kimi-cli":      "kimi",
+	"kimi-code":     "kimi",
+	"allhands":      "openhands",
+	"vibe-kanban":   "vibekanban",
+	"warp-terminal": "warp",
+	"emdash":        "conductor",
+	"superset":      "conductor",
+	"copilot-cli":   "copilot",
+	"gemini-cli":    "gemini",
+	"ampcode":       "amp",
 	"zed-delta":     "delta",
 	"shell":         "agy",
 }
@@ -353,6 +520,100 @@ func IsConnectedAtPath(targetID, path string) bool {
 			if provs, ok := root["providerInstances"].(map[string]any); ok {
 				_, exists := provs["apx"]
 				return exists
+			}
+		}
+	case "bb":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if plugins, ok := root["plugins"].(map[string]any); ok {
+				if acp, ok := plugins["provider-acp"].(map[string]any); ok {
+					if agents, ok := acp["customAgents"].([]any); ok {
+						for _, a := range agents {
+							if m, ok := a.(map[string]any); ok && m["id"] == "apx" {
+								return true
+							}
+						}
+					}
+				}
+			}
+			if cms, ok := root["customModels"].([]any); ok {
+				for _, cm := range cms {
+					if m, ok := cm.(map[string]any); ok && m["providerId"] == "acp-apx" {
+						return true
+					}
+				}
+			}
+		}
+	case "paseo":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if agents, ok := root["agents"].(map[string]any); ok {
+				if provs, ok := agents["providers"].(map[string]any); ok {
+					_, exists := provs["apx"]
+					return exists
+				}
+			}
+		}
+	case "goose":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			name, _ := root["name"].(string)
+			return strings.EqualFold(name, "apx")
+		}
+	case "crush":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if provs, ok := root["providers"].(map[string]any); ok {
+				_, exists := provs["apx"]
+				return exists
+			}
+		}
+	case "droid":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if cms, ok := root["customModels"].([]any); ok {
+				for _, cm := range cms {
+					if m, ok := cm.(map[string]any); ok {
+						if k, _ := m["apiKey"].(string); strings.HasPrefix(k, "apx_") {
+							return true
+						}
+						if dn, _ := m["displayName"].(string); strings.HasPrefix(dn, "apx / ") {
+							return true
+						}
+					}
+				}
+			}
+		}
+	case "kiro":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			name, _ := root["name"].(string)
+			return strings.EqualFold(name, "apx")
+		}
+	case "openclaw":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if modelsObj, ok := root["models"].(map[string]any); ok {
+				if provs, ok := modelsObj["providers"].(map[string]any); ok {
+					_, exists := provs["apx"]
+					return exists
+				}
+			}
+		}
+	case "qwen":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if env, ok := root["env"].(map[string]any); ok {
+				if k, _ := env["OPENAI_API_KEY"].(string); strings.HasPrefix(k, "apx_") {
+					return true
+				}
+			}
+		}
+	case "openhands":
+		var root map[string]any
+		if json.Unmarshal(stripJSONC(raw), &root) == nil {
+			if k, _ := root["llm_api_key"].(string); strings.HasPrefix(k, "apx_") {
+				return true
 			}
 		}
 	case "zed", "jetbrains":
@@ -403,7 +664,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 			key, _ := root["apiKey"].(string)
 			return strings.HasPrefix(key, "apx_")
 		}
-	case "codex", "continue", "aider":
+	case "codex", "continue", "aider", "vibe", "kimi":
 		return strings.Contains(string(raw), "# --- apx begin ---")
 	case "neovim":
 		return strings.Contains(string(raw), "apx")
@@ -504,6 +765,100 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			res.Applied = true
 			res.Backup = bak
 			res.Message = fmt.Sprintf("Registered AgentPassage (%d models) in %s — reload T3 Code to activate", enabledCount, path)
+		}
+
+	case "bb":
+		bbAgent := map[string]any{
+			"id":          "apx",
+			"displayName": "AgentPassage",
+			"command":     apxBin,
+			"args":        []string{"acp"},
+		}
+		agentsJSON, _ := json.Marshal([]map[string]any{bbAgent})
+		res.Snippet = fmt.Sprintf(
+			"GetBB (bb) — Native ACP custom agent:\n"+
+				"  CLI: bb plugin config provider-acp set customAgents '%s'\n"+
+				"  Config: ~/.bb/config.json (plugins.provider-acp.customAgents + customModels)\n"+
+				"  Models: %d enabled (auto-discovered via ACP)\n",
+			string(agentsJSON), enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				plugins, _ := root["plugins"].(map[string]any)
+				if plugins == nil {
+					plugins = make(map[string]any)
+				}
+				acpCfg, _ := plugins["provider-acp"].(map[string]any)
+				if acpCfg == nil {
+					acpCfg = make(map[string]any)
+				}
+				existingAgents, _ := acpCfg["customAgents"].([]any)
+				keptAgents := make([]any, 0, len(existingAgents)+1)
+				for _, a := range existingAgents {
+					if m, ok := a.(map[string]any); ok && m["id"] == "apx" {
+						continue
+					}
+					keptAgents = append(keptAgents, a)
+				}
+				keptAgents = append(keptAgents, bbAgent)
+				acpCfg["customAgents"] = keptAgents
+				plugins["provider-acp"] = acpCfg
+				root["plugins"] = plugins
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered AgentPassage ACP agent (%d models) in %s", enabledCount, path)
+		}
+
+	case "paseo":
+		paseoModels := make([]map[string]any, 0, len(effectiveModels))
+		for i, id := range effectiveModels {
+			mEntry := map[string]any{
+				"id":    id,
+				"label": id,
+			}
+			if i == 0 {
+				mEntry["isDefault"] = true
+			}
+			paseoModels = append(paseoModels, mEntry)
+		}
+		paseoProv := map[string]any{
+			"enabled": true,
+			"extends": "acp",
+			"label":   "AgentPassage",
+			"command": []string{apxBin, "acp"},
+			"models":  paseoModels,
+		}
+		res.Snippet = fmt.Sprintf(
+			"Paseo (~/.paseo/config.json -> agents.providers.apx):\n"+
+				"  Extends: acp\n"+
+				"  Command: %s acp\n"+
+				"  Models:  %d enabled (use: paseo run --provider apx/%s \"...\")\n",
+			apxBin, enabledCount, effectiveModels[0],
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				agents, _ := root["agents"].(map[string]any)
+				if agents == nil {
+					agents = make(map[string]any)
+				}
+				provs, _ := agents["providers"].(map[string]any)
+				if provs == nil {
+					provs = make(map[string]any)
+				}
+				provs["apx"] = paseoProv
+				agents["providers"] = provs
+				root["agents"] = agents
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered AgentPassage ACP provider (%d models) in %s", enabledCount, path)
 		}
 
 	case "zed":
@@ -857,6 +1212,419 @@ return {
 			res.Message = "Configured Aider in " + path
 		}
 
+	case "goose":
+		gooseModels := make([]map[string]any, 0, len(effectiveModels))
+		for _, id := range effectiveModels {
+			gooseModels = append(gooseModels, map[string]any{
+				"name":          id,
+				"context_limit": 128000,
+			})
+		}
+		gooseObj := map[string]any{
+			"name":               "apx",
+			"engine":             "openai",
+			"display_name":       "AgentPassage (apx)",
+			"description":        "Local AgentPassage OpenAI-compatible gateway",
+			"api_key_env":        "APX_API_KEY",
+			"base_url":           baseURL,
+			"models":             gooseModels,
+			"supports_streaming": true,
+			"requires_auth":      true,
+		}
+		res.Snippet = fmt.Sprintf(
+			"Goose custom provider (%s):\n"+
+				"  Provider: apx (engine: openai)\n"+
+				"  Base URL: %s\n"+
+				"  Env:      export APX_API_KEY=%q\n"+
+				"  Models:   %d enabled\n",
+			path, baseURL, key, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				for k, v := range gooseObj {
+					root[k] = v
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Wrote Goose custom provider (%d models) to %s", enabledCount, path)
+		}
+
+	case "crush":
+		crushModels := make([]map[string]any, 0, len(effectiveModels))
+		for _, id := range effectiveModels {
+			crushModels = append(crushModels, map[string]any{
+				"id":                 id,
+				"name":               id,
+				"context_window":     128000,
+				"default_max_tokens": 8192,
+				"supports_tools":     true,
+			})
+		}
+		crushProv := map[string]any{
+			"type":     "openai-compat",
+			"name":     "AgentPassage (apx)",
+			"base_url": baseURL,
+			"api_key":  key,
+			"models":   crushModels,
+		}
+		res.Snippet = fmt.Sprintf(
+			"Charm Crush (~/.config/crush/crush.json -> providers.apx):\n"+
+				"  Type:     openai-compat\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			baseURL, key, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				if _, ok := root["$schema"]; !ok {
+					root["$schema"] = "https://charm.land/crush.json"
+				}
+				provs, _ := root["providers"].(map[string]any)
+				if provs == nil {
+					provs = make(map[string]any)
+				}
+				provs["apx"] = crushProv
+				root["providers"] = provs
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s", enabledCount, path)
+		}
+
+	case "droid":
+		droidModels := make([]any, 0, len(effectiveModels))
+		for _, id := range effectiveModels {
+			droidModels = append(droidModels, map[string]any{
+				"model":       id,
+				"displayName": "apx / " + id,
+				"baseUrl":     baseURL,
+				"apiKey":      key,
+				"provider":    "generic-chat-completion-api",
+			})
+		}
+		res.Snippet = fmt.Sprintf(
+			"Factory Droid (~/.factory/settings.json -> customModels):\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			baseURL, key, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				existing, _ := root["customModels"].([]any)
+				kept := make([]any, 0, len(existing)+len(droidModels))
+				for _, item := range existing {
+					if m, ok := item.(map[string]any); ok {
+						if k, _ := m["apiKey"].(string); strings.HasPrefix(k, "apx_") {
+							continue
+						}
+						if dn, _ := m["displayName"].(string); strings.HasPrefix(dn, "apx / ") {
+							continue
+						}
+					}
+					kept = append(kept, item)
+				}
+				kept = append(kept, droidModels...)
+				root["customModels"] = kept
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s", enabledCount, path)
+		}
+
+	case "kiro":
+		kiroObj := map[string]any{
+			"name":        "apx",
+			"description": "AgentPassage local ACP gateway",
+			"command":     apxBin,
+			"args":        []string{"acp"},
+		}
+		res.Snippet = fmt.Sprintf(
+			"Kiro custom ACP agent (%s):\n"+
+				"  Command: %s acp\n"+
+				"  Models:  %d enabled (auto-discovered via ACP)\n",
+			path, apxBin, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				for k, v := range kiroObj {
+					root[k] = v
+				}
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Wrote Kiro custom ACP agent (%d models) to %s", enabledCount, path)
+		}
+
+	case "openclaw":
+		ocModels := make([]map[string]any, 0, len(effectiveModels))
+		for _, id := range effectiveModels {
+			ocModels = append(ocModels, map[string]any{
+				"id":            id,
+				"name":          id,
+				"input":         []string{"text", "image"},
+				"contextWindow": 128000,
+				"maxTokens":     32000,
+			})
+		}
+		ocProv := map[string]any{
+			"baseUrl": baseURL,
+			"apiKey":  key,
+			"api":     "openai-completions",
+			"models":  ocModels,
+		}
+		res.Snippet = fmt.Sprintf(
+			"OpenClaw (~/.openclaw/openclaw.json -> models.providers.apx):\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled (use: openclaw models set apx/%s)\n",
+			baseURL, key, enabledCount, effectiveModels[0],
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				modelsObj, _ := root["models"].(map[string]any)
+				if modelsObj == nil {
+					modelsObj = make(map[string]any)
+				}
+				if _, ok := modelsObj["mode"]; !ok {
+					modelsObj["mode"] = "merge"
+				}
+				provs, _ := modelsObj["providers"].(map[string]any)
+				if provs == nil {
+					provs = make(map[string]any)
+				}
+				provs["apx"] = ocProv
+				modelsObj["providers"] = provs
+				root["models"] = modelsObj
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s", enabledCount, path)
+		}
+
+	case "vibe":
+		var sb strings.Builder
+		sb.WriteString("# --- apx begin ---\n")
+		sb.WriteString("[[providers]]\n")
+		sb.WriteString("name = \"apx\"\n")
+		sb.WriteString(fmt.Sprintf("api_base = %q\n", baseURL))
+		sb.WriteString("api_key_env_var = \"APX_API_KEY\"\n")
+		sb.WriteString("api_style = \"openai\"\n")
+		sb.WriteString("backend = \"generic\"\n")
+		for _, id := range effectiveModels {
+			sb.WriteString("\n[[models]]\n")
+			sb.WriteString(fmt.Sprintf("name = %q\n", id))
+			sb.WriteString("provider = \"apx\"\n")
+			sb.WriteString(fmt.Sprintf("alias = %q\n", "apx/"+id))
+		}
+		sb.WriteString("# --- apx end ---\n")
+		res.Snippet = fmt.Sprintf(
+			"Mistral Vibe (~/.vibe/config.toml):\n"+
+				"  Provider: apx (%s)\n"+
+				"  Env:      export APX_API_KEY=%q\n"+
+				"  Models:   %d enabled\n",
+			baseURL, key, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := upsertTextBlock(path, "# --- apx begin ---", "# --- apx end ---", sb.String())
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s", enabledCount, path)
+		}
+
+	case "qwen":
+		qwenModels := make([]any, 0, len(effectiveModels))
+		for _, id := range effectiveModels {
+			qwenModels = append(qwenModels, map[string]any{
+				"id":      id,
+				"name":    "apx / " + id,
+				"baseUrl": baseURL,
+			})
+		}
+		res.Snippet = fmt.Sprintf(
+			"Qwen Code (~/.qwen/settings.json -> modelProviders.openai):\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			baseURL, key, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				env, _ := root["env"].(map[string]any)
+				if env == nil {
+					env = make(map[string]any)
+				}
+				env["OPENAI_API_KEY"] = key
+				root["env"] = env
+				mp, _ := root["modelProviders"].(map[string]any)
+				if mp == nil {
+					mp = make(map[string]any)
+				}
+				existing, _ := mp["openai"].([]any)
+				kept := make([]any, 0, len(existing)+len(qwenModels))
+				for _, item := range existing {
+					if m, ok := item.(map[string]any); ok {
+						if nm, _ := m["name"].(string); strings.HasPrefix(nm, "apx / ") {
+							continue
+						}
+					}
+					kept = append(kept, item)
+				}
+				kept = append(kept, qwenModels...)
+				mp["openai"] = kept
+				root["modelProviders"] = mp
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered apx (%d models) in %s", enabledCount, path)
+		}
+
+	case "kimi":
+		var sb strings.Builder
+		sb.WriteString("# --- apx begin ---\n")
+		sb.WriteString("[providers.apx]\n")
+		sb.WriteString("type = \"openai\"\n")
+		sb.WriteString(fmt.Sprintf("base_url = %q\n", baseURL))
+		sb.WriteString(fmt.Sprintf("api_key = %q\n", key))
+		for _, id := range effectiveModels {
+			sb.WriteString(fmt.Sprintf("\n[models.%q]\n", "apx/"+id))
+			sb.WriteString("provider = \"apx\"\n")
+			sb.WriteString(fmt.Sprintf("model = %q\n", id))
+			sb.WriteString("max_context_size = 128000\n")
+		}
+		sb.WriteString("# --- apx end ---\n")
+		res.Snippet = fmt.Sprintf(
+			"Kimi CLI (~/.kimi/config.toml -> [providers.apx]):\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			baseURL, key, enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := upsertTextBlock(path, "# --- apx begin ---", "# --- apx end ---", sb.String())
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Registered [providers.apx] (%d models) in %s", enabledCount, path)
+		}
+
+	case "openhands":
+		res.Snippet = fmt.Sprintf(
+			"OpenHands (~/.openhands/settings.json):\n"+
+				"  llm_base_url: %s\n"+
+				"  llm_api_key:  %s\n"+
+				"  llm_model:    openai/%s\n"+
+				"  Models:       %d enabled\n",
+			baseURL, key, effectiveModels[0], enabledCount,
+		)
+		if apply && path != "" {
+			bak, err := mergeJSONFile(path, func(root map[string]any) {
+				root["llm_base_url"] = baseURL
+				root["llm_api_key"] = key
+				root["llm_model"] = "openai/" + effectiveModels[0]
+			})
+			if err != nil {
+				return nil, err
+			}
+			res.Applied = true
+			res.Backup = bak
+			res.Message = fmt.Sprintf("Configured OpenHands (%d models) in %s", enabledCount, path)
+		}
+
+	case "vibekanban":
+		res.Snippet = fmt.Sprintf(
+			"Vibe Kanban -> Settings -> Agents -> JSON Editor:\n"+
+				"  {\n"+
+				"    \"agent_servers\": {\n"+
+				"      \"apx\": { \"type\": \"custom\", \"command\": %q, \"args\": [\"acp\"] }\n"+
+				"    }\n"+
+				"  }\n"+
+				"  Models: %d enabled (auto-discovered via ACP)\n",
+			apxBin, enabledCount,
+		)
+		res.Message = "Paste the JSON snippet into Vibe Kanban -> Settings -> Agents -> JSON Editor."
+
+	case "warp":
+		res.Snippet = fmt.Sprintf(
+			"Warp -> Settings -> AI / Custom ACP Agent:\n"+
+				"  Command:  %s acp\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			apxBin, baseURL, key, enabledCount,
+		)
+		res.Message = "Copy Warp ACP / OpenAI-compatible settings above."
+
+	case "conductor":
+		res.Snippet = fmt.Sprintf(
+			"Conductor / Emdash / Superset — Custom ACP Agent:\n"+
+				"  Command:  %s\n"+
+				"  Args:     acp\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			apxBin, baseURL, key, enabledCount,
+		)
+		res.Message = "Copy ACP / OpenAI-compatible settings above."
+
+	case "copilot":
+		res.Snippet = fmt.Sprintf(
+			"GitHub Copilot CLI — OpenAI-compatible BYOK / ACP:\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  ACP Cmd:  %s acp\n"+
+				"  Models:   %d enabled (default: %s)\n",
+			baseURL, key, apxBin, enabledCount, effectiveModels[0],
+		)
+		res.Message = "Copy GitHub Copilot CLI settings above."
+
+	case "gemini":
+		res.Snippet = fmt.Sprintf(
+			"Gemini CLI — OpenAI/Anthropic gateway exports or ACP:\n"+
+				"  export OPENAI_BASE_URL=%q\n"+
+				"  export OPENAI_API_KEY=%q\n"+
+				"  ACP Cmd: %s acp\n"+
+				"  Models:  %d enabled%s\n",
+			baseURL, key, apxBin, enabledCount, loopNote,
+		)
+		res.Message = "Copy Gemini CLI settings above."
+
+	case "amp":
+		res.Snippet = fmt.Sprintf(
+			"Sourcegraph Amp — ACP & OpenAI-compatible gateway:\n"+
+				"  ACP Cmd:  %s acp\n"+
+				"  Base URL: %s\n"+
+				"  API Key:  %s\n"+
+				"  Models:   %d enabled\n",
+			apxBin, baseURL, key, enabledCount,
+		)
+		res.Message = "Copy Amp settings above."
+
 	case "delta":
 		res.Snippet = fmt.Sprintf(
 			"Delta (Zed Agent IDE) -> Settings -> Custom ACP Agent:\n"+
@@ -967,6 +1735,159 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 					delete(provs, "apx")
 					removed = true
 				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "bb":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if plugins, ok := root["plugins"].(map[string]any); ok {
+				if acpCfg, ok := plugins["provider-acp"].(map[string]any); ok {
+					if agents, ok := acpCfg["customAgents"].([]any); ok {
+						kept := make([]any, 0, len(agents))
+						for _, a := range agents {
+							if m, ok := a.(map[string]any); ok && m["id"] == "apx" {
+								removed = true
+								continue
+							}
+							kept = append(kept, a)
+						}
+						acpCfg["customAgents"] = kept
+					}
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "paseo":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if agents, ok := root["agents"].(map[string]any); ok {
+				if provs, ok := agents["providers"].(map[string]any); ok {
+					if _, exists := provs["apx"]; exists {
+						delete(provs, "apx")
+						removed = true
+					}
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "crush":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if provs, ok := root["providers"].(map[string]any); ok {
+				if _, exists := provs["apx"]; exists {
+					delete(provs, "apx")
+					removed = true
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "droid":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if existing, ok := root["customModels"].([]any); ok {
+				kept := make([]any, 0, len(existing))
+				for _, item := range existing {
+					if m, ok := item.(map[string]any); ok {
+						k, _ := m["apiKey"].(string)
+						dn, _ := m["displayName"].(string)
+						if strings.HasPrefix(k, "apx_") || strings.HasPrefix(dn, "apx / ") {
+							removed = true
+							continue
+						}
+					}
+					kept = append(kept, item)
+				}
+				root["customModels"] = kept
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "goose", "kiro":
+		if err := os.Remove(path); err == nil {
+			res.Removed = true
+		}
+
+	case "openclaw":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if modelsObj, ok := root["models"].(map[string]any); ok {
+				if provs, ok := modelsObj["providers"].(map[string]any); ok {
+					if _, exists := provs["apx"]; exists {
+						delete(provs, "apx")
+						removed = true
+					}
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "qwen":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if env, ok := root["env"].(map[string]any); ok {
+				if k, _ := env["OPENAI_API_KEY"].(string); strings.HasPrefix(k, "apx_") {
+					delete(env, "OPENAI_API_KEY")
+					removed = true
+				}
+			}
+			if mp, ok := root["modelProviders"].(map[string]any); ok {
+				if existing, ok := mp["openai"].([]any); ok {
+					kept := make([]any, 0, len(existing))
+					for _, item := range existing {
+						if m, ok := item.(map[string]any); ok {
+							if nm, _ := m["name"].(string); strings.HasPrefix(nm, "apx / ") {
+								removed = true
+								continue
+							}
+						}
+						kept = append(kept, item)
+					}
+					mp["openai"] = kept
+				}
+			}
+		})
+		if err != nil {
+			return nil, err
+		}
+		res.Removed = removed
+		res.Backup = bak
+
+	case "openhands":
+		removed := false
+		bak, err := mergeJSONFile(path, func(root map[string]any) {
+			if k, _ := root["llm_api_key"].(string); strings.HasPrefix(k, "apx_") {
+				delete(root, "llm_api_key")
+				delete(root, "llm_base_url")
+				removed = true
 			}
 		})
 		if err != nil {
@@ -1086,7 +2007,7 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		res.Removed = removed
 		res.Backup = bak
 
-	case "codex", "continue", "aider":
+	case "codex", "continue", "aider", "vibe", "kimi":
 		removed, bak, err := removeTextBlock(path, "# --- apx begin ---", "# --- apx end ---")
 		if err != nil {
 			return nil, err

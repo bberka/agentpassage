@@ -392,10 +392,10 @@ func (a *App) viewUsage(bodyHeight int) string {
 		col1Title = "PROVIDER"
 	}
 	qHeader := a.styles.Subtitle.Render(fmt.Sprintf("Subscription Limits (Hourly / Weekly) (%d)", len(qRep.Accounts))) +
-		a.styles.ColGap(2) + a.styles.Highlight.Render("["+viewLabel+" · v:view]") +
+		a.styles.ColGap(2) + a.styles.Highlight.Render("["+viewLabel+"]") +
 		a.styles.ColGap(2) + a.styles.Muted.Render(qMeta)
 	if totalQ > maxQ {
-		qHeader += a.styles.ColGap(2) + a.styles.Highlight.Render(fmt.Sprintf("[%d–%d of %d · j/k scroll]", startQ+1, endQ, totalQ))
+		qHeader += a.styles.ColGap(2) + a.styles.Highlight.Render(fmt.Sprintf("[%d–%d of %d]", startQ+1, endQ, totalQ))
 	}
 	qLines = append(qLines, qHeader)
 	qLines = append(qLines, a.styles.JoinRow(2,
@@ -458,7 +458,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 			if endQ < totalQ {
 				navParts = append(navParts, fmt.Sprintf("↓ %d more", totalQ-endQ))
 			}
-			qLines = append(qLines, a.styles.Muted.Render("  "+strings.Join(navParts, " · ")+"  (j/k or pgup/pgdn to scroll)"))
+			qLines = append(qLines, a.styles.Muted.Render("  "+strings.Join(navParts, " · ")))
 		}
 	}
 	quotaCard := a.styles.Card.Width(fullW).Render(strings.Join(qLines, "\n"))

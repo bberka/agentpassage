@@ -127,21 +127,23 @@ type sessionUpdateParams struct {
 }
 
 type permissionParams struct {
-	SessionID string `json:"sessionId"`
-	ToolCall  struct {
-		ToolCallID string          `json:"toolCallId"`
-		Title      string          `json:"title"`
-		Name       string          `json:"name"`
-		Kind       string          `json:"kind"`
-		Arguments  json.RawMessage `json:"arguments"`
-		RawInput   json.RawMessage `json:"rawInput"`
-	} `json:"toolCall"`
-	Options []struct {
+	SessionID string          `json:"sessionId"`
+	ToolCall  json.RawMessage `json:"toolCall"`
+	Options   []struct {
 		OptionID string `json:"optionId"`
 		ID       string `json:"id"`
 		Name     string `json:"name"`
 		Kind     string `json:"kind"`
 	} `json:"options"`
+}
+
+type permissionToolCallMeta struct {
+	ToolCallID string          `json:"toolCallId"`
+	Title      string          `json:"title"`
+	Name       string          `json:"name"`
+	Kind       string          `json:"kind"`
+	Arguments  json.RawMessage `json:"arguments"`
+	RawInput   json.RawMessage `json:"rawInput"`
 }
 
 type permissionOutcome struct {

@@ -66,9 +66,12 @@ type PermissionRequest struct {
 	AccountID   string
 	AccountName string
 	SessionID   string
+	ToolCallID  string
+	Kind        string
 	Title       string
 	ToolName    string
 	Arguments   string
+	RawToolCall json.RawMessage
 	Options     []PermissionOption
 	ReplyCh     chan PermissionDecision
 }

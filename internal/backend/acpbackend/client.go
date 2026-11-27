@@ -720,18 +720,23 @@ func (w *worker) handlePermission(msg rpcMessage) {
 			w.mgr.mu.Unlock()
 		}
 		if handler != nil {
-			args := string(p.ToolCall.Arguments)
+			var tc permissionToolCallMeta
+			_ = json.Unmarshal(p.ToolCall, &tc)
+			args := string(tc.Arguments)
 			if args == "" {
-				args = string(p.ToolCall.RawInput)
+				args = string(tc.RawInput)
 			}
 			req := backend.PermissionRequest{
 				ID:          normalizeRPCID(msg.ID),
 				AccountID:   acct.ID,
 				AccountName: acct.Name,
 				SessionID:   p.SessionID,
-				Title:       p.ToolCall.Title,
-				ToolName:    p.ToolCall.Name,
+				ToolCallID:  tc.ToolCallID,
+				Kind:        tc.Kind,
+				Title:       tc.Title,
+				ToolName:    tc.Name,
 				Arguments:   args,
+				RawToolCall: append(json.RawMessage(nil), p.ToolCall...),
 				Options:     opts,
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
