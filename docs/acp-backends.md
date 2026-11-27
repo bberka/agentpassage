@@ -79,3 +79,9 @@ terms_note: "Runs the official myagent CLI over ACP."
 ```
 
 Every `{profile}` placeholder in `command`, `profile_args`, `profile_env`, and `login` is expanded to the account's isolated profile directory.
+
+## Skills
+
+`apx acp` lists the skills it finds to the host: the project's `.agents/skills` and `.claude/skills`, then the same folders in your home. A project skill wins over a user skill with the same name.
+
+Claude and Antigravity run in isolated profiles that hide your home folder, so apx links each skill in `~/.agents/skills` into their profile when the agent starts. It only adds missing links and leaves existing entries alone. Codex reads `~/.agents/skills` itself. apx doesn't install or update skills; use your skill manager for that.

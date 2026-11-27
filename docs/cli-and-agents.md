@@ -93,3 +93,11 @@ apx uninstall --yes
 apx service status
 apx service restart
 ```
+
+## Cost estimates
+
+`apx usage`, the Usage tab and the Usage Hub price each request at the provider's public list price, using the table in `internal/usage/pricing.go`. That includes cached input, long-prompt tiers, announced price changes and DeepSeek's peak hours. A subscription account isn't billed per token, so its figure is what the same tokens would cost through the API.
+
+- A model that isn't in the table is counted as unpriced and left out of the total.
+- `apx acp` turns use the token counts the agent reports. When it reports none, apx estimates them from the newest message and the reply, which leaves out the agent's own context and so reads low.
+- Anthropic cache writes are priced at the 5-minute rate.

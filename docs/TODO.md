@@ -1,0 +1,22 @@
+# Open work
+
+## Security
+
+- Stop `client` API keys from reaching ACP and CLI models unless the key allows it. Today such a key can run an agent on the host.
+- Check whether `apx acp` should forward permission requests to the host when the host sets no mode.
+
+## Reliability
+
+- Lock `config.toml` across processes while saving, so concurrent saves can't drop each other's changes.
+- Fail an API-key model's turn when it returns tool-call markup as text.
+
+## Tests
+
+- Fixtures for the fields T3 Code reads (see [t3-code-integration.md](t3-code-integration.md)).
+- TUI render tests at 80x24 and a wide size.
+- Run staticcheck and govulncheck in CI.
+
+## Cleanup
+
+- Decide whether to remove the unused release workflow and GoReleaser config.
+- Stamp the commit in `install.ps1`.

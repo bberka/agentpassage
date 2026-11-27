@@ -9,7 +9,7 @@ T3 Code runs `apx acp` through its ACP registry provider.
 - **Model names:** the `name` of each model option. apx builds them in `internal/acpbridge/names.go` and the router.
 - **Thinking effort:** a config option with category `thought_level`.
 - **Mode menu:** hidden unless `[acp] expose_modes = true`. With no mode from the host, apx follows the account's `permission_mode` for permission requests and sends the agent no mode, so each agent uses its own default. Claude's default is `auto`, whose safety check can deny an action without asking the host.
-- **Skills and slash commands:** T3 Code reads them only from the `available_commands_update` session update. A command whose name starts with `$` is a skill. apx doesn't send this update yet, so T3 Code lists no skills for apx.
+- **Skills and slash commands:** T3 Code reads them only from the `available_commands_update` session update. A command whose name starts with `$` is a skill. apx sends one after `session/new`, `session/load`, `session/resume` and `session/fork`, with the skills in the project's `.agents/skills` and `.claude/skills` and the same folders in your home. When a prompt mentions `$name`, apx adds the path of that `SKILL.md` for the agent.
 - **Updates:** a running `apx acp` process keeps its binary until T3 Code restarts it.
 
 ## Usage limits (CLIProxyAPI compatibility)
