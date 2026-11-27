@@ -19,6 +19,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/skills"
 )
 
 // Manager executes direct CLI proxy requests (claude -p, codex exec, agy --print, opencode run, etc.)
@@ -136,6 +137,18 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 	return acct.Models, nil
 }
 
+// shareSkills links the user's skills for this agent into its profile. It runs
+// per request, so skills added later are picked up.
+func (m *Manager) shareSkills(acct config.AccountConfig, profileDir string) {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		err = skills.ShareWithProfile(acct.Backend, home, profileDir)
+	}
+	if err != nil && m.logs != nil {
+		m.logs.Warn("cli", fmt.Sprintf("share skills with %s/%s: %v", acct.Backend, acct.Name, err))
+	}
+}
+
 func (m *Manager) Complete(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest) (*backend.ChatResponse, error) {
 	var sb strings.Builder
 	var sessionID string
@@ -182,6 +195,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		_ = os.MkdirAll(filepath.Join(profileDir, ".config"), 0o700)
 		_ = os.MkdirAll(filepath.Join(profileDir, ".gemini"), 0o700)
 		extraEnv = desc.ExpandEnv(profileDir, acct.Name, acct.CustomEnv)
+		m.shareSkills(acct, profileDir)
 	}
 
 	cwd := strings.TrimSpace(req.Cwd)

@@ -44,7 +44,7 @@ func TestLocalAgyACPHandsakeOnHost(t *testing.T) {
 	defer cancel()
 
 	// Launching worker must complete `initialize` cleanly without any "must not be absolute" error!
-	w, err := mgr.getOrStartWorker(ctx, acct)
+	w, err := mgr.getOrStartWorker(ctx, acct, false)
 	if err != nil {
 		t.Fatalf("real agy acp initialize failed: %v", err)
 	}

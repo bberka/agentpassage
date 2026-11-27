@@ -121,6 +121,42 @@ func Instructions(text string, available []Skill) string {
 	return strings.Join(lines, "\n")
 }
 
+// agentDirs maps an agent to the folders its own skills live in (under the
+// user's home) and the folder it reads them from inside an isolated profile.
+// agents marks the ones whose profile also hides ~/.agents/skills.
+var agentDirs = map[string]struct {
+	own    []string
+	dest   string
+	agents bool
+}{
+	"claude":   {[]string{".claude/skills"}, "skills", true},
+	"codex":    {[]string{".codex/skills"}, "skills", false},
+	"agy":      {[]string{".gemini/config/skills"}, ".gemini/config/skills", true},
+	"grok":     {[]string{".grok/skills"}, ".grok/skills", true},
+	"cursor":   {[]string{".cursor/skills"}, ".cursor/skills", true},
+	"gemini":   {[]string{".gemini/skills"}, ".gemini/skills", false},
+	"pi":       {[]string{".pi/agent/skills"}, "skills", false},
+	"opencode": {[]string{".config/opencode/skills", ".config/opencode/skill"}, ".config/opencode/skills", false},
+}
+
+// ShareWithProfile links the user's skills for agent into its isolated profile.
+// Skills added to the agent itself win over same-named ones in
+// ~/.agents/skills. Unknown agents are left alone.
+func ShareWithProfile(agent, home, profileDir string) error {
+	d, ok := agentDirs[agent]
+	if !ok {
+		return nil
+	}
+	var sources []string
+	for _, own := range d.own {
+		sources = append(sources, filepath.Join(home, own))
+	}
+	if d.agents {
+		sources = append(sources, filepath.Join(home, ".agents", "skills"))
+	}
+	return Share(filepath.Join(profileDir, d.dest), sources...)
+}
+
 // Share links each skill found in the source folders into dir. The first
 // source with a name wins. Entries already in dir are never replaced, and the
 // only ones removed are links into a source whose skill is gone.

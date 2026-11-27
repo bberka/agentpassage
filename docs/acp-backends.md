@@ -92,6 +92,12 @@ Accounts run in isolated profiles that hide your agent's own folders, so apx lin
 | Codex | `~/.codex/skills` (Codex reads `~/.agents/skills` itself) |
 | Antigravity | `~/.gemini/config/skills`, `~/.agents/skills` |
 | Grok | `~/.grok/skills`, `~/.agents/skills` |
+| Cursor | `~/.cursor/skills`, `~/.agents/skills` |
+| Pi | `~/.pi/agent/skills` (Pi reads `~/.agents/skills` itself) |
+| OpenCode | `~/.config/opencode/skills` (OpenCode reads `~/.agents/skills` itself) |
+| Gemini | `~/.gemini/skills` (Gemini reads `~/.agents/skills` itself) |
+
+CLI-backend accounts of these agents get the same skills.
 
 The agent's own folder wins over `~/.agents/skills` for a shared name. apx never replaces an entry already in a profile, and removes only its own links to skills you deleted. It doesn't install or update skills; use your skill manager for that.
 
@@ -105,10 +111,16 @@ The agent's own folder wins over `~/.agents/skills` for a shared name. apx never
 | Codex | `~/.codex/config.toml` |
 | Antigravity | `~/.gemini/config/mcp_config.json` |
 | Grok | `~/.grok/config.toml` |
+| Cursor | `~/.cursor/mcp.json` |
+| Gemini | `~/.gemini/settings.json` |
+| OpenCode | `~/.config/opencode/opencode.json` and `opencode.jsonc` |
+| Pi | `~/.pi/agent/mcp.json`, linked into the account's profile (its adapter ignores servers sent over ACP) |
+
+Other agents get no servers from apx. Those that apx isolates only through `XDG_CONFIG_HOME` still read files in your home folder, but not ones under `~/.config`.
 
 A server the host sends wins over one with the same name. Disabled servers are skipped, as are HTTP and SSE servers when the agent doesn't accept them. Servers that need an OAuth sign-in stored by the agent aren't covered. Each server starts with your real home folder, so it keeps its own settings and sign-ins.
 
-HTTP API requests never get these servers, because anyone with an API key could then use them. To turn this off for `apx acp` too:
+HTTP API requests never get these servers, because anyone with an API key could then use them. For Pi, API requests start it with `--no-mcp`. That switch covers Pi's built-in MCP support, not an extension that replaces it. To turn this off for `apx acp` too:
 
 ```toml
 [acp]

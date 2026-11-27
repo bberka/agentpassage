@@ -12,7 +12,8 @@
 
 ## Agent profiles
 
-- Share Claude and Codex plugins, and give CLI-backend accounts the shared skills and MCP servers.
+- Share Claude and Codex plugins, and give CLI-backend accounts the shared MCP servers.
+- Share MCP servers and skills with Cline, Muse Code and agents that keep their config under `~/.config`.
 
 ## Tests
 

@@ -33,11 +33,13 @@ type server struct {
 	BearerTokenEnv string            `toml:"bearer_token_env_var"`
 	Enabled        *bool             `toml:"enabled"`
 	Disabled       bool              `json:"disabled"`
+	HTTPURL        string            `json:"httpUrl"` // Gemini's streamable HTTP address; its "url" is SSE
 }
 
 // Load returns the MCP servers the user configured for agent ("claude",
-// "codex", "agy" or "grok"), keyed by name. cwd adds Claude's servers for that
-// project. Errors name only the file, because its content can hold secrets.
+// "codex", "agy", "grok", "cursor", "gemini" or "opencode"), keyed by name. cwd
+// adds Claude's servers for that project. Errors name only the file, because its
+// content can hold secrets.
 func Load(home, agent, cwd string) (map[string]server, error) {
 	var path string
 	switch agent {
@@ -49,6 +51,12 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 		path = filepath.Join(home, ".codex", "config.toml")
 	case "grok":
 		path = filepath.Join(home, ".grok", "config.toml")
+	case "cursor":
+		path = filepath.Join(home, ".cursor", "mcp.json")
+	case "gemini":
+		path = filepath.Join(home, ".gemini", "settings.json")
+	case "opencode":
+		return loadOpenCode(filepath.Join(home, ".config", "opencode"))
 	default:
 		return nil, nil
 	}
@@ -77,6 +85,14 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 	maps.Copy(out, file.Servers)
 	maps.Copy(out, file.Projects[cwd].Servers)
 	for name, s := range out {
+		if agent == "gemini" {
+			if s.HTTPURL != "" {
+				s.URL = s.HTTPURL
+			} else if s.URL != "" {
+				s.Type = "sse"
+			}
+			out[name] = s
+		}
 		if s.Disabled || (s.Enabled != nil && !*s.Enabled) {
 			delete(out, name)
 		}

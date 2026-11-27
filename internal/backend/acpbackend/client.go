@@ -138,7 +138,7 @@ func (m *Manager) TestAccountWithLabels(ctx context.Context, acct config.Account
 // TestAccountDiscovery launches the ACP worker, runs initialize + session/new, and returns
 // discovered model IDs, upstream human labels, and ACP thought_level/effort options.
 func (m *Manager) TestAccountDiscovery(ctx context.Context, acct config.AccountConfig) ([]string, map[string]string, map[string][]string, error) {
-	w, err := m.getOrStartWorker(ctx, acct)
+	w, err := m.getOrStartWorker(ctx, acct, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -197,7 +197,10 @@ func (m *Manager) Complete(ctx context.Context, acct config.AccountConfig, req b
 }
 
 func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest, cb backend.StreamCallback) (err error) {
-	w, err := m.getOrStartWorker(ctx, acct)
+	if acct.Backend == "pi" && !acct.UseHostProfile {
+		m.dropWorkerUnless(acct.ID, req.HostTools)
+	}
+	w, err := m.getOrStartWorker(ctx, acct, req.HostTools)
 	if err != nil {
 		return err
 	}
@@ -348,37 +351,20 @@ func (m *Manager) withHostMCP(sent []any, agent, cwd string, caps hostmcp.Capabi
 }
 
 // shareSkills links the user's skills for this agent into its profile, which
-// hides the folders the agent would normally read them from. Skills added to
-// the agent itself win over same-named ones in ~/.agents/skills.
+// hides the folders the agent would normally read them from.
 func (m *Manager) shareSkills(acct config.AccountConfig, profileDir string) {
-	var own, dir string
-	switch acct.Backend {
-	case "claude":
-		own, dir = ".claude/skills", "skills"
-	case "codex":
-		own, dir = ".codex/skills", "skills"
-	case "agy":
-		own, dir = ".gemini/config/skills", ".gemini/config/skills"
-	case "grok":
-		own, dir = ".grok/skills", ".grok/skills"
-	default:
-		return
-	}
 	home, err := os.UserHomeDir()
 	if err == nil {
-		sources := []string{filepath.Join(home, own)}
-		// Codex reads ~/.agents/skills itself.
-		if acct.Backend != "codex" {
-			sources = append(sources, filepath.Join(home, ".agents", "skills"))
-		}
-		err = skills.Share(filepath.Join(profileDir, dir), sources...)
+		err = skills.ShareWithProfile(acct.Backend, home, profileDir)
 	}
 	if err != nil && m.logs != nil {
 		m.logs.Warn("acp", fmt.Sprintf("share skills with %s/%s: %v", acct.Backend, acct.Name, err))
 	}
 }
 
-func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfig) (*worker, error) {
+// getOrStartWorker returns the account's running agent process, starting one if
+// needed. hostTools says whether a new process may use the user's MCP servers.
+func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfig, hostTools bool) (*worker, error) {
 	m.mu.Lock()
 	if existing, ok := m.workers[acct.ID]; ok && existing.alive() {
 		existing.setAccount(acct)
@@ -415,6 +401,13 @@ func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfi
 
 		argv = desc.ExpandCommand(profileDir, acct.CustomCommand)
 		extraEnv = desc.ExpandEnv(profileDir, acct.CustomEnv)
+		if acct.Backend == "pi" {
+			env, err := piMCPEnv(profileDir, acct.CustomEnv["PI_ACP_PI_COMMAND"], hostTools)
+			if err != nil {
+				return nil, err
+			}
+			extraEnv = append(extraEnv, env...)
+		}
 	}
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("ACP backend %q has no command configured", acct.Backend)
@@ -424,6 +417,7 @@ func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfi
 	if err != nil {
 		return nil, err
 	}
+	w.hostTools = hostTools
 
 	m.mu.Lock()
 	if old, ok := m.workers[acct.ID]; ok && old != w {
@@ -473,6 +467,7 @@ type worker struct {
 	permByID        map[string]string            // upstream ACP sessionId -> per-request permissionMode override
 	permHandlerByID map[string]PermissionHandler // upstream ACP sessionId -> per-request interactive permission handler
 
+	hostTools  bool                 // set once at start
 	promptCaps promptCapabilities   // set once at initialize
 	mcpCaps    hostmcp.Capabilities // set once at initialize
 
