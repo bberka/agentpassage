@@ -52,6 +52,8 @@ type Server struct {
 	quota    *quota.Fetcher
 	privacy  *privacy.Filter
 	alerts   *alerts.Notifier
+	// quotaAlerts tracks which limit windows already sent a low-quota alert.
+	quotaAlerts quotaAlertState
 	cache    *cache.Store
 
 	srv          *http.Server
@@ -132,6 +134,7 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 			return k
 		},
 	)
+	s.quota.SetOnRefresh(s.checkQuotaAlerts)
 	s.httpBE.SetHeaderHook(s.quota.RecordHTTPHeaders)
 	if logs != nil {
 		logs.RegisterSecret(cfg.Server.LocalKey)
@@ -656,6 +659,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /admin/logs", s.withAdminAuth(s.handleAdminLogs))
 	mux.HandleFunc("GET /admin/usage", s.withAdminAuth(s.handleAdminUsage))
 	mux.HandleFunc("GET /admin/quota", s.withAdminAuth(s.handleAdminQuota))
+	mux.HandleFunc("GET /admin/route/explain", s.withAdminAuth(s.handleAdminRouteExplain))
 	mux.HandleFunc("POST /admin/quota/refresh", s.withAdminAuth(s.handleAdminQuotaRefresh))
 	mux.HandleFunc("GET /admin/health", s.withAdminAuth(s.handleAdminHealth))
 	mux.HandleFunc("POST /admin/health/check", s.withAdminAuth(s.handleAdminHealthCheck))

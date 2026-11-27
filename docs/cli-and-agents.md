@@ -34,7 +34,11 @@ apx routing list --json
 apx routing add "agy/*" --strategy failover --retry-429 true --fallback "codex/gpt-5,deepseek/deepseek-chat"
 apx routing add "deepseek/*" --project work --accounts deepseek-work --strategy round-robin
 apx routing remove "deepseek/*" --project work
+apx routing explain agy/gemini-3.8-flash                # which account a new conversation would get, and why
+apx routing explain claude/claude-fable-5-2 --session <id>   # the same for an existing conversation
 ```
+
+`apx routing explain` uses the running service's live quota and account health and sends no request, so it costs no quota. `--json` prints the full result.
 
 `round-robin` and `least-busy` work directly on API-key rules. If a rule matches subscription (`acp`/`cli`) accounts, the CLI refuses unless `--accept-sub-risk` is explicitly passed.
 

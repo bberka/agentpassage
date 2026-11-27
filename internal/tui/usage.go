@@ -87,7 +87,79 @@ func quotaRows(accounts []quota.AccountQuota) []quotaRow {
 			rows = append(rows, r)
 		}
 	}
+	return append(rows, totalRows(accounts)...)
+}
+
+// totalRows adds a pooled "<backend> total" row for each backend with two or
+// more accounts reporting limits, one per quota group. Each window shows the
+// average left across the accounts (they have equal allowances) and the
+// soonest reset.
+func totalRows(accounts []quota.AccountQuota) []quotaRow {
+	type groupKey struct{ backend, id string }
+	var order []groupKey
+	names := map[groupKey]string{}
+	prim := map[groupKey][]*quota.Window{}
+	sec := map[groupKey][]*quota.Window{}
+	acctCount := map[string]int{}
+	for _, q := range accounts {
+		if q.Primary == nil && q.Secondary == nil && len(q.Groups) == 0 {
+			continue
+		}
+		acctCount[q.Backend]++
+		groups := q.Groups
+		if len(groups) == 0 {
+			groups = []quota.QuotaGroup{{Primary: q.Primary, Secondary: q.Secondary}}
+		}
+		for _, g := range groups {
+			k := groupKey{q.Backend, g.ID}
+			if _, seen := names[k]; !seen {
+				order = append(order, k)
+				names[k] = g.Name
+			}
+			if g.Primary != nil {
+				prim[k] = append(prim[k], g.Primary)
+			}
+			if g.Secondary != nil {
+				sec[k] = append(sec[k], g.Secondary)
+			}
+		}
+	}
+	var rows []quotaRow
+	for _, k := range order {
+		n := acctCount[k.backend]
+		if n < 2 {
+			continue
+		}
+		name := fmt.Sprintf("%s total (%d)", k.backend, n)
+		if names[k] != "" {
+			name += " · " + names[k]
+		}
+		r := quotaRow{name: name}
+		r.Backend = k.backend
+		r.PlanType = "pooled"
+		r.Primary = pooledWindow(prim[k])
+		r.Secondary = pooledWindow(sec[k])
+		rows = append(rows, r)
+	}
 	return rows
+}
+
+func pooledWindow(ws []*quota.Window) *quota.Window {
+	if len(ws) == 0 {
+		return nil
+	}
+	out := quota.Window{Label: ws[0].Label, WindowMins: ws[0].WindowMins}
+	for _, w := range ws {
+		out.UsedPercent += w.UsedPercent
+		out.LeftPercent += w.LeftPercent
+		if w.ResetsAt != nil && (out.ResetsAt == nil || w.ResetsAt.Before(*out.ResetsAt)) {
+			t := *w.ResetsAt
+			out.ResetsAt = &t
+		}
+	}
+	out.UsedPercent /= float64(len(ws))
+	out.LeftPercent /= float64(len(ws))
+	return &out
 }
 
 func openBrowser(url string) error {
@@ -247,8 +319,8 @@ func (a *App) viewUsage(bodyHeight int) string {
 	totalQ := len(rows)
 	nameW := 16
 	for _, r := range rows {
-		if len(r.Groups) > 0 {
-			nameW = clamp(lipgloss.Width(r.name), nameW, 28)
+		if len(r.Groups) > 0 || r.PlanType == "pooled" {
+			nameW = clamp(lipgloss.Width(r.name), nameW, 30)
 		}
 	}
 	maxQ := availForQuota

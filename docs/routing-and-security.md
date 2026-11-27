@@ -54,6 +54,13 @@ Applied automatically across all strategies:
 - **Account restricted / suspended:** Immediately auto-disables the account and displays a critical banner advising you to stop using it.
 - **Concurrency caps:** Default `1` concurrent request per subscription (ACP) account and `8` per API-key account.
 - **Budgets:** Optional `hourly_limit` and `daily_limit` per account in `config.toml`.
+- **Low-quota alerts:** With alerts on, apx sends a desktop notification or webhook when any limit crosses `quota_threshold_pct`. That covers account-wide limits and per-model ones (agy Gemini and Claude & GPT, Claude Fable). Each limit alerts once per period:
+  ```toml
+  [alerts]
+    enabled = true
+    desktop = true
+    quota_threshold_pct = 90
+  ```
 
 ## Security Model
 

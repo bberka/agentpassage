@@ -211,6 +211,11 @@ type UIConfig struct {
 
 type ACPConfig struct {
 	ToolActivity string `toml:"tool_activity"` // "drop" or "text"
+	// ExposeModes shows apx's own Mode menu (Manual, Accept edits, Auto, Full
+	// access, Plan) to ACP hosts. Off by default: apx forwards every permission
+	// prompt to the host, so the host's own permission setting decides. A mode
+	// the host sets explicitly is still honored either way.
+	ExposeModes bool `toml:"expose_modes,omitempty"`
 }
 
 type AccountConfig struct {

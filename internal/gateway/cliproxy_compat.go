@@ -56,6 +56,9 @@ func cliProxyProviderName(backend string) string {
 		return "antigravity"
 	case "gemini":
 		return "gemini-cli"
+	case "grok":
+		// CLIProxyAPI clients such as T3 Code read Grok usage under "xai".
+		return "xai"
 	default:
 		return strings.ToLower(strings.TrimSpace(backend))
 	}
@@ -365,6 +368,9 @@ func synthesizeCLIProxyUpstreamResponse(acct config.AccountConfig, aq quota.Acco
 
 	case strings.Contains(lowerURL, "fetchavailablemodels") || strings.Contains(lowerURL, "retrieveuserquota") || backend == "agy":
 		return http.StatusOK, buildAntigravityQuotaPayload(acct, aq, now)
+
+	case strings.Contains(lowerURL, "v1/billing") || backend == "grok":
+		return http.StatusOK, buildGrokBillingPayload(aq)
 
 	case strings.Contains(lowerURL, "user/balance") || backend == "deepseek":
 		bal := strings.TrimPrefix(strings.TrimSpace(aq.Credits), "bal:")
@@ -815,4 +821,33 @@ func (s *Server) handleCLIProxyUnknown(w http.ResponseWriter, r *http.Request) {
 		s.logs.Warn("compat", fmt.Sprintf("unimplemented CLIProxyAPI management path: %s %s", r.Method, r.URL.Path))
 	}
 	writeOpenAIError(w, http.StatusNotFound, "not_found", fmt.Sprintf("management endpoint %s not implemented", r.URL.Path))
+}
+
+// buildGrokBillingPayload answers the Grok CLI billing request
+// (cli-chat-proxy.grok.com/v1/billing?format=credits) from apx's Grok quota.
+func buildGrokBillingPayload(aq quota.AccountQuota) map[string]any {
+	w := aq.Primary
+	if w == nil {
+		w = aq.Secondary
+	}
+	cfg := map[string]any{}
+	if w != nil {
+		cfg["creditUsagePercent"] = w.UsedPercent
+		period := map[string]any{"type": "USAGE_PERIOD_TYPE_UNSPECIFIED"}
+		switch w.Label {
+		case "Weekly":
+			period["type"] = "USAGE_PERIOD_TYPE_WEEKLY"
+		case "Monthly":
+			period["type"] = "USAGE_PERIOD_TYPE_MONTHLY"
+		}
+		if w.ResetsAt != nil {
+			end := w.ResetsAt.UTC()
+			period["end"] = end.Format(time.RFC3339Nano)
+			if w.WindowMins > 0 {
+				period["start"] = end.Add(-time.Duration(w.WindowMins) * time.Minute).Format(time.RFC3339Nano)
+			}
+		}
+		cfg["currentPeriod"] = period
+	}
+	return map[string]any{"config": cfg}
 }

@@ -26,6 +26,15 @@ When an ACP agent calls `session/request_permission`, `apx` applies the account'
 - `ask`: Opens an interactive approval modal in the TUI (`[y] Approve once / [n] Deny`). In headless mode (`--no-tui`), falls back to deny.
 - `auto-approve`: Automatically approves tool permission requests for that account.
 
+Through `apx acp` (T3 Code, Zed and other ACP hosts), the host decides instead. apx forwards each permission request to the host, so the host's own setting applies (for example T3 Code's approval or full-access mode). apx doesn't show a Mode menu of its own. If the host sets a mode, apx uses it. To show apx's Mode menu (Manual, Accept edits, Auto, Full access, Plan) again:
+
+```toml
+[acp]
+  expose_modes = true
+```
+
+With the menu shown, new sessions start in Auto.
+
 ## Tool Activity Streaming
 
 Under **Settings** (`6`), toggle **ACP Tool Activity**:

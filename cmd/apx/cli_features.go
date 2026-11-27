@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -240,6 +241,9 @@ func cmdRouting(args []string) error {
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		sub = args[0]
 		args = args[1:]
+	}
+	if sub == "explain" || sub == "why" {
+		return cmdRoutingExplain(args)
 	}
 	dataDir, cfg, _, _, logs, err := loadRuntime(0, "", false)
 	if err != nil {
@@ -860,4 +864,93 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// cmdRoutingExplain prints which account a model would go to and why, using
+// the running service's live quota and health, without sending a request.
+func cmdRoutingExplain(args []string) error {
+	asJSON := false
+	model, session := "", ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json":
+			asJSON = true
+		case "--session", "-s":
+			if i+1 < len(args) {
+				i++
+				session = args[i]
+			}
+		default:
+			if !strings.HasPrefix(args[i], "-") && model == "" {
+				model = args[i]
+			}
+		}
+	}
+	if model == "" {
+		return fmt.Errorf("usage: apx routing explain <model> [--session <key>] [--json]")
+	}
+
+	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+	srv := gateway.New(dataDir, cfg, sec, reg, logs)
+	attached, _ := srv.AttachIfRunning()
+	if !attached {
+		defer srv.ACP().Close()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ex, err := srv.ExplainRoute(ctx, model, session)
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(ex)
+	}
+
+	if ex.Error != "" {
+		return fmt.Errorf("%s: %s", model, ex.Error)
+	}
+	src := "live service"
+	if !attached {
+		src = "local config only; start apx for live quota and health"
+	}
+	fmt.Printf("%s -> %s on %s (%s)\n", ex.RequestedModel, ex.UpstreamModel, ex.Backend, src)
+	rule := ex.Rule
+	if rule == "" {
+		rule = "(none)"
+	}
+	fmt.Printf("  rule: %s, strategy: %s", rule, ex.Pool.Strategy)
+	if ex.Pool.QuotaGroup != "" {
+		fmt.Printf(", quota group: %s", ex.Pool.QuotaGroup)
+	}
+	fmt.Println()
+	if session != "" {
+		if ex.Pool.PinnedTo != "" {
+			fmt.Printf("  conversation is on: %s\n", ex.Pool.PinnedTo)
+		} else {
+			fmt.Println("  conversation: new (no account yet)")
+		}
+	}
+	fmt.Printf("  %-24s %-14s %-6s %s\n", "ACCOUNT", "STATUS", "USED", "REASON")
+	for _, c := range ex.Pool.Candidates {
+		used := "—"
+		if c.QuotaUsedPct != nil {
+			used = fmt.Sprintf("%.0f%%", *c.QuotaUsedPct)
+		}
+		mark := " "
+		if c.AccountID == ex.Pool.ChosenID {
+			mark = "*"
+		}
+		fmt.Printf("%s %-24s %-14s %-6s %s\n", mark, c.Account, c.Status, used, c.Reason)
+	}
+	if ex.Pool.Error != "" {
+		fmt.Printf("  result: refused — %s\n", ex.Pool.Error)
+		return nil
+	}
+	fmt.Printf("  result: %s — %s\n", ex.Pool.Chosen, ex.Pool.Why)
+	return nil
 }

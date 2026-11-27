@@ -44,6 +44,7 @@ type bridgeSession struct {
 	model      string
 	effort     string
 	mode       string
+	hostMode   bool // mode was set by the host (set_mode / set_config_option)
 	title      string
 	updatedAt  time.Time
 	mcpServers []any
@@ -59,6 +60,7 @@ type persistedSession struct {
 	Model     string            `json:"model,omitempty"`
 	Effort    string            `json:"effort,omitempty"`
 	Mode      string            `json:"mode,omitempty"`
+	HostMode  bool              `json:"host_mode,omitempty"`
 	Title     string            `json:"title,omitempty"`
 	UpdatedAt time.Time         `json:"updated_at"`
 	History   []backend.Message `json:"history,omitempty"`
@@ -218,7 +220,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 			_ = json.Unmarshal(msg.Params, &p)
 
-			defaultMode := "auto"
+			defaultMode := s.defaultMode()
 			configOpts, availModels, defaultModel, defaultEffort := s.buildModelOptions("", "", defaultMode)
 
 			sid := s.newSessionID()
@@ -236,18 +238,14 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.sessMu.Unlock()
 			s.saveSession(bs)
 
-			replyOK(msg.ID, map[string]any{
+			replyOK(msg.ID, s.withModes(map[string]any{
 				"sessionId":     sid,
 				"configOptions": configOpts,
-				"modes": map[string]any{
-					"currentModeId":  defaultMode,
-					"availableModes": bridgeAvailableModes(),
-				},
 				"models": map[string]any{
 					"currentModelId":  defaultModel,
 					"availableModels": availModels,
 				},
-			})
+			}, defaultMode))
 
 		case "session/load", "session/resume":
 			var p struct {
@@ -267,6 +265,11 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 			if len(p.MCPServers) > 0 {
 				bs.mcpServers = p.MCPServers
+			}
+			if !s.exposeModes() && !bs.hostMode {
+				// Sessions saved before modes were hidden defaulted to "auto";
+				// hand permission decisions back to the host.
+				bs.mode = s.defaultMode()
 			}
 			curModel, curEffort, curMode := bs.model, bs.effort, bs.mode
 			hist := append([]backend.Message(nil), bs.history...)
@@ -296,18 +299,14 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				})
 			}
 
-			replyOK(msg.ID, map[string]any{
+			replyOK(msg.ID, s.withModes(map[string]any{
 				"sessionId":     bs.id,
 				"configOptions": configOpts,
-				"modes": map[string]any{
-					"currentModeId":  normalizeBridgeMode(curMode),
-					"availableModes": bridgeAvailableModes(),
-				},
 				"models": map[string]any{
 					"currentModelId":  resolvedModel,
 					"availableModels": availModels,
 				},
-			})
+			}, normalizeBridgeMode(curMode)))
 
 		case "session/list":
 			list := s.listPersistedSessions()
@@ -337,6 +336,10 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				forkMCP = p.MCPServers
 			}
 			forkModel, forkEffort, forkMode, forkTitle := orig.model, orig.effort, orig.mode, orig.title
+			forkHostMode := orig.hostMode
+			if !s.exposeModes() && !forkHostMode {
+				forkMode = s.defaultMode()
+			}
 			forkHist := append([]backend.Message(nil), orig.history...)
 			s.sessMu.Unlock()
 
@@ -348,6 +351,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				model:      resolvedModel,
 				effort:     resolvedEffort,
 				mode:       normalizeBridgeMode(forkMode),
+				hostMode:   forkHostMode,
 				title:      forkTitle,
 				updatedAt:  time.Now(),
 				mcpServers: forkMCP,
@@ -358,18 +362,14 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.sessMu.Unlock()
 			s.saveSession(forked)
 
-			replyOK(msg.ID, map[string]any{
+			replyOK(msg.ID, s.withModes(map[string]any{
 				"sessionId":     newSID,
 				"configOptions": configOpts,
-				"modes": map[string]any{
-					"currentModeId":  forked.mode,
-					"availableModes": bridgeAvailableModes(),
-				},
 				"models": map[string]any{
 					"currentModelId":  resolvedModel,
 					"availableModels": availModels,
 				},
-			})
+			}, forked.mode))
 
 		case "session/set_config_option":
 			var p struct {
@@ -380,7 +380,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			_ = json.Unmarshal(msg.Params, &p)
 			curModel := ""
 			curEffort := ""
-			curMode := "auto"
+			curMode := s.defaultMode()
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
 				switch strings.ToLower(p.ConfigID) {
@@ -388,6 +388,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					bs.effort = router.NormalizeEffort(p.Value)
 				case "mode":
 					bs.mode = normalizeBridgeMode(p.Value)
+					bs.hostMode = true
 				default: // "model" or empty
 					bs.model = p.Value
 				}
@@ -422,6 +423,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
 				bs.mode = curMode
+				bs.hostMode = true
 				curModel = bs.model
 				curEffort = bs.effort
 			}
@@ -449,7 +451,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			_ = json.Unmarshal(msg.Params, &p)
 			curModel := p.ModelID
 			curEffort := ""
-			curMode := "auto"
+			curMode := s.defaultMode()
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
 				bs.model = p.ModelID
@@ -835,18 +837,49 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 		resolvedEffort = ""
 	}
 
-	// Expose ACP v1 `mode` configOption so ACP hosts (T3 Code, Zed, etc.) can override permissions.
-	curMode := normalizeBridgeMode(selectedMode)
-	configOpts = append(configOpts, map[string]any{
-		"id":           "mode",
-		"name":         "Mode",
-		"category":     "mode",
-		"type":         "select",
-		"currentValue": curMode,
-		"options":      bridgeModeOptions(),
-	})
+	// The ACP v1 `mode` configOption is only shown when [acp] expose_modes is
+	// on; by default the host's own permission system decides.
+	if s.exposeModes() {
+		configOpts = append(configOpts, map[string]any{
+			"id":           "mode",
+			"name":         "Mode",
+			"category":     "mode",
+			"type":         "select",
+			"currentValue": normalizeBridgeMode(selectedMode),
+			"options":      bridgeModeOptions(),
+		})
+	}
 
 	return configOpts, availModels, cur, resolvedEffort
+}
+
+// exposeModes reports whether apx shows its own Mode menu to the ACP host.
+func (s *Server) exposeModes() bool {
+	if s.gw == nil {
+		return false
+	}
+	cfg := s.gw.Config()
+	return cfg != nil && cfg.ACP.ExposeModes
+}
+
+// defaultMode is the mode a session starts in. With modes hidden it is
+// "default", which forwards every permission prompt to the host.
+func (s *Server) defaultMode() string {
+	if s.exposeModes() {
+		return "auto"
+	}
+	return "default"
+}
+
+// withModes adds the ACP `modes` block to a session reply when modes are shown.
+func (s *Server) withModes(reply map[string]any, current string) map[string]any {
+	if s.exposeModes() {
+		reply["modes"] = map[string]any{
+			"currentModeId":  current,
+			"availableModes": bridgeAvailableModes(),
+		}
+	}
+	return reply
 }
 
 func pickDefaultEffort(efforts []string) string {
@@ -939,6 +972,7 @@ func (s *Server) saveSession(bs *bridgeSession) {
 		Model:     bs.model,
 		Effort:    bs.effort,
 		Mode:      bs.mode,
+		HostMode:  bs.hostMode,
 		Title:     bs.title,
 		UpdatedAt: bs.updatedAt,
 		History:   append([]backend.Message(nil), bs.history...),
@@ -988,6 +1022,7 @@ func (s *Server) loadOrGetSession(sid string) (*bridgeSession, bool) {
 		model:     ps.Model,
 		effort:    ps.Effort,
 		mode:      ps.Mode,
+		hostMode:  ps.HostMode,
 		title:     ps.Title,
 		updatedAt: ps.UpdatedAt,
 		history:   ps.History,

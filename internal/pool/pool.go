@@ -353,26 +353,10 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	defer m.mu.Unlock()
 	now := m.now()
 
-	strategy := req.Strategy
-	switch strategy {
-	case config.StrategyFailover, config.StrategySticky, config.StrategyManual, config.StrategyRoundRobin, config.StrategyLeastBusy, config.StrategyMostQuota, config.StrategyFastest:
-		// valid
-	default:
-		strategy = config.StrategyFailover
-	}
+	strategy := normalizeStrategy(req.Strategy)
 
-	// Enforce explicit ban-risk opt-in for round-robin and least-busy on subscription (ACP / CLI) accounts.
-	if strategy == config.StrategyRoundRobin || strategy == config.StrategyLeastBusy {
-		hasSub := false
-		for _, id := range req.CandidateIDs {
-			if a, ok := m.accounts[id]; ok && (a.Kind == config.KindACP || a.Kind == config.KindCLI) {
-				hasSub = true
-				break
-			}
-		}
-		if hasSub && !req.SubscriptionWarningAcked {
-			return nil, ErrStrategyOptInNeeded
-		}
+	if err := m.optInCheckLocked(strategy, req); err != nil {
+		return nil, err
 	}
 
 	pinnedID := m.pinnedLocked(req.SessionKey, req.CandidateIDs, now)
@@ -382,30 +366,122 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 		}
 	}
 
+	eligible, err := m.eligibleLocked(req, pinnedID, now, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var chosen *config.AccountConfig
+	if pinnedID != "" && strategy != config.StrategyManual {
+		for _, a := range eligible {
+			if a.ID == pinnedID {
+				chosen = a
+				break
+			}
+		}
+	}
+
+	switch {
+	case chosen != nil:
+		// An existing conversation stays on its account to keep its context.
+		if strategy == config.StrategySticky && req.SessionKey != "" {
+			m.stickyMap[req.SessionKey] = chosen.ID
+		}
+	default:
+		chosen = m.pickLocked(strategy, req, eligible, true)
+	}
+
+	st := m.states[chosen.ID]
+	st.inFlight++
+	st.totalRequests++
+	st.lastUsedAt = now
+	st.requestTimestamps = append(st.requestTimestamps, now)
+
+	acctCopy := *chosen
+	id := chosen.ID
+	released := false
+	return &Lease{
+		Account: acctCopy,
+		release: func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if released {
+				return
+			}
+			released = true
+			if s, ok := m.states[id]; ok && s.inFlight > 0 {
+				s.inFlight--
+			}
+		},
+	}, nil
+}
+
+// optInCheckLocked enforces the explicit ban-risk opt-in for round-robin and
+// least-busy when subscription (ACP / CLI) accounts are candidates.
+func (m *Manager) optInCheckLocked(strategy string, req SelectRequest) error {
+	if strategy != config.StrategyRoundRobin && strategy != config.StrategyLeastBusy {
+		return nil
+	}
+	for _, id := range req.CandidateIDs {
+		if a, ok := m.accounts[id]; ok && (a.Kind == config.KindACP || a.Kind == config.KindCLI) {
+			if !req.SubscriptionWarningAcked {
+				return ErrStrategyOptInNeeded
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func normalizeStrategy(strategy string) string {
+	switch strategy {
+	case config.StrategyFailover, config.StrategySticky, config.StrategyManual, config.StrategyRoundRobin, config.StrategyLeastBusy, config.StrategyMostQuota, config.StrategyFastest:
+		return strategy
+	default:
+		return config.StrategyFailover
+	}
+}
+
+// eligibleLocked returns the candidates a request may use, in priority order.
+// When note is non-nil it is called with each candidate's status and reason.
+func (m *Manager) eligibleLocked(req SelectRequest, pinnedID string, now time.Time, note func(id, status, reason string)) ([]*config.AccountConfig, error) {
+	if note == nil {
+		note = func(string, string, string) {}
+	}
 	eligible := make([]*config.AccountConfig, 0, len(req.CandidateIDs))
 	var exhausted []*config.AccountConfig
 	var reasons []string
 	for _, id := range req.CandidateIDs {
 		if req.ExcludeIDs != nil && req.ExcludeIDs[id] {
+			note(id, "skipped", "already tried")
 			continue
 		}
 		a, ok := m.accounts[id]
 		if !ok {
+			note(id, "skipped", "unknown account")
 			continue
 		}
 		if req.BudgetExceededIDs != nil && req.BudgetExceededIDs[id] {
 			reasons = append(reasons, fmt.Sprintf("%s (USD budget exceeded)", a.Name))
+			note(id, "skipped", "USD budget exceeded")
 			continue
 		}
 		st := m.states[id]
 		if okElig, reason := m.isEligibleLocked(a, st, req.QuotaGroup, now); okElig {
-			if _, out := req.QuotaExhausted[id]; out {
+			if until, out := req.QuotaExhausted[id]; out {
 				exhausted = append(exhausted, a)
+				r := "no quota left for this model"
+				if !until.IsZero() {
+					r += ", resets " + until.Local().Format("Jan 2 15:04")
+				}
+				note(id, "quota used up", r)
 				continue
 			}
 			eligible = append(eligible, a)
+			note(id, "eligible", "")
 		} else {
 			reasons = append(reasons, fmt.Sprintf("%s (%s)", a.Name, reason))
+			note(id, "skipped", reason)
 		}
 	}
 
@@ -435,54 +511,12 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 			eligible = under
 		}
 	}
-
-	var chosen *config.AccountConfig
-	if pinnedID != "" && strategy != config.StrategyManual {
-		for _, a := range eligible {
-			if a.ID == pinnedID {
-				chosen = a
-				break
-			}
-		}
-	}
-
-	switch {
-	case chosen != nil:
-		// An existing conversation stays on its account to keep its context.
-		if strategy == config.StrategySticky && req.SessionKey != "" {
-			m.stickyMap[req.SessionKey] = chosen.ID
-		}
-	default:
-		chosen = m.pickLocked(strategy, req, eligible)
-	}
-
-	st := m.states[chosen.ID]
-	st.inFlight++
-	st.totalRequests++
-	st.lastUsedAt = now
-	st.requestTimestamps = append(st.requestTimestamps, now)
-
-	acctCopy := *chosen
-	id := chosen.ID
-	released := false
-	return &Lease{
-		Account: acctCopy,
-		release: func() {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if released {
-				return
-			}
-			released = true
-			if s, ok := m.states[id]; ok && s.inFlight > 0 {
-				s.inFlight--
-			}
-		},
-	}, nil
+	return eligible, nil
 }
 
-// pickLocked chooses among eligible accounts by strategy.
-func (m *Manager) pickLocked(strategy string, req SelectRequest, eligible []*config.AccountConfig) *config.AccountConfig {
+// pickLocked chooses among eligible accounts by strategy. With commit false it
+// only previews the choice and leaves round-robin and sticky state unchanged.
+func (m *Manager) pickLocked(strategy string, req SelectRequest, eligible []*config.AccountConfig, commit bool) *config.AccountConfig {
 	var chosen *config.AccountConfig
 	switch strategy {
 	case config.StrategyManual, config.StrategyFailover:
@@ -522,9 +556,11 @@ func (m *Manager) pickLocked(strategy string, req SelectRequest, eligible []*con
 			key := req.RuleKey
 			idx := m.rrCursor[key] % len(eligible)
 			chosen = eligible[idx]
-			m.rrCursor[key] = idx + 1
-			if req.SessionKey != "" {
-				m.stickyMap[req.SessionKey] = chosen.ID
+			if commit {
+				m.rrCursor[key] = idx + 1
+				if req.SessionKey != "" {
+					m.stickyMap[req.SessionKey] = chosen.ID
+				}
 			}
 		}
 
@@ -552,7 +588,7 @@ func (m *Manager) pickLocked(strategy string, req SelectRequest, eligible []*con
 		if chosen == nil {
 			chosen = eligible[0]
 		}
-		if req.SessionKey != "" {
+		if commit && req.SessionKey != "" {
 			m.stickyMap[req.SessionKey] = chosen.ID
 		}
 	}

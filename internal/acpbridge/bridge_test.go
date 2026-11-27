@@ -20,10 +20,14 @@ import (
 
 func runBridgeInteractive(t *testing.T, gw *gateway.Server, fn func(send func(string), readLine func() map[string]any)) {
 	t.Helper()
+	runBridge(t, New(gw), fn)
+}
+
+func runBridge(t *testing.T, bridge *Server, fn func(send func(string), readLine func() map[string]any)) {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 
-	bridge := New(gw)
 	done := make(chan error, 1)
 	go func() {
 		done <- bridge.Serve(context.Background(), inR, outW)
@@ -159,6 +163,7 @@ func TestACPBridgeThoughtLevelConfigOption(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.Catalog.HideBackendQualified = true
+	cfg.ACP.ExposeModes = true
 	cfg.Accounts = []config.AccountConfig{
 		{
 			ID:             "agy-bb",
@@ -251,5 +256,61 @@ func TestACPBridgeThoughtLevelConfigOption(t *testing.T) {
 	}
 	if seenModel != "gemini-4-neon-high" {
 		t.Fatalf("expected upstream model resolved to gemini-4-neon-high, got %q", seenModel)
+	}
+}
+
+// With [acp] expose_modes off (the default), apx shows no Mode menu, starts
+// sessions in "default" (forward permission prompts to the host), still honors
+// a mode the host sets, and resets sessions saved with the old "auto" default.
+func TestACPBridgeModesHiddenByDefault(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Default()
+	cfg.Accounts = []config.AccountConfig{{
+		ID: "a", Name: "a", Kind: config.KindAPIKey, Backend: "deepseek", Enabled: true,
+		BaseURL: "http://127.0.0.1:1/v1", AuthStyle: config.AuthNone, ExposeMode: config.ExposePool,
+		Models: []string{"m1"}, MaxConcurrency: 1,
+	}}
+	sec := secrets.NewFileOnly(dir)
+	reg, _ := descriptors.LoadRegistry(dir)
+	gw := gateway.New(dir, cfg, sec, reg, nil)
+
+	// A session saved by an older apx with the old "auto" default.
+	New(gw).saveSession(&bridgeSession{id: "legacy", model: "m1", mode: "auto"})
+
+	var sid string
+	bridge := New(gw)
+	runBridge(t, bridge, func(send func(string), readLine func() map[string]any) {
+		send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+		_ = readLine()
+		send(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp"}}`)
+		res := readLine()
+		raw, _ := json.Marshal(res)
+		if strings.Contains(string(raw), `"modes"`) || strings.Contains(string(raw), `"category":"mode"`) {
+			t.Fatalf("expected no Mode menu in session/new, got: %s", raw)
+		}
+		sid, _ = res["result"].(map[string]any)["sessionId"].(string)
+		if m := bridge.sess[sid].mode; m != "default" {
+			t.Fatalf("expected new session in default mode, got %q", m)
+		}
+
+		send(fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"session/set_mode","params":{"sessionId":%q,"modeId":"plan"}}`, sid))
+		_ = readLine() // config_option_update
+		_ = readLine() // reply
+
+		send(`{"jsonrpc":"2.0","id":4,"method":"session/load","params":{"sessionId":"legacy","cwd":"/tmp"}}`)
+		raw4, _ := json.Marshal(readLine())
+		if strings.Contains(string(raw4), `"modes"`) {
+			t.Fatalf("expected no Mode menu in session/load, got: %s", raw4)
+		}
+	})
+
+	if legacy := bridge.sess["legacy"]; legacy == nil || legacy.mode != "default" {
+		t.Fatalf("expected legacy auto session reset to default on load, got %+v", legacy)
+	}
+	// Persist the host-set mode, then reload it in a fresh bridge.
+	bridge.saveSession(bridge.sess[sid])
+	reloaded, ok := New(gw).loadOrGetSession(sid)
+	if !ok || reloaded.mode != "plan" || !reloaded.hostMode {
+		t.Fatalf("expected host-set mode plan kept across reload, got %+v", reloaded)
 	}
 }

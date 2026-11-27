@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/quota"
 )
 
@@ -62,5 +63,27 @@ func TestClaudeUsagePayloadScopedLimits(t *testing.T) {
 	name := l["scope"].(map[string]any)["model"].(map[string]any)["display_name"]
 	if l["kind"] != "weekly_scoped" || name != "Fable" || l["percent"] != 17.0 {
 		t.Fatalf("bad scoped limit %v", l)
+	}
+}
+
+// T3 Code reads Grok usage for CLIProxyAPI accounts listed as "xai", from the
+// Grok billing response shape: config.creditUsagePercent and config.currentPeriod.
+func TestGrokBillingPayloadForT3Code(t *testing.T) {
+	if got := cliProxyProviderName("grok"); got != "xai" {
+		t.Fatalf("grok must be listed as xai, got %q", got)
+	}
+	reset := time.Date(2026, 11, 29, 18, 6, 54, 0, time.UTC)
+	aq := quota.AccountQuota{Backend: "grok", Primary: &quota.Window{Label: "Weekly", UsedPercent: 1, LeftPercent: 99, WindowMins: 10080, ResetsAt: &reset}}
+	code, body := synthesizeCLIProxyUpstreamResponse(config.AccountConfig{Backend: "grok"}, aq, "https://cli-chat-proxy.grok.com/v1/billing?format=credits", reset)
+	if code != 200 {
+		t.Fatalf("status %d", code)
+	}
+	cfg := body.(map[string]any)["config"].(map[string]any)
+	if cfg["creditUsagePercent"] != 1.0 {
+		t.Fatalf("creditUsagePercent = %v", cfg["creditUsagePercent"])
+	}
+	p := cfg["currentPeriod"].(map[string]any)
+	if p["type"] != "USAGE_PERIOD_TYPE_WEEKLY" || p["end"] != "2026-11-29T18:06:54Z" || p["start"] != "2026-11-22T18:06:54Z" {
+		t.Fatalf("unexpected period %v", p)
 	}
 }

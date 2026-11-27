@@ -232,6 +232,14 @@ type Fetcher struct {
 	stopCh      chan struct{}
 	stopOnce    sync.Once
 	running     bool
+	onRefresh   func(Report)
+}
+
+// SetOnRefresh registers fn to run with the fresh report after each RefreshAll.
+func (f *Fetcher) SetOnRefresh(fn func(Report)) {
+	f.mu.Lock()
+	f.onRefresh = fn
+	f.mu.Unlock()
 }
 
 func New(dataDir string, getAccounts func() []config.AccountConfig, getUsage func() usage.Summary, getSecret func(accountID string) string) *Fetcher {
@@ -323,8 +331,13 @@ func (f *Fetcher) RefreshAll(ctx context.Context) Report {
 
 	f.mu.Lock()
 	f.updatedAt = time.Now()
+	hook := f.onRefresh
 	f.mu.Unlock()
-	return f.Report()
+	rep := f.Report()
+	if hook != nil {
+		hook(rep)
+	}
+	return rep
 }
 
 // RefreshOne queries live subscription quota for a single account if its CLI supports it.
@@ -713,17 +726,9 @@ func fetchCodexQuota(ctx context.Context, acct config.AccountConfig, dataDir str
 	return AccountQuota{}, fmt.Errorf("codex app-server closed before returning rateLimits")
 }
 
-// --- Official Grok CLI `grok usage --json` ---
+// --- Grok: billing endpoint, then `grok usage --json` ---
 
 func fetchGrokQuota(ctx context.Context, acct config.AccountConfig, dataDir string) (AccountQuota, error) {
-	bin, err := exec.LookPath("grok")
-	if err != nil {
-		return AccountQuota{}, fmt.Errorf("grok binary not on PATH")
-	}
-	qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(qctx, bin, "usage", "--json")
 	env := os.Environ()
 	if !acct.UseHostProfile {
 		pdir, err := config.ProfileDir(dataDir, acct.Backend, acct.Name)
@@ -736,15 +741,24 @@ func fetchGrokQuota(ctx context.Context, acct config.AccountConfig, dataDir stri
 	for k, v := range acct.CustomEnv {
 		env = setEnvVar(env, k, v)
 	}
-	cmd.Env = env
 
+	q, billErr := fetchGrokBilling(ctx, acct, dataDir, env)
+	if billErr == nil {
+		return q, nil
+	}
+
+	// Older plans and API-key logins: ask the CLI.
+	bin, err := exec.LookPath("grok")
+	if err != nil {
+		return AccountQuota{}, billErr
+	}
+	qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(qctx, bin, "usage", "--json")
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
-		return AccountQuota{}, fmt.Errorf("%s", msg)
+		return AccountQuota{}, billErr
 	}
 	return ParseGrokUsageJSON(out)
 }

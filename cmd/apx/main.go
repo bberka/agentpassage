@@ -139,7 +139,7 @@ Usage:
   apx acp                         Run apx as an ACP stdio bridge (for T3 Code, Zed, JetBrains...)
   apx accounts <cmd>              Manage accounts (list|add|enable|disable|edit|remove)
   apx models <cmd>                Manage models (list|fetch|enable|disable)
-  apx routing <cmd>               Manage routing, project rules & model fallbacks (list|add|edit|remove)
+  apx routing <cmd>               Manage routing, project rules & model fallbacks (list|add|edit|remove|explain)
   apx privacy <cmd>               Configure & test reversible privacy filter (status|enable|disable|config|test)
   apx keys <cmd>                  Manage scoped client/admin/project API keys (list|create|enable|disable|revoke)
   apx usage [--period 1h|24h|7d|30d|all] [--refresh] [--json]
