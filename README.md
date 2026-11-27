@@ -80,3 +80,5 @@ apx agent-guide
 - [CLI & Agent Automation](docs/cli-and-agents.md): Full CLI command reference and `skills/agentpassage/SKILL.md`
 - [Remote Access](docs/remote-access.md): Tailscale Serve and Cloudflare Tunnel setup
 - [ACP Backends](docs/acp-backends.md): Embedded 45+ agent registry and custom descriptors
+- [T3 Code Integration](docs/t3-code-integration.md): What T3 Code reads from apx
+- [Development](docs/development.md): Checks, deploy and package layout. Agent rules are in [AGENTS.md](AGENTS.md)
