@@ -24,14 +24,17 @@ type ChatRequest struct {
 	ACPMode           string // optional ACP session mode override (e.g. "default", "acceptEdits", "auto", "bypassPermissions", "plan")
 	PermissionHandler func(ctx context.Context, req PermissionRequest) PermissionDecision
 	MCPServers        []any
-	Messages          []Message
-	Stream            bool
-	Temperature       *float64
-	MaxTokens         int
-	SessionKey        string
-	Cwd               string
-	HasTools          bool
-	RawOpenAIBody     []byte // preserved for transparent OpenAI HTTP pass-through
+	// HostTools adds the MCP servers from the user's own agent config. Only
+	// local ACP hosts set it, so API callers can't use those servers.
+	HostTools     bool
+	Messages      []Message
+	Stream        bool
+	Temperature   *float64
+	MaxTokens     int
+	SessionKey    string
+	Cwd           string
+	HasTools      bool
+	RawOpenAIBody []byte // preserved for transparent OpenAI HTTP pass-through
 }
 
 type Usage struct {

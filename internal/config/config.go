@@ -225,6 +225,9 @@ type ACPConfig struct {
 	// permission_mode decides how permission requests are answered. A mode the
 	// host sets explicitly is honored either way.
 	ExposeModes bool `toml:"expose_modes,omitempty"`
+	// DisableHostMCP stops apx from giving `apx acp` sessions the MCP servers
+	// in the user's own agent config.
+	DisableHostMCP bool `toml:"disable_host_mcp,omitempty"`
 }
 
 type AccountConfig struct {

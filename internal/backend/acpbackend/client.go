@@ -18,6 +18,7 @@ import (
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/hostmcp"
 	"github.com/bberka/agentpassage/internal/logbuf"
 	"github.com/bberka/agentpassage/internal/skills"
 )
@@ -212,7 +213,17 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	if backend.AnsweredElsewhere(req.SessionKey, acct.ID) {
 		w.forgetSession(req.SessionKey, nil)
 	}
-	sess, reused, err := w.acquireSession(ctx, req.SessionKey, cwd, req.UpstreamModel, req.ReasoningEffort, req.PermissionMode, req.ACPMode, req.MCPServers, req.PermissionHandler)
+	mcpServers := req.MCPServers
+	if !acct.UseHostProfile {
+		// Each request, so skills and MCP servers added later are picked up.
+		if dir, err := config.ProfileDir(m.dataDir, acct.Backend, acct.Name); err == nil {
+			m.shareSkills(acct, dir)
+		}
+		if req.HostTools {
+			mcpServers = m.withHostMCP(mcpServers, acct.Backend, cwd, w.mcpCaps)
+		}
+	}
+	sess, reused, err := w.acquireSession(ctx, req.SessionKey, cwd, req.UpstreamModel, req.ReasoningEffort, req.PermissionMode, req.ACPMode, mcpServers, req.PermissionHandler)
 	if err != nil {
 		return err
 	}
@@ -322,21 +333,45 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	})
 }
 
-// shareSkills makes ~/.agents/skills visible to agents whose isolated profile
-// hides the user's home. Codex reads that folder itself.
+// withHostMCP adds the MCP servers configured in the user's own copy of the
+// agent. A server the host sent wins over one with the same name.
+func (m *Manager) withHostMCP(sent []any, agent, cwd string, caps hostmcp.Capabilities) []any {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return sent
+	}
+	servers, err := hostmcp.Load(home, agent, cwd)
+	if err != nil && m.logs != nil {
+		m.logs.Warn("acp", err.Error())
+	}
+	return hostmcp.Merge(sent, servers, caps)
+}
+
+// shareSkills links the user's skills for this agent into its profile, which
+// hides the folders the agent would normally read them from. Skills added to
+// the agent itself win over same-named ones in ~/.agents/skills.
 func (m *Manager) shareSkills(acct config.AccountConfig, profileDir string) {
-	var dir string
+	var own, dir string
 	switch acct.Backend {
 	case "claude":
-		dir = filepath.Join(profileDir, "skills")
+		own, dir = ".claude/skills", "skills"
+	case "codex":
+		own, dir = ".codex/skills", "skills"
 	case "agy":
-		dir = filepath.Join(profileDir, ".gemini", "config", "skills")
+		own, dir = ".gemini/config/skills", ".gemini/config/skills"
+	case "grok":
+		own, dir = ".grok/skills", ".grok/skills"
 	default:
 		return
 	}
 	home, err := os.UserHomeDir()
 	if err == nil {
-		err = skills.Share(home, dir)
+		sources := []string{filepath.Join(home, own)}
+		// Codex reads ~/.agents/skills itself.
+		if acct.Backend != "codex" {
+			sources = append(sources, filepath.Join(home, ".agents", "skills"))
+		}
+		err = skills.Share(filepath.Join(profileDir, dir), sources...)
 	}
 	if err != nil && m.logs != nil {
 		m.logs.Warn("acp", fmt.Sprintf("share skills with %s/%s: %v", acct.Backend, acct.Name, err))
@@ -380,7 +415,6 @@ func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfi
 
 		argv = desc.ExpandCommand(profileDir, acct.CustomCommand)
 		extraEnv = desc.ExpandEnv(profileDir, acct.CustomEnv)
-		m.shareSkills(acct, profileDir)
 	}
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("ACP backend %q has no command configured", acct.Backend)
@@ -439,7 +473,8 @@ type worker struct {
 	permByID        map[string]string            // upstream ACP sessionId -> per-request permissionMode override
 	permHandlerByID map[string]PermissionHandler // upstream ACP sessionId -> per-request interactive permission handler
 
-	promptCaps promptCapabilities // set once at initialize
+	promptCaps promptCapabilities   // set once at initialize
+	mcpCaps    hostmcp.Capabilities // set once at initialize
 
 	closed atomic.Bool
 	doneCh chan struct{}
@@ -508,6 +543,7 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 	var initRes initializeResult
 	_ = json.Unmarshal(initRaw, &initRes)
 	w.promptCaps = initRes.AgentCapabilities.PromptCapabilities
+	w.mcpCaps = initRes.AgentCapabilities.MCPCapabilities
 
 	if mgr.logs != nil {
 		c := w.promptCaps

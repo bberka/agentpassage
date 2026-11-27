@@ -1,6 +1,10 @@
 package acpbackend
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/bberka/agentpassage/internal/hostmcp"
+)
 
 type rpcMessage struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -35,7 +39,8 @@ type initializeResult struct {
 		Version string `json:"version"`
 	} `json:"agentInfo"`
 	AgentCapabilities struct {
-		PromptCapabilities promptCapabilities `json:"promptCapabilities"`
+		PromptCapabilities promptCapabilities   `json:"promptCapabilities"`
+		MCPCapabilities    hostmcp.Capabilities `json:"mcpCapabilities"`
 	} `json:"agentCapabilities"`
 }
 

@@ -84,4 +84,35 @@ Every `{profile}` placeholder in `command`, `profile_args`, `profile_env`, and `
 
 `apx acp` lists the skills it finds to the host: the project's `.agents/skills` and `.claude/skills`, then the same folders in your home. A project skill wins over a user skill with the same name.
 
-Claude and Antigravity run in isolated profiles that hide your home folder, so apx links each skill in `~/.agents/skills` into their profile when the agent starts. It only adds missing links and leaves existing entries alone. Codex reads `~/.agents/skills` itself. apx doesn't install or update skills; use your skill manager for that.
+Accounts run in isolated profiles that hide your agent's own folders, so apx links your skills into each profile before a request. A skill you add to an agent reaches every account of that agent:
+
+| Agent | Skills linked from |
+|---|---|
+| Claude | `~/.claude/skills`, `~/.agents/skills` |
+| Codex | `~/.codex/skills` (Codex reads `~/.agents/skills` itself) |
+| Antigravity | `~/.gemini/config/skills`, `~/.agents/skills` |
+| Grok | `~/.grok/skills`, `~/.agents/skills` |
+
+The agent's own folder wins over `~/.agents/skills` for a shared name. apx never replaces an entry already in a profile, and removes only its own links to skills you deleted. It doesn't install or update skills; use your skill manager for that.
+
+## MCP servers
+
+`apx acp` sessions also get the MCP servers from your own agent config, read when the session starts:
+
+| Agent | Read from |
+|---|---|
+| Claude | `~/.claude.json` (user servers and the project's local servers) |
+| Codex | `~/.codex/config.toml` |
+| Antigravity | `~/.gemini/config/mcp_config.json` |
+| Grok | `~/.grok/config.toml` |
+
+A server the host sends wins over one with the same name. Disabled servers are skipped, as are HTTP and SSE servers when the agent doesn't accept them. Servers that need an OAuth sign-in stored by the agent aren't covered. Each server starts with your real home folder, so it keeps its own settings and sign-ins.
+
+HTTP API requests never get these servers, because anyone with an API key could then use them. To turn this off for `apx acp` too:
+
+```toml
+[acp]
+disable_host_mcp = true
+```
+
+Accounts with `use_host_profile = true` read your config directly, so apx adds nothing to them.

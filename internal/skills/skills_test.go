@@ -39,7 +39,7 @@ func TestDiscoverInstructionsAndShare(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "skills")
 	write(t, filepath.Join(dir, "pr/SKILL.md"), "mine")
 	for range 2 {
-		if err := Share(home, dir); err != nil {
+		if err := Share(dir, filepath.Join(home, ".agents", "skills")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -48,5 +48,36 @@ func TestDiscoverInstructionsAndShare(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "long/SKILL.md")); err != nil {
 		t.Fatalf("missing shared skill: %v", err)
+	}
+}
+
+// A skill added to the agent reaches the profile, and a removed one leaves it.
+func TestShareSourcesAndRemovedSkills(t *testing.T) {
+	home, dir := t.TempDir(), t.TempDir()
+	own, common := filepath.Join(home, ".claude/skills"), filepath.Join(home, ".agents/skills")
+	write(t, filepath.Join(own, "mine/SKILL.md"), "own")
+	write(t, filepath.Join(own, "both/SKILL.md"), "own")
+	write(t, filepath.Join(common, "both/SKILL.md"), "common")
+	elsewhere := filepath.Join(dir, "foreign")
+	if err := os.Symlink(filepath.Join(home, "missing"), elsewhere); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if err := Share(dir, own, common); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dir, "both/SKILL.md")); string(b) != "own" {
+		t.Fatalf("both = %q, want the first source", b)
+	}
+	if err := os.RemoveAll(filepath.Join(own, "mine")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Share(dir, own, common); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "mine")); !os.IsNotExist(err) {
+		t.Fatalf("link to a removed skill remains: %v", err)
+	}
+	if _, err := os.Lstat(elsewhere); err != nil {
+		t.Fatalf("a link apx did not make was removed: %v", err)
 	}
 }

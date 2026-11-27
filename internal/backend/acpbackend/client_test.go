@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +34,7 @@ func TestHelperACPProcess(t *testing.T) {
 	sessionCounter := 0
 	modelsBySession := map[string]string{}
 	effortsBySession := map[string]string{}
+	mcpBySession := map[string]string{}
 
 	for scanner.Scan() {
 		var msg rpcMessage
@@ -52,6 +54,13 @@ func TestHelperACPProcess(t *testing.T) {
 			sid := fmt.Sprintf("sess-%d", sessionCounter)
 			modelsBySession[sid] = "default"
 			effortsBySession[sid] = "default"
+			var params struct {
+				MCPServers []struct{ Name string } `json:"mcpServers"`
+			}
+			_ = json.Unmarshal(msg.Params, &params)
+			for _, s := range params.MCPServers {
+				mcpBySession[sid] += s.Name + ";"
+			}
 			res, _ := json.Marshal(map[string]any{
 				"sessionId": sid,
 				"configOptions": []map[string]any{
@@ -131,6 +140,10 @@ func TestHelperACPProcess(t *testing.T) {
 				quotaDone, _ := json.Marshal(sessionPromptResult{StopReason: "end_turn"})
 				writeMsg(rpcMessage{JSONRPC: "2.0", ID: msg.ID, Result: quotaDone})
 				continue
+			}
+
+			if text == "SHOW_MCP" {
+				text = "mcp=" + mcpBySession[p.SessionID]
 			}
 
 			// Emit tool activity + two streaming text chunks
@@ -224,6 +237,38 @@ func TestACPStreamingSessionReuseAndPermissions(t *testing.T) {
 	}
 	if !strings.Contains(resp.Content, "sess-1|gemini-3.1-pro] perm=reject_once") {
 		t.Fatalf("expected session reuse + deny permission, got %q", resp.Content)
+	}
+}
+
+// Only local ACP hosts may use the MCP servers from the user's agent config;
+// an API caller must not reach them.
+func TestHostMCPServersOnlyForHostRequests(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"mcpServers":{"browse":{"command":"/bin/browse"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	reg, _ := descriptors.LoadRegistry(dataDir)
+	mgr := NewManager(dataDir, reg, nil, config.ToolActivityDrop)
+	defer mgr.Close()
+	acct := config.AccountConfig{
+		ID: "claude-work", Name: "work", Kind: config.KindACP, Backend: "claude", Enabled: true,
+		CustomCommand: []string{os.Args[0], "-test.run=TestHelperACPProcess"},
+		CustomEnv:     map[string]string{"APX_TEST_ACP_HELPER": "1"},
+	}
+	for _, host := range []bool{false, true} {
+		resp, err := mgr.Complete(t.Context(), acct, backend.ChatRequest{
+			Messages:  []backend.Message{{Role: "user", Content: "SHOW_MCP"}},
+			HostTools: host,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(resp.Content, "mcp=browse;"); got != host {
+			t.Fatalf("HostTools=%v reply %q", host, resp.Content)
+		}
 	}
 }
 

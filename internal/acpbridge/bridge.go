@@ -613,6 +613,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					ACPMode:           upstreamACPMode,
 					PermissionHandler: permHandler,
 					MCPServers:        reqMCP,
+					HostTools:         s.hostTools(),
 					Messages:          histSnap,
 					Stream:            true,
 					SessionKey:        bs.id,
@@ -867,6 +868,14 @@ func (s *Server) exposeModes() bool {
 	}
 	cfg := s.gw.Config()
 	return cfg != nil && cfg.ACP.ExposeModes
+}
+
+func (s *Server) hostTools() bool {
+	if s.gw == nil {
+		return false
+	}
+	cfg := s.gw.Config()
+	return cfg != nil && !cfg.ACP.DisableHostMCP
 }
 
 // defaultMode is the mode a session starts in. With modes hidden it is

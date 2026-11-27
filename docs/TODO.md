@@ -10,6 +10,10 @@
 - Lock `config.toml` across processes while saving, so concurrent saves can't drop each other's changes.
 - Fail an API-key model's turn when it returns tool-call markup as text.
 
+## Agent profiles
+
+- Share Claude and Codex plugins, and give CLI-backend accounts the shared skills and MCP servers.
+
 ## Tests
 
 - Fixtures for the fields T3 Code reads (see [t3-code-integration.md](t3-code-integration.md)).

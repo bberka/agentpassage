@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -120,30 +121,59 @@ func Instructions(text string, available []Skill) string {
 	return strings.Join(lines, "\n")
 }
 
-// Share links each skill in home/.agents/skills into dir. It only adds missing
-// entries and never replaces or removes anything already there.
-func Share(home, dir string) error {
-	source := filepath.Join(home, ".agents", "skills")
-	entries, err := os.ReadDir(source)
+// Share links each skill found in the source folders into dir. The first
+// source with a name wins. Entries already in dir are never replaced, and the
+// only ones removed are links into a source whose skill is gone.
+func Share(dir string, sources ...string) error {
+	if err := prune(dir, sources); err != nil {
+		return err
+	}
+	for _, source := range sources {
+		entries, err := os.ReadDir(source)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			target := filepath.Join(source, e.Name())
+			if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
+				continue
+			}
+			link := filepath.Join(dir, e.Name())
+			if _, err := os.Lstat(link); err == nil {
+				continue
+			}
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return err
+			}
+			if err := os.Symlink(target, link); err != nil && !os.IsExist(err) {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func prune(dir string, sources []string) error {
+	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	for _, e := range entries {
-		target := filepath.Join(source, e.Name())
-		if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
-			continue
-		}
 		link := filepath.Join(dir, e.Name())
-		if _, err := os.Lstat(link); err == nil {
+		target, err := os.Readlink(link)
+		if err != nil || !slices.Contains(sources, filepath.Dir(target)) {
 			continue
 		}
-		if err := os.Symlink(target, link); err != nil && !os.IsExist(err) {
+		if _, err := os.Stat(filepath.Join(target, "SKILL.md")); !os.IsNotExist(err) {
+			continue
+		}
+		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
