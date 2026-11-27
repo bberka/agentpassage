@@ -12,7 +12,7 @@ builds:
       - -trimpath
       - -buildvcs=false
     ldflags:
-      - -s -w
+      - -s -w -X github.com/bberka/agentpassage/internal/gateway.Commit={{.ShortCommit}}
     goos:
       - linux
       - darwin

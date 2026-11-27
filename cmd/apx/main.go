@@ -97,7 +97,7 @@ func run(args []string) error {
 		case "agent-guide":
 			return cmdAgentGuide()
 		case "version":
-			fmt.Printf("AgentPassage (apx) %s\n", gateway.Version)
+			fmt.Printf("AgentPassage (apx) %s\n", gateway.BuildVersion())
 			return nil
 		case "help", "-h", "--help":
 			printUsage()
@@ -118,7 +118,7 @@ func run(args []string) error {
 		return err
 	}
 	if *showVersion {
-		fmt.Printf("apx %s\n", gateway.Version)
+		fmt.Printf("apx %s\n", gateway.BuildVersion())
 		return nil
 	}
 

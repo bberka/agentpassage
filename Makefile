@@ -1,5 +1,6 @@
 BINARY := apx
-LDFLAGS := -s -w
+COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null)
+LDFLAGS := -s -w -X github.com/bberka/agentpassage/internal/gateway.Commit=$(COMMIT)
 BUILD_FLAGS := -trimpath -buildvcs=false
 INSTALL_DIR ?= $(HOME)/.local/bin
 
@@ -15,6 +16,19 @@ install: build
 
 test:
 	go test -race ./...
+
+# Everything CI checks. Run it before committing.
+.PHONY: check deploy
+check:
+	@out="$$(gofmt -l cmd internal)"; if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	go vet ./...
+	go test -race ./...
+	GOOS=darwin go build ./...
+	GOOS=windows go build ./...
+
+# Install the committed, pushed build and verify the running service (Linux).
+deploy:
+	./scripts/deploy.sh
 
 bench:
 	go test -bench=. -benchmem ./internal/privacy ./internal/router ./internal/usage

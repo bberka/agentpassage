@@ -35,6 +35,18 @@ import (
 
 const Version = "0.1.0"
 
+// Commit is the source commit of this build, set with -ldflags -X. It is empty
+// for plain `go build` and `go run`.
+var Commit string
+
+// BuildVersion is Version plus the build's commit when it is known.
+func BuildVersion() string {
+	if Commit == "" {
+		return Version
+	}
+	return Version + " (" + Commit + ")"
+}
+
 // Server is the local OpenAI & Anthropic compatible HTTP gateway.
 type Server struct {
 	mu       sync.RWMutex
@@ -878,6 +890,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":             "ok",
 		"version":            Version,
+		"commit":             Commit,
 		"overall_health":     rep.Overall,
 		"accounts_total":     rep.TotalCount,
 		"accounts_healthy":   rep.HealthyCount,

@@ -45,7 +45,11 @@ else
 fi
 
 echo "Building apx (${OS}/${ARCH})..."
-(cd "$SRC_DIR" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "$TMP/apx" ./cmd/apx)
+COMMIT=""
+if [ -d "$SRC_DIR/.git" ]; then
+  COMMIT="$(git -C "$SRC_DIR" rev-parse --short HEAD)"
+fi
+(cd "$SRC_DIR" && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X github.com/bberka/agentpassage/internal/gateway.Commit=$COMMIT" -o "$TMP/apx" ./cmd/apx)
 
 mkdir -p "$INSTALL_DIR"
 # Atomic install works even while an older apx binary is running.
