@@ -20,8 +20,6 @@ type Store struct {
 	maxEntries int
 	defaultTTL time.Duration
 	items      map[string]*entry
-	hits       int64
-	misses     int64
 }
 
 func New(maxEntries int, defaultTTL time.Duration) *Store {
@@ -57,16 +55,13 @@ func (s *Store) Get(key string) ([]byte, bool) {
 	now := time.Now()
 	e, ok := s.items[key]
 	if !ok {
-		s.misses++
 		return nil, false
 	}
 	if now.After(e.expiresAt) {
 		delete(s.items, key)
-		s.misses++
 		return nil, false
 	}
 	e.lastUsed = now
-	s.hits++
 	out := make([]byte, len(e.value))
 	copy(out, e.value)
 	return out, true
@@ -94,15 +89,6 @@ func (s *Store) Set(key string, val []byte, ttl time.Duration) {
 		expiresAt: now.Add(ttl),
 		lastUsed:  now,
 	}
-}
-
-func (s *Store) Stats() (entries int, hits, misses int64) {
-	if s == nil {
-		return 0, 0, 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.items), s.hits, s.misses
 }
 
 func (s *Store) evictOneLocked(now time.Time) {

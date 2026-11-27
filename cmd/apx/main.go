@@ -47,7 +47,7 @@ func run(args []string) error {
 		case "service":
 			return cmdService(args[1:])
 		case "acp":
-			return cmdACPBridge(args[1:])
+			return cmdACPBridge()
 		case "accounts", "account":
 			return cmdAccounts(args[1:])
 		case "add":
@@ -69,7 +69,7 @@ func run(args []string) error {
 		case "health":
 			return cmdHealth(args[1:])
 		case "doctor":
-			return cmdDoctor(args[1:])
+			return cmdDoctor()
 		case "install":
 			return cmdInstall(args[1:])
 		case "connect":
@@ -202,8 +202,7 @@ func startTUI(port int, bind string, allowRemote bool) error {
 
 	srv := gateway.New(dataDir, cfg, sec, reg, logs)
 	if err := srv.Start(); err != nil {
-		// If another apx daemon or background service is already listening on this port,
-		// attach the TUI to it seamlessly instead of failing with address-in-use!
+		// The port may be held by an apx daemon or service; attach the TUI to it.
 		if ok, attachErr := srv.AttachIfRunning(); !ok {
 			return fmt.Errorf("%w (hint: port is held by another process; try `apx --port 8788` — attach check: %v)", err, attachErr)
 		}
@@ -380,7 +379,7 @@ func cmdService(args []string) error {
 	}
 }
 
-func cmdACPBridge(_ []string) error {
+func cmdACPBridge() error {
 	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
 	if err != nil {
 		return err
@@ -977,7 +976,7 @@ func cmdHealth(args []string) error {
 	return nil
 }
 
-func cmdDoctor(_ []string) error {
+func cmdDoctor() error {
 	dataDir, cfg, sec, reg, logs, err := loadRuntime(0, "", false)
 	if err != nil {
 		return err
@@ -1303,7 +1302,6 @@ func cmdUninstall(args []string) error {
 		return nil
 	}
 
-	// 1. Disconnect all registered IDEs & CLIs cleanly.
 	results, errs := connect.DisconnectAll()
 	if len(results) == 0 {
 		fmt.Println("Connections: no connected IDEs/CLIs found.")
@@ -1316,7 +1314,6 @@ func cmdUninstall(args []string) error {
 		fmt.Fprintf(os.Stderr, "Connections warning: %v\n", e)
 	}
 
-	// 2. Stop & remove OS background service if installed.
 	if st.Installed || st.Running {
 		if err := service.Uninstall(); err != nil {
 			fmt.Fprintf(os.Stderr, "Service uninstall warning: %v\n", err)
@@ -1325,7 +1322,6 @@ func cmdUninstall(args []string) error {
 		}
 	}
 
-	// 3. Optionally purge data dir, and print binary removal hint.
 	if purge && dataDir != "" {
 		if err := os.RemoveAll(dataDir); err != nil {
 			return fmt.Errorf("remove data dir %s: %w", dataDir, err)

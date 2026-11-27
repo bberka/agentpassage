@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,13 +155,7 @@ func (s *Server) handleHTTPProxyEndpoint(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	if lastErr == nil {
-		lastErr = pool.ErrNoAvailableAccount
-	}
-	status := httpStatusFromError(lastErr)
-	if errors.Is(lastErr, pool.ErrNoAvailableAccount) || errors.Is(lastErr, pool.ErrStrategyOptInNeeded) {
-		status = httpStatusFromPoolError(lastErr)
-	}
+	status, lastErr := finalFailure(lastErr)
 	s.recordUsageForRequest(r, head.Model, lastAcct, lastBackend, status, start, backend.Usage{}, false)
 	s.logRequest(r, head.Model, lastAcct, status, start, lastErr)
 	writeOpenAIError(w, status, "backend_error", lastErr.Error())

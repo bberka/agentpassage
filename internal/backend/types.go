@@ -223,9 +223,3 @@ func parseLeadingDuration(s string) int {
 
 // StreamCallback receives streaming deltas. Returning an error stops streaming.
 type StreamCallback func(StreamChunk) error
-
-// Executor executes chat completions against a specific account.
-type Executor interface {
-	Complete(ctx context.Context, req ChatRequest) (*ChatResponse, error)
-	Stream(ctx context.Context, req ChatRequest, cb StreamCallback) error
-}

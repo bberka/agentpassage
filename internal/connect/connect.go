@@ -515,13 +515,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 	}
 	switch targetID {
 	case "t3code":
-		var root map[string]any
-		if json.Unmarshal(stripJSONC(raw), &root) == nil {
-			if provs, ok := root["providerInstances"].(map[string]any); ok {
-				_, exists := provs["apx"]
-				return exists
-			}
-		}
+		return hasJSONKey(raw, "providerInstances", "apx")
 	case "bb":
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
@@ -545,15 +539,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 			}
 		}
 	case "paseo":
-		var root map[string]any
-		if json.Unmarshal(stripJSONC(raw), &root) == nil {
-			if agents, ok := root["agents"].(map[string]any); ok {
-				if provs, ok := agents["providers"].(map[string]any); ok {
-					_, exists := provs["apx"]
-					return exists
-				}
-			}
-		}
+		return hasJSONKey(raw, "agents", "providers", "apx")
 	case "goose":
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
@@ -561,13 +547,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 			return strings.EqualFold(name, "apx")
 		}
 	case "crush":
-		var root map[string]any
-		if json.Unmarshal(stripJSONC(raw), &root) == nil {
-			if provs, ok := root["providers"].(map[string]any); ok {
-				_, exists := provs["apx"]
-				return exists
-			}
-		}
+		return hasJSONKey(raw, "providers", "apx")
 	case "droid":
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
@@ -591,15 +571,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 			return strings.EqualFold(name, "apx")
 		}
 	case "openclaw":
-		var root map[string]any
-		if json.Unmarshal(stripJSONC(raw), &root) == nil {
-			if modelsObj, ok := root["models"].(map[string]any); ok {
-				if provs, ok := modelsObj["providers"].(map[string]any); ok {
-					_, exists := provs["apx"]
-					return exists
-				}
-			}
-		}
+		return hasJSONKey(raw, "models", "providers", "apx")
 	case "qwen":
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
@@ -617,13 +589,7 @@ func IsConnectedAtPath(targetID, path string) bool {
 			}
 		}
 	case "zed", "jetbrains":
-		var root map[string]any
-		if json.Unmarshal(stripJSONC(raw), &root) == nil {
-			if servers, ok := root["agent_servers"].(map[string]any); ok {
-				_, exists := servers["apx"]
-				return exists
-			}
-		}
+		return hasJSONKey(raw, "agent_servers", "apx")
 	case "vscode", "vscode-insiders", "vscodium":
 		var arr []map[string]any
 		if json.Unmarshal(stripJSONC(raw), &arr) == nil {
@@ -634,21 +600,9 @@ func IsConnectedAtPath(targetID, path string) bool {
 			}
 		}
 	case "opencode":
-		var root map[string]any
-		if json.Unmarshal(stripJSONC(raw), &root) == nil {
-			if prov, ok := root["provider"].(map[string]any); ok {
-				_, exists := prov["apx"]
-				return exists
-			}
-		}
+		return hasJSONKey(raw, "provider", "apx")
 	case "pi":
-		var root map[string]any
-		if json.Unmarshal(stripJSONC(raw), &root) == nil {
-			if provs, ok := root["providers"].(map[string]any); ok {
-				_, exists := provs["apx"]
-				return exists
-			}
-		}
+		return hasJSONKey(raw, "providers", "apx")
 	case "claude":
 		var root map[string]any
 		if json.Unmarshal(stripJSONC(raw), &root) == nil {
@@ -682,7 +636,7 @@ func Apply(targetID string, cfg *config.Config, models []router.ModelEntry, appl
 	return ApplyAtPath(t, t.ConfigPath, cfg, models, apply)
 }
 
-// ApplyAtPath is like Apply with an explicit config path (useful for tests).
+// ApplyAtPath is like Apply with an explicit config path.
 func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.ModelEntry, apply bool) (*Result, error) {
 	baseURL := cfg.BaseURL()
 	anthURL := strings.TrimSuffix(baseURL, "/v1")
@@ -878,15 +832,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# %d models auto-discovered via ACP\n", enabledCount)
 
 		if apply && path != "" {
-			bak, err := mergeJSONFile(path, func(root map[string]any) {
-				servers, _ := root["agent_servers"].(map[string]any)
-				if servers == nil {
-					servers = make(map[string]any)
-				}
-				delete(servers, "acpx")
-				servers["apx"] = agentEntry
-				root["agent_servers"] = servers
-			})
+			bak, err := setAgentServer(path, agentEntry)
 			if err != nil {
 				return nil, err
 			}
@@ -909,15 +855,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 		res.Snippet = string(snipRaw) + fmt.Sprintf("\n# JetBrains AI Chat -> %d models auto-discovered via ACP\n", enabledCount)
 
 		if apply && path != "" {
-			bak, err := mergeJSONFile(path, func(root map[string]any) {
-				servers, _ := root["agent_servers"].(map[string]any)
-				if servers == nil {
-					servers = make(map[string]any)
-				}
-				delete(servers, "acpx")
-				servers["apx"] = agentEntry
-				root["agent_servers"] = servers
-			})
+			bak, err := setAgentServer(path, agentEntry)
 			if err != nil {
 				return nil, err
 			}
@@ -1717,7 +1655,7 @@ func DisconnectAll() ([]Result, []error) {
 	return results, errs
 }
 
-// DisconnectAtPath removes apx's registration from the specified config path (useful for tests).
+// DisconnectAtPath removes apx's registration from the specified config path.
 func DisconnectAtPath(t Target, path string) (*Result, error) {
 	res := &Result{Target: t, Path: path}
 	if !t.AutoApply || path == "" {
@@ -1731,14 +1669,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 
 	switch t.ID {
 	case "t3code":
-		removed := false
+		var removed bool
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if provs, ok := root["providerInstances"].(map[string]any); ok {
-				if _, exists := provs["apx"]; exists {
-					delete(provs, "apx")
-					removed = true
-				}
-			}
+			removed = deleteJSONKey(root, "providerInstances", "apx")
 		})
 		if err != nil {
 			return nil, err
@@ -1772,16 +1705,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		res.Backup = bak
 
 	case "paseo":
-		removed := false
+		var removed bool
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if agents, ok := root["agents"].(map[string]any); ok {
-				if provs, ok := agents["providers"].(map[string]any); ok {
-					if _, exists := provs["apx"]; exists {
-						delete(provs, "apx")
-						removed = true
-					}
-				}
-			}
+			removed = deleteJSONKey(root, "agents", "providers", "apx")
 		})
 		if err != nil {
 			return nil, err
@@ -1790,14 +1716,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		res.Backup = bak
 
 	case "crush":
-		removed := false
+		var removed bool
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if provs, ok := root["providers"].(map[string]any); ok {
-				if _, exists := provs["apx"]; exists {
-					delete(provs, "apx")
-					removed = true
-				}
-			}
+			removed = deleteJSONKey(root, "providers", "apx")
 		})
 		if err != nil {
 			return nil, err
@@ -1836,16 +1757,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		}
 
 	case "openclaw":
-		removed := false
+		var removed bool
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if modelsObj, ok := root["models"].(map[string]any); ok {
-				if provs, ok := modelsObj["providers"].(map[string]any); ok {
-					if _, exists := provs["apx"]; exists {
-						delete(provs, "apx")
-						removed = true
-					}
-				}
-			}
+			removed = deleteJSONKey(root, "models", "providers", "apx")
 		})
 		if err != nil {
 			return nil, err
@@ -1900,14 +1814,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		res.Backup = bak
 
 	case "zed", "jetbrains":
-		removed := false
+		var removed bool
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if servers, ok := root["agent_servers"].(map[string]any); ok {
-				if _, exists := servers["apx"]; exists {
-					delete(servers, "apx")
-					removed = true
-				}
-			}
+			removed = deleteJSONKey(root, "agent_servers", "apx")
 		})
 		if err != nil {
 			return nil, err
@@ -1935,14 +1844,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		res.Backup = bak
 
 	case "opencode":
-		removed := false
+		var removed bool
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if prov, ok := root["provider"].(map[string]any); ok {
-				if _, exists := prov["apx"]; exists {
-					delete(prov, "apx")
-					removed = true
-				}
-			}
+			removed = deleteJSONKey(root, "provider", "apx")
 		})
 		if err != nil {
 			return nil, err
@@ -1951,14 +1855,9 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 		res.Backup = bak
 
 	case "pi":
-		removed := false
+		var removed bool
 		bak, err := mergeJSONFile(path, func(root map[string]any) {
-			if provs, ok := root["providers"].(map[string]any); ok {
-				if _, exists := provs["apx"]; exists {
-					delete(provs, "apx")
-					removed = true
-				}
-			}
+			removed = deleteJSONKey(root, "providers", "apx")
 		})
 		if err != nil {
 			return nil, err
@@ -2033,68 +1932,104 @@ func DisconnectAtPath(t Target, path string) (*Result, error) {
 }
 
 func mergeJSONFile(path string, mutate func(map[string]any)) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
 	root := make(map[string]any)
-	var backupPath string
-	if existing, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(existing))) > 0 {
-		clean := stripJSONC(existing)
-		if err := json.Unmarshal(clean, &root); err != nil {
-			return "", fmt.Errorf("existing %s is not valid JSON: %w", path, err)
-		}
-		backupPath = path + ".apx.bak"
-		_ = os.WriteFile(backupPath, existing, 0o600)
-	}
-	mutate(root)
-	out, err := json.MarshalIndent(root, "", "  ")
+	backupPath, err := readJSONForMerge(path, "valid JSON", &root)
 	if err != nil {
 		return "", err
 	}
-	out = append(out, '\n')
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return "", err
-	}
-	return backupPath, nil
+	mutate(root)
+	return backupPath, writeJSONFile(path, root)
 }
 
 func mergeJSONArrayFile(path string, mutate func([]map[string]any) []map[string]any) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return "", err
-	}
 	var items []map[string]any
-	var backupPath string
-	if existing, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(existing))) > 0 {
-		clean := stripJSONC(existing)
-		if err := json.Unmarshal(clean, &items); err != nil {
-			return "", fmt.Errorf("existing %s is not a valid JSON array: %w", path, err)
-		}
-		backupPath = path + ".apx.bak"
-		_ = os.WriteFile(backupPath, existing, 0o600)
+	backupPath, err := readJSONForMerge(path, "a valid JSON array", &items)
+	if err != nil {
+		return "", err
 	}
 	items = mutate(items)
 	if items == nil {
 		items = []map[string]any{}
 	}
-	out, err := json.MarshalIndent(items, "", "  ")
-	if err != nil {
+	return backupPath, writeJSONFile(path, items)
+}
+
+// readJSONForMerge decodes an existing JSON/JSONC file into v and backs it up,
+// returning the backup path. A missing or blank file leaves v unchanged.
+func readJSONForMerge(path, kind string, v any) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
+	}
+	existing, err := os.ReadFile(path)
+	if err != nil || len(strings.TrimSpace(string(existing))) == 0 {
+		return "", nil
+	}
+	if err := json.Unmarshal(stripJSONC(existing), v); err != nil {
+		return "", fmt.Errorf("existing %s is not %s: %w", path, kind, err)
+	}
+	backupPath := path + ".apx.bak"
+	_ = os.WriteFile(backupPath, existing, 0o600)
+	return backupPath, nil
+}
+
+func writeJSONFile(path string, v any) error {
+	out, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
 	}
 	out = append(out, '\n')
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, out, 0o600); err != nil {
-		return "", err
+		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
-		return "", err
+		return err
 	}
-	return backupPath, nil
+	return nil
+}
+
+// lookupJSONParent walks all but the last key and returns the object holding it.
+func lookupJSONParent(root map[string]any, keys []string) (map[string]any, bool) {
+	for _, k := range keys[:len(keys)-1] {
+		next, ok := root[k].(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		root = next
+	}
+	_, exists := root[keys[len(keys)-1]]
+	return root, exists
+}
+
+func deleteJSONKey(root map[string]any, keys ...string) bool {
+	parent, ok := lookupJSONParent(root, keys)
+	if ok {
+		delete(parent, keys[len(keys)-1])
+	}
+	return ok
+}
+
+func hasJSONKey(raw []byte, keys ...string) bool {
+	var root map[string]any
+	if json.Unmarshal(stripJSONC(raw), &root) != nil {
+		return false
+	}
+	_, ok := lookupJSONParent(root, keys)
+	return ok
+}
+
+// setAgentServer registers apx under agent_servers, replacing the legacy acpx entry.
+func setAgentServer(path string, entry map[string]any) (string, error) {
+	return mergeJSONFile(path, func(root map[string]any) {
+		servers, _ := root["agent_servers"].(map[string]any)
+		if servers == nil {
+			servers = make(map[string]any)
+		}
+		delete(servers, "acpx")
+		servers["apx"] = entry
+		root["agent_servers"] = servers
+	})
 }
 
 // stripJSONC removes // and /* */ comments and trailing commas outside string literals

@@ -229,7 +229,7 @@ func TestACPStreamingSessionReuseAndPermissions(t *testing.T) {
 
 func TestSanitizeChildEnvStripsLoopbackGatewayEnv(t *testing.T) {
 	// Local apx loopback URLs and keys must not reach pi-acp/opencode, or they loop.
-	env := sanitizeChildEnv(
+	env := backend.SanitizeChildEnv(
 		[]string{
 			"PATH=/usr/bin",
 			"OPENAI_BASE_URL=http://127.0.0.1:8787/v1",

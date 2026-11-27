@@ -119,6 +119,16 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		write(rpcMsg{JSONRPC: "2.0", Method: method, Params: raw})
 	}
 
+	notifyOptions := func(sessionID string, configOpts []map[string]any) {
+		notify("session/update", map[string]any{
+			"sessionId": sessionID,
+			"update": map[string]any{
+				"sessionUpdate": "config_option_update",
+				"configOptions": configOpts,
+			},
+		})
+	}
+
 	callHost := func(callCtx context.Context, method string, params any) (json.RawMessage, error) {
 		callID := fmt.Sprintf("apx-req-%d", s.nextCallID.Add(1))
 		idRaw, _ := json.Marshal(callID)
@@ -238,14 +248,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.sessMu.Unlock()
 			s.saveSession(bs)
 
-			replyOK(msg.ID, s.withModes(map[string]any{
-				"sessionId":     sid,
-				"configOptions": configOpts,
-				"models": map[string]any{
-					"currentModelId":  defaultModel,
-					"availableModels": availModels,
-				},
-			}, defaultMode))
+			replyOK(msg.ID, s.sessionReply(sid, defaultModel, configOpts, availModels, defaultMode))
 
 		case "session/load", "session/resume":
 			var p struct {
@@ -267,8 +270,8 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				bs.mcpServers = p.MCPServers
 			}
 			if !s.exposeModes() && !bs.hostMode {
-				// Sessions saved before modes were hidden defaulted to "auto";
-				// hand permission decisions back to the host.
+				// Sessions saved before modes were hidden defaulted to "auto",
+				// which would override the account's permission_mode.
 				bs.mode = s.defaultMode()
 			}
 			curModel, curEffort, curMode := bs.model, bs.effort, bs.mode
@@ -299,14 +302,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				})
 			}
 
-			replyOK(msg.ID, s.withModes(map[string]any{
-				"sessionId":     bs.id,
-				"configOptions": configOpts,
-				"models": map[string]any{
-					"currentModelId":  resolvedModel,
-					"availableModels": availModels,
-				},
-			}, normalizeBridgeMode(curMode)))
+			replyOK(msg.ID, s.sessionReply(bs.id, resolvedModel, configOpts, availModels, normalizeBridgeMode(curMode)))
 
 		case "session/list":
 			list := s.listPersistedSessions()
@@ -362,14 +358,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.sessMu.Unlock()
 			s.saveSession(forked)
 
-			replyOK(msg.ID, s.withModes(map[string]any{
-				"sessionId":     newSID,
-				"configOptions": configOpts,
-				"models": map[string]any{
-					"currentModelId":  resolvedModel,
-					"availableModels": availModels,
-				},
-			}, forked.mode))
+			replyOK(msg.ID, s.sessionReply(newSID, resolvedModel, configOpts, availModels, forked.mode))
 
 		case "session/set_config_option":
 			var p struct {
@@ -401,12 +390,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				curMode = normalizeBridgeMode(p.Value)
 			}
 			s.sessMu.Unlock()
-			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort, curMode)
-			s.sessMu.Lock()
-			if bs, ok := s.sess[p.SessionID]; ok {
-				bs.effort = resolvedEffort
-			}
-			s.sessMu.Unlock()
+			configOpts := s.refreshOptions(p.SessionID, curModel, curEffort, curMode)
 			replyOK(msg.ID, map[string]any{
 				"configOptions": configOpts,
 			})
@@ -428,19 +412,8 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				curEffort = bs.effort
 			}
 			s.sessMu.Unlock()
-			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort, curMode)
-			s.sessMu.Lock()
-			if bs, ok := s.sess[p.SessionID]; ok {
-				bs.effort = resolvedEffort
-			}
-			s.sessMu.Unlock()
-			notify("session/update", map[string]any{
-				"sessionId": p.SessionID,
-				"update": map[string]any{
-					"sessionUpdate": "config_option_update",
-					"configOptions": configOpts,
-				},
-			})
+			configOpts := s.refreshOptions(p.SessionID, curModel, curEffort, curMode)
+			notifyOptions(p.SessionID, configOpts)
 			replyOK(msg.ID, map[string]any{})
 
 		case "session/set_model":
@@ -460,19 +433,8 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				curMode = bs.mode
 			}
 			s.sessMu.Unlock()
-			configOpts, _, _, resolvedEffort := s.buildModelOptions(curModel, curEffort, curMode)
-			s.sessMu.Lock()
-			if bs, ok := s.sess[p.SessionID]; ok {
-				bs.effort = resolvedEffort
-			}
-			s.sessMu.Unlock()
-			notify("session/update", map[string]any{
-				"sessionId": p.SessionID,
-				"update": map[string]any{
-					"sessionUpdate": "config_option_update",
-					"configOptions": configOpts,
-				},
-			})
+			configOpts := s.refreshOptions(p.SessionID, curModel, curEffort, curMode)
+			notifyOptions(p.SessionID, configOpts)
 			replyOK(msg.ID, map[string]any{})
 
 		case "session/prompt":
@@ -863,8 +825,7 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 		resolvedEffort = ""
 	}
 
-	// The ACP v1 `mode` configOption is only shown when [acp] expose_modes is
-	// on; by default the host's own permission system decides.
+	// The ACP v1 `mode` configOption is only shown when [acp] expose_modes is on.
 	if s.exposeModes() {
 		configOpts = append(configOpts, map[string]any{
 			"id":           "mode",
@@ -879,6 +840,18 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 	return configOpts, availModels, cur, resolvedEffort
 }
 
+// refreshOptions rebuilds a session's config options and stores the effort they
+// resolve to.
+func (s *Server) refreshOptions(sessionID, model, effort, mode string) []map[string]any {
+	configOpts, _, _, resolvedEffort := s.buildModelOptions(model, effort, mode)
+	s.sessMu.Lock()
+	defer s.sessMu.Unlock()
+	if bs, ok := s.sess[sessionID]; ok {
+		bs.effort = resolvedEffort
+	}
+	return configOpts
+}
+
 // exposeModes reports whether apx shows its own Mode menu to the ACP host.
 func (s *Server) exposeModes() bool {
 	if s.gw == nil {
@@ -889,12 +862,25 @@ func (s *Server) exposeModes() bool {
 }
 
 // defaultMode is the mode a session starts in. With modes hidden it is
-// "default", which forwards every permission prompt to the host.
+// "default", which is not sent to the agent: until the host sets a mode, each
+// account's permission_mode decides how permission requests are answered.
 func (s *Server) defaultMode() string {
 	if s.exposeModes() {
 		return "auto"
 	}
 	return "default"
+}
+
+// sessionReply is the result of session/new, load, resume and fork.
+func (s *Server) sessionReply(sessionID, model string, configOpts []map[string]any, availModels []map[string]string, mode string) map[string]any {
+	return s.withModes(map[string]any{
+		"sessionId":     sessionID,
+		"configOptions": configOpts,
+		"models": map[string]any{
+			"currentModelId":  model,
+			"availableModels": availModels,
+		},
+	}, mode)
 }
 
 // withModes adds the ACP `modes` block to a session reply when modes are shown.

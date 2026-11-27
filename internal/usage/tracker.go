@@ -203,11 +203,7 @@ func EstimateTokens(text string) int {
 	if n == 0 {
 		return 0
 	}
-	tok := (n + 3) / 4
-	if tok < 1 {
-		return 1
-	}
-	return tok
+	return (n + 3) / 4
 }
 
 func (t *Tracker) Summary() Summary {
@@ -366,7 +362,6 @@ func (t *Tracker) SummaryPeriodAt(now time.Time, period string) Summary {
 		s.EstimatedCostUSD += cost
 		totalLatMs += r.DurationMs
 
-		// Hourly bucket
 		if !r.Time.Before(hourStart) {
 			idx := int(r.Time.Truncate(time.Hour).Sub(hourStart) / time.Hour)
 			if idx >= 0 && idx < 24 {
@@ -378,7 +373,6 @@ func (t *Tracker) SummaryPeriodAt(now time.Time, period string) Summary {
 			}
 		}
 
-		// Daily bucket
 		rDay := time.Date(r.Time.Year(), r.Time.Month(), r.Time.Day(), 0, 0, 0, 0, now.Location())
 		if !rDay.Before(dayStart) {
 			idx := int(rDay.Sub(dayStart) / (24 * time.Hour))
@@ -405,7 +399,6 @@ func (t *Tracker) SummaryPeriodAt(now time.Time, period string) Summary {
 			aa.u.LastUsed = r.Time
 		}
 
-		// Per-model
 		mKey := r.Model
 		if mKey == "" {
 			mKey = "(unknown)"
@@ -423,7 +416,6 @@ func (t *Tracker) SummaryPeriodAt(now time.Time, period string) Summary {
 		ma.u.EstimatedCostUSD += cost
 		ma.latSumMs += r.DurationMs
 
-		// Per-API-key
 		kName := r.APIKey
 		if kName == "" {
 			kName = "local-admin"
@@ -441,7 +433,6 @@ func (t *Tracker) SummaryPeriodAt(now time.Time, period string) Summary {
 		ka.u.EstimatedCostUSD += cost
 		ka.latSumMs += r.DurationMs
 
-		// Per-project
 		pName := r.Project
 		if pName == "" {
 			pName = "(default)"

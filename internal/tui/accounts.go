@@ -9,7 +9,6 @@ import (
 
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/health"
-	"github.com/bberka/agentpassage/internal/hostauth"
 	"github.com/bberka/agentpassage/internal/pool"
 	"github.com/bberka/agentpassage/internal/router"
 )
@@ -51,12 +50,7 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.openAddAccount()
 		return a, nil
 	case "c":
-		found := hostauth.DetectAll("")
-		if len(found) == 0 {
-			a.setStatus("No existing host CLI logins detected on this machine.", false)
-			return a, nil
-		}
-		a.openHostAuthModal(found, nil, false)
+		a.detectHostLogins()
 		return a, nil
 	}
 

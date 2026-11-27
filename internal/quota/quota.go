@@ -63,28 +63,6 @@ func GroupForModel(backend, upstreamModel string) string {
 	}
 }
 
-// UsedPercentForGroup returns the used % that routing should weigh for groupID.
-// Claude & GPT use the highest used % across that group's own windows. Gemini
-// uses the group's weekly window only, since its 5h window refills quickly; it
-// falls back to the 5h window when no weekly window is reported. With an empty
-// groupID, or when the account reports no groups, it uses the account-level
-// windows. ok is false when no matching window exists.
-func (q AccountQuota) UsedPercentForGroup(groupID string) (float64, bool) {
-	if groupID == "" || len(q.Groups) == 0 {
-		return maxUsedPercent(q.Primary, q.Secondary)
-	}
-	for _, g := range q.Groups {
-		if g.ID != groupID {
-			continue
-		}
-		if groupID == GroupGemini && g.Secondary != nil {
-			return maxUsedPercent(g.Secondary)
-		}
-		return maxUsedPercent(g.Primary, g.Secondary)
-	}
-	return 0, false
-}
-
 // modelFamilies are the model families a provider can meter with their own
 // limit on top of the account-wide windows (e.g. Claude's weekly Fable limit).
 var modelFamilies = []string{"fable", "opus", "sonnet", "haiku"}
@@ -199,7 +177,7 @@ type AccountQuota struct {
 	AccountName string       `json:"account_name"`
 	Backend     string       `json:"backend"`
 	Kind        string       `json:"kind"`
-	Source      string       `json:"source"` // "codex-live", "grok-live", "local-budget", "local-tracked", "unavailable"
+	Source      string       `json:"source"` // "<provider>-live", "headers-live", "claude-logs", "local-budget", "local-tracked", "unavailable"
 	PlanType    string       `json:"plan_type,omitempty"`
 	Credits     string       `json:"credits,omitempty"`
 	Balances    []Balance    `json:"balances,omitempty"`
@@ -224,9 +202,9 @@ type Report struct {
 	Accounts  []AccountQuota `json:"accounts"`
 }
 
-// Fetcher collects official provider subscription limits (Codex `account/rateLimits/read`,
-// DeepSeek `/user/balance`, OpenRouter `/auth/key`, Grok `grok usage --json`, Claude local
-// JSONL 5h/7d blocks, and live HTTP rate-limit headers) and merges them with local usage.
+// Fetcher collects provider subscription limits and balances (CLI and HTTP
+// endpoints, Claude's local JSONL logs, and live rate-limit response headers)
+// and merges them with local usage.
 type Fetcher struct {
 	mu          sync.RWMutex
 	dataDir     string

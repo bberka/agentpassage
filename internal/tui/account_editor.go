@@ -124,7 +124,7 @@ func (a *App) updateAccountEditorModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.saveAccountEditor()
 
 	case "M":
-		// Jump directly from Account Editor into the interactive Model Picker (not text!)
+		// This field opens the Model Picker instead of taking text.
 		if ed.focus >= len(ed.inputs) {
 			cfg := a.srv.Config()
 			if acct := cfg.FindAccount(ed.accountID); acct != nil {
@@ -260,7 +260,7 @@ func (a *App) saveAccountEditor() (tea.Model, tea.Cmd) {
 	return a, postCmd
 }
 
-// renameAccount safely renames an account, moves its isolated profile dir on disk,
+// renameAccount renames an account, moves its isolated profile dir on disk,
 // migrates its secret store key, updates routing rule references, and reloads config.
 func (a *App) renameAccount(accountID, newName string) error {
 	if err := config.ValidateName(newName); err != nil {

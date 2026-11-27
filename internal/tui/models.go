@@ -146,7 +146,7 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.setStatus(fmt.Sprintf("Disabled %d model(s)", count), false)
 		}
 		return a, nil
-	case "E": // enable all matching models (even if currently hidden!)
+	case "E": // enable all matching models, including hidden ones
 		matching := a.filterModelList(a.srv.Router().ListModels(true))
 		if len(matching) > 0 {
 			matchIDs := make(map[string]bool, len(matching))

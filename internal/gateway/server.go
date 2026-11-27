@@ -56,7 +56,7 @@ type Server struct {
 	quotaAlerts quotaAlertState
 	// balanceAlerts tracks which accounts have an open low-balance alert.
 	balanceAlerts balanceAlertState
-	cache    *cache.Store
+	cache         *cache.Store
 
 	srv          *http.Server
 	listener     net.Listener
@@ -180,18 +180,17 @@ func (s *Server) Config() *config.Config {
 	return s.cfg
 }
 
-func (s *Server) Pool() *pool.Manager         { return s.pool }
-func (s *Server) Router() *router.Router      { return s.router }
-func (s *Server) Secrets() *secrets.Store     { return s.secrets }
+func (s *Server) Pool() *pool.Manager             { return s.pool }
+func (s *Server) Router() *router.Router          { return s.router }
+func (s *Server) Secrets() *secrets.Store         { return s.secrets }
 func (s *Server) Registry() *descriptors.Registry { return s.registry }
-func (s *Server) ACP() *acpbackend.Manager    { return s.acpBE }
-func (s *Server) CLI() *clibackend.Manager    { return s.cliBE }
-func (s *Server) HTTPBackend() *httpbackend.Client { return s.httpBE }
-func (s *Server) Logs() *logbuf.Buffer        { return s.logs }
-func (s *Server) Usage() *usage.Tracker       { return s.usage }
-func (s *Server) Health() *health.Checker     { return s.health }
-func (s *Server) Quota() *quota.Fetcher       { return s.quota }
-func (s *Server) DataDir() string             { return s.dataDir }
+func (s *Server) ACP() *acpbackend.Manager        { return s.acpBE }
+func (s *Server) CLI() *clibackend.Manager        { return s.cliBE }
+func (s *Server) Logs() *logbuf.Buffer            { return s.logs }
+func (s *Server) Usage() *usage.Tracker           { return s.usage }
+func (s *Server) Health() *health.Checker         { return s.health }
+func (s *Server) Quota() *quota.Fetcher           { return s.quota }
+func (s *Server) DataDir() string                 { return s.dataDir }
 
 func (s *Server) ReloadConfig(cfg *config.Config) error {
 	s.mu.Lock()
@@ -220,7 +219,7 @@ func (s *Server) ReloadConfig(cfg *config.Config) error {
 	if err := config.Save(s.dataDir, cfg); err != nil {
 		return err
 	}
-	// If attached to a running background daemon, ask it to hot-reload from disk and refresh snapshots/banners immediately!
+	// An attached daemon must reload the saved file before its state is re-read.
 	if attached && addr != "" {
 		key := prevKey
 		if key == "" {
@@ -347,91 +346,70 @@ func (s *Server) SyncFromDaemon() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	// Fetch /admin/state
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/state", nil); err == nil {
-		req.Header.Set("Authorization", "Bearer "+key)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			if resp.StatusCode == http.StatusOK {
-				var st struct {
-					Accounts []pool.AccountSnapshot `json:"accounts"`
-					Banners  []pool.HealthBanner    `json:"banners"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&st); err == nil {
-					s.mu.Lock()
-					s.remoteSnaps = st.Accounts
-					s.remoteBans = st.Banners
-					s.mu.Unlock()
-				}
-			}
-			_ = resp.Body.Close()
-		}
+	base := "http://" + addr + "/admin/"
+	if st, ok := fetchDaemon[struct {
+		Accounts []pool.AccountSnapshot `json:"accounts"`
+		Banners  []pool.HealthBanner    `json:"banners"`
+	}](ctx, base+"state", key); ok {
+		s.mu.Lock()
+		s.remoteSnaps = st.Accounts
+		s.remoteBans = st.Banners
+		s.mu.Unlock()
 	}
+	if lg, ok := fetchDaemon[struct {
+		Entries []logbuf.Entry `json:"entries"`
+	}](ctx, base+"logs", key); ok {
+		s.mu.Lock()
+		s.remoteLogs = lg.Entries
+		s.mu.Unlock()
+	}
+	if sum, ok := fetchDaemon[usage.Summary](ctx, base+"usage", key); ok {
+		s.mu.Lock()
+		s.remoteUsage = &sum
+		s.mu.Unlock()
+	}
+	if rep, ok := fetchDaemon[health.Report](ctx, base+"health", key); ok {
+		s.mu.Lock()
+		s.remoteHealth = &rep
+		s.mu.Unlock()
+	}
+	if rep, ok := fetchDaemon[quota.Report](ctx, base+"quota", key); ok {
+		s.mu.Lock()
+		s.remoteQuota = &rep
+		s.mu.Unlock()
+	}
+}
 
-	// Fetch /admin/logs
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/logs", nil); err == nil {
-		req.Header.Set("Authorization", "Bearer "+key)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			if resp.StatusCode == http.StatusOK {
-				var lg struct {
-					Entries []logbuf.Entry `json:"entries"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&lg); err == nil {
-					s.mu.Lock()
-					s.remoteLogs = lg.Entries
-					s.mu.Unlock()
-				}
-			}
-			_ = resp.Body.Close()
-		}
+// fetchDaemon GETs and decodes a daemon admin endpoint; ok is false on any failure.
+func fetchDaemon[T any](ctx context.Context, url, key string) (out T, ok bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return out, false
 	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out, false
+	}
+	defer resp.Body.Close()
+	ok = resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&out) == nil
+	return out, ok
+}
 
-	// Fetch /admin/usage
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/usage", nil); err == nil {
-		req.Header.Set("Authorization", "Bearer "+key)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			if resp.StatusCode == http.StatusOK {
-				var sum usage.Summary
-				if err := json.NewDecoder(resp.Body).Decode(&sum); err == nil {
-					s.mu.Lock()
-					s.remoteUsage = &sum
-					s.mu.Unlock()
-				}
-			}
-			_ = resp.Body.Close()
-		}
+// postDaemon POSTs to a daemon admin endpoint and decodes the reply.
+func postDaemon[T any](ctx context.Context, url, key string) (out T, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return out, err
 	}
-
-	// Fetch /admin/health
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/health", nil); err == nil {
-		req.Header.Set("Authorization", "Bearer "+key)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			if resp.StatusCode == http.StatusOK {
-				var rep health.Report
-				if err := json.NewDecoder(resp.Body).Decode(&rep); err == nil {
-					s.mu.Lock()
-					s.remoteHealth = &rep
-					s.mu.Unlock()
-				}
-			}
-			_ = resp.Body.Close()
-		}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return out, err
 	}
-
-	// Fetch /admin/quota
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/quota", nil); err == nil {
-		req.Header.Set("Authorization", "Bearer "+key)
-		if resp, err := http.DefaultClient.Do(req); err == nil {
-			if resp.StatusCode == http.StatusOK {
-				var qrep quota.Report
-				if err := json.NewDecoder(resp.Body).Decode(&qrep); err == nil {
-					s.mu.Lock()
-					s.remoteQuota = &qrep
-					s.mu.Unlock()
-				}
-			}
-			_ = resp.Body.Close()
-		}
-	}
+	defer resp.Body.Close()
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	return out, err
 }
 
 // LiveQuota returns the latest subscription quota & rolling usage report.
@@ -462,18 +440,8 @@ func (s *Server) RefreshQuotaNow(ctx context.Context, accountID string) (quota.R
 		if accountID != "" {
 			url += "?account=" + accountID
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		rep, err := postDaemon[quota.Report](ctx, url, key)
 		if err != nil {
-			return quota.Report{}, err
-		}
-		req.Header.Set("Authorization", "Bearer "+key)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return quota.Report{}, err
-		}
-		defer resp.Body.Close()
-		var rep quota.Report
-		if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
 			return quota.Report{}, err
 		}
 		s.mu.Lock()
@@ -519,18 +487,8 @@ func (s *Server) CheckHealthNow(ctx context.Context, accountID string) (health.R
 		if accountID != "" {
 			url += "?account=" + accountID
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+		rep, err := postDaemon[health.Report](ctx, url, key)
 		if err != nil {
-			return health.Report{}, err
-		}
-		req.Header.Set("Authorization", "Bearer "+key)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return health.Report{}, err
-		}
-		defer resp.Body.Close()
-		var rep health.Report
-		if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil {
 			return health.Report{}, err
 		}
 		s.mu.Lock()
@@ -568,16 +526,8 @@ func (s *Server) LiveUsagePeriod(period string) usage.Summary {
 		if period != "all" && addr != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/admin/usage?period="+period, nil)
-			if err == nil {
-				req.Header.Set("Authorization", "Bearer "+key)
-				if resp, err := http.DefaultClient.Do(req); err == nil {
-					defer resp.Body.Close()
-					var sum usage.Summary
-					if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&sum) == nil {
-						return sum
-					}
-				}
+			if sum, ok := fetchDaemon[usage.Summary](ctx, "http://"+addr+"/admin/usage?period="+period, key); ok {
+				return sum
 			}
 		}
 		if ru != nil {
@@ -1215,20 +1165,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
-	w.Header().Set("X-Apx-Account", acctName)
-	w.Header().Set("X-Apx-Model", res.UsedModel)
-	if res.FallbackFrom != "" {
-		w.Header().Set("X-Apx-Fallback-From", res.FallbackFrom)
-	}
-	if project != "" {
-		w.Header().Set("X-Apx-Project", project)
-	}
-	if resp.ToolsIgnored {
-		w.Header().Set("X-Apx-Tools-Ignored", "true")
-	}
-	if resp.SessionID != "" {
-		w.Header().Set("X-Apx-Session-Id", resp.SessionID)
-	}
+	setRouteHeaders(w, acctName, res.UsedModel, res.FallbackFrom, project, resp.ToolsIgnored, resp.SessionID)
 
 	u := resp.Usage
 	est := false
@@ -1407,23 +1344,13 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.Header().Set("Cache-Control", "no-cache")
 				w.Header().Set("Connection", "keep-alive")
-				w.Header().Set("X-Apx-Account", acctName)
-				w.Header().Set("X-Apx-Model", usedModel)
+				fallbackFrom := ""
 				if planIdx > 0 {
-					w.Header().Set("X-Apx-Fallback-From", primaryPlan.RequestedModel)
+					fallbackFrom = primaryPlan.RequestedModel
 				}
-				if project != "" {
-					w.Header().Set("X-Apx-Project", project)
-				}
-				if toolsIgnored {
-					w.Header().Set("X-Apx-Tools-Ignored", "true")
-				}
-				if sessionID != "" {
-					w.Header().Set("X-Apx-Session-Id", sessionID)
-				}
+				setRouteHeaders(w, acctName, usedModel, fallbackFrom, project, toolsIgnored, sessionID)
 				s.recordPrivacyHeader(w, privSess, usedModel)
 				w.WriteHeader(http.StatusOK)
-				// Initial role chunk
 				writeSSE(w, map[string]any{
 					"id":      compID,
 					"object":  "chat.completion.chunk",
@@ -1505,9 +1432,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 			if streamErr == nil {
 				s.pool.RecordSuccess(acct.ID)
 				s.pool.PinSession(req.SessionKey, acct.ID)
-				if !headersSent {
-					sendHeaders(acct.Kind == config.KindACP && req.HasTools, "")
-				}
+				sendHeaders(acct.Kind == config.KindACP && req.HasTools, "")
 				if tailDelta, tailReason := deltaRestorer.Flush(), reasonRestorer.Flush(); tailDelta != "" || tailReason != "" {
 					delta := map[string]any{}
 					if tailDelta != "" {
@@ -1582,13 +1507,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 		}
 	}
 
-	if lastErr == nil {
-		lastErr = pool.ErrNoAvailableAccount
-	}
-	status := httpStatusFromError(lastErr)
-	if errors.Is(lastErr, pool.ErrNoAvailableAccount) || errors.Is(lastErr, pool.ErrStrategyOptInNeeded) {
-		status = httpStatusFromPoolError(lastErr)
-	}
+	status, lastErr := finalFailure(lastErr)
 	s.logRequest(r, req.Model, lastAcct, status, start, lastErr)
 	writeOpenAIError(w, status, "backend_error", lastErr.Error())
 }
@@ -1658,6 +1577,17 @@ func (s *Server) logRequest(r *http.Request, model, acct string, status int, sta
 	})
 }
 
+// finalFailure is the status and error to report once every candidate failed.
+func finalFailure(lastErr error) (int, error) {
+	if lastErr == nil {
+		lastErr = pool.ErrNoAvailableAccount
+	}
+	if errors.Is(lastErr, pool.ErrNoAvailableAccount) || errors.Is(lastErr, pool.ErrStrategyOptInNeeded) {
+		return httpStatusFromPoolError(lastErr), lastErr
+	}
+	return httpStatusFromError(lastErr), lastErr
+}
+
 func httpStatusFromPoolError(err error) int {
 	if errors.Is(err, pool.ErrStrategyOptInNeeded) {
 		return http.StatusForbidden
@@ -1680,6 +1610,25 @@ func httpStatusFromError(err error) int {
 		}
 	}
 	return http.StatusBadGateway
+}
+
+// setRouteHeaders reports how a chat request was routed.
+func setRouteHeaders(w http.ResponseWriter, account, model, fallbackFrom, project string, toolsIgnored bool, sessionID string) {
+	h := w.Header()
+	h.Set("X-Apx-Account", account)
+	h.Set("X-Apx-Model", model)
+	if fallbackFrom != "" {
+		h.Set("X-Apx-Fallback-From", fallbackFrom)
+	}
+	if project != "" {
+		h.Set("X-Apx-Project", project)
+	}
+	if toolsIgnored {
+		h.Set("X-Apx-Tools-Ignored", "true")
+	}
+	if sessionID != "" {
+		h.Set("X-Apx-Session-Id", sessionID)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

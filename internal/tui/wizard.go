@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
@@ -38,6 +39,16 @@ func (a *App) configuredBackendCounts() map[string]int {
 		}
 	}
 	return counts
+}
+
+// detectHostLogins opens the host-login modal for any logins on this machine.
+func (a *App) detectHostLogins() {
+	found := hostauth.DetectAll("")
+	if len(found) == 0 {
+		a.setStatus("No existing host CLI logins detected on this machine.", false)
+		return
+	}
+	a.openHostAuthModal(found, nil, false)
 }
 
 // openStartupHostAuthIfNeeded checks for existing host CLI logins on launch that either
@@ -420,12 +431,7 @@ func (a *App) updateWelcomeModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.setStatus("Syncing latest official ACP Registry...", false)
 		return a, a.syncRegistryCmd()
 	case "c":
-		found := hostauth.DetectAll("")
-		if len(found) == 0 {
-			a.setStatus("No existing host CLI logins detected on this machine.", false)
-			return a, nil
-		}
-		a.openHostAuthModal(found, nil, false)
+		a.detectHostLogins()
 		return a, nil
 	case "enter":
 		cfg := a.srv.Config()
@@ -979,7 +985,7 @@ func (a *App) buildDraftAccount() (config.AccountConfig, string, error) {
 			Backend:        a.addBackend,
 			Enabled:        true,
 			PermissionMode: config.PermAutoApprove,
-			UseHostProfile: true, // Direct CLI proxy reuses existing host CLI sign-in by default; press 'H' for isolated profile!
+			UseHostProfile: true, // reuse the host CLI sign-in by default; 'H' switches to an isolated profile
 			CustomCommand:  customCmd,
 			ExposeMode:     expose,
 			ModelPrefix:    prefix,
@@ -1500,18 +1506,7 @@ func (a *App) viewAddAccountModal() string {
 						badgeStyle = a.styles.StateWarn
 					}
 				}
-				nStr := truncate(c.Name, nameW)
-				dStr := truncate(c.Description, descW)
-				if i == a.addListCur {
-					plain := fmt.Sprintf("> %-*s  %-*s  %s", nameW, nStr, badgeW, badgePlain, dStr)
-					lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
-				} else {
-					lines = append(lines, a.styles.JoinRow(2,
-						a.styles.PadCell(a.surfaceText("  "+nStr), nameW+2),
-						a.styles.PadCell(badgeStyle.Render(badgePlain), badgeW),
-						a.styles.Muted.Render(dStr),
-					))
-				}
+				lines = append(lines, a.addListRow(i == a.addListCur, c.Name, c.Description, badgePlain, badgeStyle, nameW, badgeW, descW, innerW))
 			}
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
@@ -1543,18 +1538,7 @@ func (a *App) viewAddAccountModal() string {
 						badgePlain = "○ manual"
 					}
 				}
-				nStr := truncate(d.Name, nameW)
-				dStr := truncate(d.Description, descW)
-				if i == a.addListCur {
-					plain := fmt.Sprintf("> %-*s  %-*s  %s", nameW, nStr, badgeW, badgePlain, dStr)
-					lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW)))
-				} else {
-					lines = append(lines, a.styles.JoinRow(2,
-						a.styles.PadCell(a.surfaceText("  "+nStr), nameW+2),
-						a.styles.PadCell(badgeStyle.Render(badgePlain), badgeW),
-						a.styles.Muted.Render(dStr),
-					))
-				}
+				lines = append(lines, a.addListRow(i == a.addListCur, d.Name, d.Description, badgePlain, badgeStyle, nameW, badgeW, descW, innerW))
 			}
 			lines = append(lines, "")
 			lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
@@ -1613,4 +1597,19 @@ func (a *App) viewAddAccountModal() string {
 	}
 
 	return a.styles.Modal.Width(cardW).Render(strings.Join(lines, "\n"))
+}
+
+// addListRow renders one backend row of the Add Account list.
+func (a *App) addListRow(selected bool, name, desc, badge string, badgeStyle lipgloss.Style, nameW, badgeW, descW, innerW int) string {
+	nStr := truncate(name, nameW)
+	dStr := truncate(desc, descW)
+	if selected {
+		plain := fmt.Sprintf("> %-*s  %-*s  %s", nameW, nStr, badgeW, badge, dStr)
+		return a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(plain, innerW))
+	}
+	return a.styles.JoinRow(2,
+		a.styles.PadCell(a.surfaceText("  "+nStr), nameW+2),
+		a.styles.PadCell(badgeStyle.Render(badge), badgeW),
+		a.styles.Muted.Render(dStr),
+	)
 }

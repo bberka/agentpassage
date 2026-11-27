@@ -17,14 +17,14 @@ import (
 )
 
 type anthropicRequest struct {
-	Model        string            `json:"model"`
-	System       json.RawMessage   `json:"system,omitempty"`
-	Messages     []openAIMessage   `json:"messages"`
-	MaxTokens    int               `json:"max_tokens"`
-	Temperature  *float64          `json:"temperature,omitempty"`
-	Stream       bool              `json:"stream"`
-	Tools        []json.RawMessage `json:"tools,omitempty"`
-	Thinking     *struct {
+	Model       string            `json:"model"`
+	System      json.RawMessage   `json:"system,omitempty"`
+	Messages    []openAIMessage   `json:"messages"`
+	MaxTokens   int               `json:"max_tokens"`
+	Temperature *float64          `json:"temperature,omitempty"`
+	Stream      bool              `json:"stream"`
+	Tools       []json.RawMessage `json:"tools,omitempty"`
+	Thinking    *struct {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
 	} `json:"thinking,omitempty"`
@@ -132,20 +132,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	acctName := acct.Backend + "/" + acct.Name
-	w.Header().Set("X-Apx-Account", acctName)
-	w.Header().Set("X-Apx-Model", res.UsedModel)
-	if res.FallbackFrom != "" {
-		w.Header().Set("X-Apx-Fallback-From", res.FallbackFrom)
-	}
-	if project != "" {
-		w.Header().Set("X-Apx-Project", project)
-	}
-	if resp.ToolsIgnored {
-		w.Header().Set("X-Apx-Tools-Ignored", "true")
-	}
-	if resp.SessionID != "" {
-		w.Header().Set("X-Apx-Session-Id", resp.SessionID)
-	}
+	setRouteHeaders(w, acctName, res.UsedModel, res.FallbackFrom, project, resp.ToolsIgnored, resp.SessionID)
 
 	stopReason := "end_turn"
 	if resp.FinishReason == "length" {
@@ -220,20 +207,11 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.Header().Set("Cache-Control", "no-cache")
 				w.Header().Set("Connection", "keep-alive")
-				w.Header().Set("X-Apx-Account", acctName)
-				w.Header().Set("X-Apx-Model", usedModel)
+				fallbackFrom := ""
 				if planIdx > 0 {
-					w.Header().Set("X-Apx-Fallback-From", primaryPlan.RequestedModel)
+					fallbackFrom = primaryPlan.RequestedModel
 				}
-				if project != "" {
-					w.Header().Set("X-Apx-Project", project)
-				}
-				if toolsIgnored {
-					w.Header().Set("X-Apx-Tools-Ignored", "true")
-				}
-				if sessionID != "" {
-					w.Header().Set("X-Apx-Session-Id", sessionID)
-				}
+				setRouteHeaders(w, acctName, usedModel, fallbackFrom, project, toolsIgnored, sessionID)
 				s.recordPrivacyHeader(w, privSess, usedModel)
 				w.WriteHeader(http.StatusOK)
 				writeAnthropicEvent(w, "message_start", map[string]any{

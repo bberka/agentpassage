@@ -46,7 +46,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		keyDisp = cfg.Server.LocalKey
 	}
 
-	// Empty state: OpenCode-style centered welcome hero!
+	// Empty state: centered welcome screen.
 	if len(snaps) == 0 {
 		heroW := clamp(a.width-12, 58, 78)
 		innerW := heroW - 6
@@ -70,7 +70,6 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		return a.styles.Place(a.width, bodyHeight, lipgloss.Center, lipgloss.Center, hero)
 	}
 
-	// Build Endpoint card
 	healthRep := a.srv.LiveHealth()
 	healthByID := make(map[string]health.Result, len(healthRep.Accounts))
 	for _, hr := range healthRep.Accounts {
@@ -103,7 +102,6 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		return a.styles.Card.Width(w).Render(strings.Join(lines, "\n"))
 	}
 
-	// Build Accounts card
 	renderAccountsCard := func(w, h int) string {
 		inner := max(w-4, 30)
 		maxRows := max(h-5, 2)
@@ -150,7 +148,6 @@ func (a *App) viewDashboard(bodyHeight int) string {
 		return a.styles.Card.Width(w).Height(h - 2).Render(strings.Join(lines, "\n"))
 	}
 
-	// Build Live Activity card
 	renderLogsCard := func(w, h int) string {
 		inner := max(w-4, 24)
 		maxRows := max(h-4, 3)

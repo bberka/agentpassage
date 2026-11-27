@@ -52,7 +52,7 @@ type Styles struct {
 
 func NewStyles(theme string) Styles {
 	var (
-		hasBg     = true
+		hasBg                            = true
 		canvasBg  lipgloss.TerminalColor = lipgloss.Color("#0d1117")
 		surfaceBg lipgloss.TerminalColor = lipgloss.Color("#161b22")
 		modalBg   lipgloss.TerminalColor = lipgloss.Color("#1c2128")
@@ -126,7 +126,7 @@ func NewStyles(theme string) Styles {
 		keyCapFg = lipgloss.Color("#0969da")
 
 	case "dark":
-		// OpenCode-style deep dark palette (defaults above)
+		// The defaults above are the dark palette.
 
 	default: // "auto" — adaptive dark/light canvas & surfaces
 		hasBg = true

@@ -44,14 +44,14 @@ var (
 
 // Buffer keeps recent log entries in memory, redacts secrets, optionally appends to disk, and notifies subscribers.
 type Buffer struct {
-	mu            sync.RWMutex
-	entries       []Entry
-	maxEntries    int
-	secretSource  func() []string
-	extraSecrets  []string
-	file          *os.File
-	subs          map[int]chan Entry
-	nextSubID     int
+	mu           sync.RWMutex
+	entries      []Entry
+	maxEntries   int
+	secretSource func() []string
+	extraSecrets []string
+	file         *os.File
+	subs         map[int]chan Entry
+	nextSubID    int
 }
 
 func New(maxEntries int, dataDir string, secretSource func() []string) *Buffer {

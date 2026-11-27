@@ -24,6 +24,34 @@ func (a *App) openServiceModal() tea.Cmd {
 	return a.refreshServiceCmd()
 }
 
+// detachLocalGateway stops this process's gateway so the service can take the
+// port, and reports whether one was running.
+func (a *App) detachLocalGateway() bool {
+	if a.srv.Attached() || !a.srv.Running() {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = a.srv.DetachAndStopLocal(ctx)
+	return true
+}
+
+// attachToService gives the service a moment to listen, then attaches to it.
+func (a *App) attachToService() {
+	time.Sleep(350 * time.Millisecond)
+	_, _ = a.srv.AttachIfRunning()
+}
+
+func (a *App) setAutoStart(enable bool) {
+	if err := service.SetAutoStart(a.srv.DataDir(), enable); err != nil {
+		a.setStatus("Auto-start toggle failed: "+err.Error(), true)
+	} else if enable {
+		a.setStatus("Auto-start on login enabled", false)
+	} else {
+		a.setStatus("Auto-start on login disabled", false)
+	}
+}
+
 func (a *App) updateServiceModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	st := a.svcStatus
 	switch msg.String() {
@@ -31,13 +59,8 @@ func (a *App) updateServiceModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.modal = modalNone
 		return a, nil
 
-	case "i": // Install + start + enable auto-start (graceful port handoff)
-		wasLocal := !a.srv.Attached() && a.srv.Running()
-		if wasLocal {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = a.srv.DetachAndStopLocal(ctx)
-			cancel()
-		}
+	case "i": // Install + start + enable auto-start
+		wasLocal := a.detachLocalGateway()
 		unit, err := service.Install(a.srv.DataDir(), true)
 		if err != nil {
 			if wasLocal {
@@ -46,8 +69,7 @@ func (a *App) updateServiceModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.setStatus("Service install failed: "+err.Error(), true)
 			return a, a.refreshServiceCmd()
 		}
-		time.Sleep(350 * time.Millisecond)
-		_, _ = a.srv.AttachIfRunning()
+		a.attachToService()
 		a.setStatus("Installed, enabled auto-start & attached ("+unit+")", false)
 		return a, a.refreshServiceCmd()
 
@@ -63,16 +85,11 @@ func (a *App) updateServiceModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.setStatus("Stopped background service", false)
 			}
 		} else {
-			if !a.srv.Attached() && a.srv.Running() {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				_ = a.srv.DetachAndStopLocal(ctx)
-				cancel()
-			}
+			a.detachLocalGateway()
 			if err := service.Start(); err != nil {
 				a.setStatus("Start failed: "+err.Error(), true)
 			} else {
-				time.Sleep(350 * time.Millisecond)
-				_, _ = a.srv.AttachIfRunning()
+				a.attachToService()
 				a.setStatus("Started & attached to background service", false)
 			}
 		}
@@ -86,21 +103,14 @@ func (a *App) updateServiceModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if err := service.Restart(); err != nil {
 			a.setStatus("Restart failed: "+err.Error(), true)
 		} else {
-			time.Sleep(350 * time.Millisecond)
-			_, _ = a.srv.AttachIfRunning()
+			a.attachToService()
 			a.setStatus("Restarted background service", false)
 		}
 		return a, a.refreshServiceCmd()
 
 	case "a": // Toggle Auto-Start on login/boot
 		next := !st.Enabled
-		if err := service.SetAutoStart(a.srv.DataDir(), next); err != nil {
-			a.setStatus("Auto-start toggle failed: "+err.Error(), true)
-		} else if next {
-			a.setStatus("Auto-start on login enabled", false)
-		} else {
-			a.setStatus("Auto-start on login disabled", false)
-		}
+		a.setAutoStart(next)
 		return a, a.refreshServiceCmd()
 
 	case "u": // Uninstall
@@ -197,7 +207,7 @@ func (a *App) renderServiceSummaryInline() string {
 		return a.styles.StateReady.Render("● "+st.Manager+" active") + " " + a.styles.Muted.Render("("+auto+")")
 	}
 	if st.Installed {
-		return a.styles.StateWarn.Render("○ "+st.Manager+" stopped")
+		return a.styles.StateWarn.Render("○ " + st.Manager + " stopped")
 	}
 	return a.styles.Muted.Render("○ not installed")
 }

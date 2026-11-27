@@ -131,9 +131,9 @@ const (
 )
 
 type CatalogConfig struct {
-	Mode                 string `toml:"mode,omitempty"`               // "provider" (default), "provider+account", "account", or "bare"
-	ExposeDirectModels   bool   `toml:"expose_direct_models"`         // legacy: show <backend>/<account>/<model> in /v1/models
-	HideBackendQualified bool   `toml:"hide_backend_qualified"`       // legacy: hide <backend>/<model> when bare <model> exists
+	Mode                 string `toml:"mode,omitempty"`                 // "provider" (default), "provider+account", "account", or "bare"
+	ExposeDirectModels   bool   `toml:"expose_direct_models"`           // legacy: show <backend>/<account>/<model> in /v1/models
+	HideBackendQualified bool   `toml:"hide_backend_qualified"`         // legacy: hide <backend>/<model> when bare <model> exists
 	ShowEffortVariants   bool   `toml:"show_effort_variants,omitempty"` // expand -low/-medium/-high/[xhigh] as separate models (default false = grouped into thinking effort levels)
 }
 
@@ -164,13 +164,13 @@ const (
 )
 
 type ClientKey struct {
-	ID        string   `toml:"id" json:"id"`
-	Name      string   `toml:"name" json:"name"`
-	Key       string   `toml:"key" json:"key"`
-	Role      string   `toml:"role,omitempty" json:"role,omitempty"`       // "client" (default) or "admin"
-	Project   string   `toml:"project,omitempty" json:"project,omitempty"` // optional project scope for project-based routing & usage
-	Models           []string `toml:"models,omitempty" json:"models,omitempty"`                       // optional glob allowlist (empty = all)
-	DailyBudgetUSD   float64  `toml:"daily_budget_usd,omitempty" json:"daily_budget_usd,omitempty"`   // optional daily USD spend cap (0 = unlimited)
+	ID               string   `toml:"id" json:"id"`
+	Name             string   `toml:"name" json:"name"`
+	Key              string   `toml:"key" json:"key"`
+	Role             string   `toml:"role,omitempty" json:"role,omitempty"`                             // "client" (default) or "admin"
+	Project          string   `toml:"project,omitempty" json:"project,omitempty"`                       // optional project scope for project-based routing & usage
+	Models           []string `toml:"models,omitempty" json:"models,omitempty"`                         // optional glob allowlist (empty = all)
+	DailyBudgetUSD   float64  `toml:"daily_budget_usd,omitempty" json:"daily_budget_usd,omitempty"`     // optional daily USD spend cap (0 = unlimited)
 	MonthlyBudgetUSD float64  `toml:"monthly_budget_usd,omitempty" json:"monthly_budget_usd,omitempty"` // optional 30d USD spend cap (0 = unlimited)
 	Disabled         bool     `toml:"disabled,omitempty" json:"disabled,omitempty"`
 	CreatedAt        string   `toml:"created_at,omitempty" json:"created_at,omitempty"`
@@ -219,40 +219,40 @@ type UIConfig struct {
 type ACPConfig struct {
 	ToolActivity string `toml:"tool_activity"` // "drop" or "text"
 	// ExposeModes shows apx's own Mode menu (Manual, Accept edits, Auto, Full
-	// access, Plan) to ACP hosts. Off by default: apx forwards every permission
-	// prompt to the host, so the host's own permission setting decides. A mode
-	// the host sets explicitly is still honored either way.
+	// access, Plan) to ACP hosts. Off by default, and then each account's
+	// permission_mode decides how permission requests are answered. A mode the
+	// host sets explicitly is honored either way.
 	ExposeModes bool `toml:"expose_modes,omitempty"`
 }
 
 type AccountConfig struct {
-	ID             string            `toml:"id"`
-	Name           string            `toml:"name"`
-	Kind           string            `toml:"kind"`    // "acp" or "api_key"
-	Backend        string            `toml:"backend"` // descriptor id or preset id
-	Enabled        bool              `toml:"enabled"`
-	DisabledReason string            `toml:"disabled_reason,omitempty"`
-	BaseURL        string            `toml:"base_url,omitempty"`
-	AuthStyle      string            `toml:"auth_style,omitempty"` // bearer, anthropic, none
-	DefaultCwd      string            `toml:"default_cwd,omitempty"`
-	PermissionMode  string            `toml:"permission_mode,omitempty"` // deny, auto-approve, ask
-	UseHostProfile  bool              `toml:"use_host_profile,omitempty"`
-	CustomCommand   []string          `toml:"custom_command,omitempty"`
-	CustomLogin    []string          `toml:"custom_login,omitempty"`
-	CustomEnv       map[string]string `toml:"custom_env,omitempty"`
-	Models          []string          `toml:"models,omitempty"`           // enabled models served by this account
-	AvailableModels []string          `toml:"available_models,omitempty"` // full discovered catalog for enable/disable toggling
-	DisabledModels  []string          `toml:"disabled_models,omitempty"`  // explicitly disabled models from the catalog
-	ModelLabels     map[string]string   `toml:"model_labels,omitempty"`     // upstream model id -> human display name (e.g. "fable" -> "Fable 5.2")
-	ModelEfforts    map[string][]string `toml:"model_efforts,omitempty"`    // upstream model id (or "*" default) -> ACP thought_level options (e.g. ["low","medium","high"])
-	ExposeMode      string            `toml:"expose_mode,omitempty"`      // "pool" (default), "prefix", "both"
-	ModelPrefix     string            `toml:"model_prefix,omitempty"`     // e.g. "a-", "b-" (defaults to "<name>-")
-	MaxConcurrency  int               `toml:"max_concurrency"`
-	HourlyLimit      int     `toml:"hourly_limit,omitempty"`
-	DailyLimit       int     `toml:"daily_limit,omitempty"`
-	WeeklyLimit      int     `toml:"weekly_limit,omitempty"`
-	DailyBudgetUSD   float64 `toml:"daily_budget_usd,omitempty"`
-	MonthlyBudgetUSD float64 `toml:"monthly_budget_usd,omitempty"`
+	ID               string              `toml:"id"`
+	Name             string              `toml:"name"`
+	Kind             string              `toml:"kind"`    // "acp" or "api_key"
+	Backend          string              `toml:"backend"` // descriptor id or preset id
+	Enabled          bool                `toml:"enabled"`
+	DisabledReason   string              `toml:"disabled_reason,omitempty"`
+	BaseURL          string              `toml:"base_url,omitempty"`
+	AuthStyle        string              `toml:"auth_style,omitempty"` // bearer, anthropic, none
+	DefaultCwd       string              `toml:"default_cwd,omitempty"`
+	PermissionMode   string              `toml:"permission_mode,omitempty"` // deny, auto-approve, ask
+	UseHostProfile   bool                `toml:"use_host_profile,omitempty"`
+	CustomCommand    []string            `toml:"custom_command,omitempty"`
+	CustomLogin      []string            `toml:"custom_login,omitempty"`
+	CustomEnv        map[string]string   `toml:"custom_env,omitempty"`
+	Models           []string            `toml:"models,omitempty"`           // enabled models served by this account
+	AvailableModels  []string            `toml:"available_models,omitempty"` // full discovered catalog for enable/disable toggling
+	DisabledModels   []string            `toml:"disabled_models,omitempty"`  // explicitly disabled models from the catalog
+	ModelLabels      map[string]string   `toml:"model_labels,omitempty"`     // upstream model id -> human display name (e.g. "fable" -> "Fable 5.2")
+	ModelEfforts     map[string][]string `toml:"model_efforts,omitempty"`    // upstream model id (or "*" default) -> ACP thought_level options (e.g. ["low","medium","high"])
+	ExposeMode       string              `toml:"expose_mode,omitempty"`      // "pool" (default), "prefix", "both"
+	ModelPrefix      string              `toml:"model_prefix,omitempty"`     // e.g. "a-", "b-" (defaults to "<name>-")
+	MaxConcurrency   int                 `toml:"max_concurrency"`
+	HourlyLimit      int                 `toml:"hourly_limit,omitempty"`
+	DailyLimit       int                 `toml:"daily_limit,omitempty"`
+	WeeklyLimit      int                 `toml:"weekly_limit,omitempty"`
+	DailyBudgetUSD   float64             `toml:"daily_budget_usd,omitempty"`
+	MonthlyBudgetUSD float64             `toml:"monthly_budget_usd,omitempty"`
 }
 
 // EffectivePrefix returns the model prefix used when ExposeMode is "prefix" or "both".
@@ -478,18 +478,18 @@ type ModelOverride struct {
 }
 
 type RoutingRule struct {
-	Pattern                     string   `toml:"pattern"`                                  // exact model id, prefix glob like "agy/*", or "*"
-	Project                     string   `toml:"project,omitempty"`                        // optional project id or glob (matched from X-Apx-Project or API key)
+	Pattern                     string   `toml:"pattern"`           // exact model id, prefix glob like "agy/*", or "*"
+	Project                     string   `toml:"project,omitempty"` // optional project id or glob (matched from X-Apx-Project or API key)
 	Accounts                    []string `toml:"accounts"`
 	Strategy                    string   `toml:"strategy"`
 	AllowCrossAccountRetryOn429 bool     `toml:"allow_cross_account_retry_on_429"`
 	SubscriptionWarningAcked    bool     `toml:"subscription_warning_acked,omitempty"`
-	QuotaThresholdPct           int      `toml:"quota_threshold_pct,omitempty"`            // avoid accounts above this used % (e.g. 90) when alternatives exist
-	DefaultEffort               string   `toml:"default_effort,omitempty"`                 // default thinking effort ("off", "low", "medium", "high", "xhigh", "max")
-	SystemPrompt                string   `toml:"system_prompt,omitempty"`                  // optional system prompt prepended for requests matching this rule
-	Cache                       bool     `toml:"cache,omitempty"`                          // opt-in response caching for this route
-	FallbackModels              []string `toml:"fallback_models,omitempty"`                // alternate models/providers tried after primary model fails
-	FallbackOn                  []string `toml:"fallback_on,omitempty"`                    // eligible error kinds: rate_limit, transient, unavailable
+	QuotaThresholdPct           int      `toml:"quota_threshold_pct,omitempty"` // avoid accounts above this used % (e.g. 90) when alternatives exist
+	DefaultEffort               string   `toml:"default_effort,omitempty"`      // default thinking effort ("off", "low", "medium", "high", "xhigh", "max")
+	SystemPrompt                string   `toml:"system_prompt,omitempty"`       // optional system prompt prepended for requests matching this rule
+	Cache                       bool     `toml:"cache,omitempty"`               // opt-in response caching for this route
+	FallbackModels              []string `toml:"fallback_models,omitempty"`     // alternate models/providers tried after primary model fails
+	FallbackOn                  []string `toml:"fallback_on,omitempty"`         // eligible error kinds: rate_limit, transient, unavailable
 }
 
 // EffectiveFallbackOn returns the error kinds eligible to trigger model fallback.

@@ -7,9 +7,6 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 )
 
-// Canonical effort/thinking levels ordered from lowest to highest.
-var effortOrder = []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
-
 var effortRank = map[string]int{
 	"minimal": 1,
 	"low":     2,

@@ -1,12 +1,9 @@
 package httpbackend
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
@@ -18,26 +15,15 @@ func (c *Client) Embed(ctx context.Context, acct config.AccountConfig, apiKey, u
 	if err != nil {
 		return nil, backend.Usage{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+"/embeddings", bytes.NewReader(bodyBytes))
+	resp, err := c.post(ctx, acct, apiKey, "/embeddings", bodyBytes, "")
 	if err != nil {
 		return nil, backend.Usage{}, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	applyAuth(httpReq, acct, apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, backend.Usage{}, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
 	defer resp.Body.Close()
-	c.emitHeaders(acct, resp.Header)
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	respBody, err := readBody(resp, 32<<20)
 	if err != nil {
-		return nil, backend.Usage{}, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, backend.Usage{}, makeHTTPError(resp, respBody)
+		return nil, backend.Usage{}, err
 	}
 
 	var meta struct {
@@ -56,26 +42,15 @@ func (c *Client) Rerank(ctx context.Context, acct config.AccountConfig, apiKey, 
 	if err != nil {
 		return nil, backend.Usage{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+"/rerank", bytes.NewReader(bodyBytes))
+	resp, err := c.post(ctx, acct, apiKey, "/rerank", bodyBytes, "")
 	if err != nil {
 		return nil, backend.Usage{}, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	applyAuth(httpReq, acct, apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, backend.Usage{}, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
 	defer resp.Body.Close()
-	c.emitHeaders(acct, resp.Header)
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	respBody, err := readBody(resp, 16<<20)
 	if err != nil {
-		return nil, backend.Usage{}, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, backend.Usage{}, makeHTTPError(resp, respBody)
+		return nil, backend.Usage{}, err
 	}
 
 	var parsed struct {

@@ -413,20 +413,6 @@ func TestParseAgyUsageCommandGroups(t *testing.T) {
 	if q.Credits != "Gemini 79% · Claude/GPT 0%" {
 		t.Fatalf("unexpected credits %q", q.Credits)
 	}
-
-	for group, wantUsed := range map[string]float64{"gemini": 16, "claude-gpt": 100, "": 100} {
-		if used, ok := q.UsedPercentForGroup(group); !ok || used != wantUsed {
-			t.Fatalf("UsedPercentForGroup(%q) = %v, %v; want %v", group, used, ok, wantUsed)
-		}
-	}
-	// Gemini without a weekly window falls back to its 5h window.
-	g5 := quota.AccountQuota{Groups: []quota.QuotaGroup{{ID: quota.GroupGemini, Primary: &quota.Window{UsedPercent: 40}}}}
-	if used, ok := g5.UsedPercentForGroup(quota.GroupGemini); !ok || used != 40 {
-		t.Fatalf("gemini 5h fallback = %v, %v; want 40", used, ok)
-	}
-	if _, ok := q.UsedPercentForGroup("other"); ok {
-		t.Fatalf("expected unknown group to report no data")
-	}
 }
 
 func TestGroupForModel(t *testing.T) {

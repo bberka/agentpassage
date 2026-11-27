@@ -3,7 +3,6 @@ package descriptors
 import (
 	"os/exec"
 	"sort"
-	"strings"
 )
 
 // CLIDescriptor defines how to proxy requests directly through an official CLI's
@@ -21,7 +20,7 @@ type CLIDescriptor struct {
 	CwdFlag         string            `yaml:"cwd_flag,omitempty" json:"cwd_flag,omitempty"`
 	AutoApproveArgs []string          `yaml:"auto_approve_args,omitempty" json:"auto_approve_args,omitempty"`
 	PromptFlag      string            `yaml:"prompt_flag,omitempty" json:"prompt_flag,omitempty"` // empty = positional arg at end
-	OutputFormat    string            `yaml:"output_format" json:"output_format"`                // "stream-json", "codex-jsonl", "opencode-json", "text"
+	OutputFormat    string            `yaml:"output_format" json:"output_format"`                 // "stream-json", "codex-jsonl", "opencode-json", "text"
 	ModelsCmd       []string          `yaml:"models_cmd,omitempty" json:"models_cmd,omitempty"`
 	LoginCmd        []string          `yaml:"login_cmd,omitempty" json:"login_cmd,omitempty"`
 	ProfileEnv      map[string]string `yaml:"profile_env,omitempty" json:"profile_env,omitempty"`
@@ -41,8 +40,8 @@ func BuiltInCLI() []CLIDescriptor {
 			ResumeFlag:      "--conversation",
 			AutoApproveArgs: []string{"--dangerously-skip-permissions"},
 			OutputFormat:    "stream-json",
-			ModelsCmd: []string{"agy", "models"},
-			LoginCmd:  []string{"agy", "acp", "--login", "--app-data-dir", "antigravity-cli"},
+			ModelsCmd:       []string{"agy", "models"},
+			LoginCmd:        []string{"agy", "acp", "--login", "--app-data-dir", "antigravity-cli"},
 			ProfileEnv: map[string]string{
 				"HOME":                       "{profile}",
 				"XDG_CONFIG_HOME":            "{profile}/.config",
@@ -193,21 +192,5 @@ func (d CLIDescriptor) FoundOnPath() (string, bool) {
 }
 
 func (d CLIDescriptor) ExpandEnv(profileDir, accountName string, customEnv map[string]string) []string {
-	merged := make(map[string]string)
-	for k, v := range d.ProfileEnv {
-		v = strings.ReplaceAll(v, "{profile}", profileDir)
-		v = strings.ReplaceAll(v, "{account}", accountName)
-		merged[k] = v
-	}
-	for k, v := range customEnv {
-		v = strings.ReplaceAll(v, "{profile}", profileDir)
-		v = strings.ReplaceAll(v, "{account}", accountName)
-		merged[k] = v
-	}
-	out := make([]string, 0, len(merged))
-	for k, v := range merged {
-		out = append(out, k+"="+v)
-	}
-	sort.Strings(out)
-	return out
+	return expandEnv(profileDir, accountName, d.ProfileEnv, customEnv)
 }

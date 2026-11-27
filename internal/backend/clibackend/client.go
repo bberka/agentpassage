@@ -69,7 +69,7 @@ func (m *Manager) LoginCommand(acct config.AccountConfig) (*exec.Cmd, string, er
 		expanded[i] = s
 	}
 	cmd := exec.Command(expanded[0], expanded[1:]...)
-	cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
+	cmd.Env = backend.SanitizeChildEnv(os.Environ(), extraEnv, acct)
 	return cmd, profileDir, nil
 }
 
@@ -105,7 +105,7 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 		tctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(tctx, desc.ModelsCmd[0], desc.ModelsCmd[1:]...)
-		cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
+		cmd.Env = backend.SanitizeChildEnv(os.Environ(), extraEnv, acct)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			msg := strings.TrimSpace(string(out))
@@ -129,7 +129,7 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 	tctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(tctx, bin, "--version")
-	cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
+	cmd.Env = backend.SanitizeChildEnv(os.Environ(), extraEnv, acct)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("%s --version failed: %s (%w)", bin, strings.TrimSpace(string(out)), err)
 	}
@@ -221,7 +221,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		}
 	}()
 
-	promptText := formatPrompt(req.Messages, existingSID != "")
+	promptText := backend.FormatPrompt(req.Messages, existingSID != "")
 	promptText += attachmentNotes(ctx, backend.PromptAttachments(req.Messages, existingSID != ""))
 	effectiveAcct := acct
 	if req.PermissionMode != "" {
@@ -234,7 +234,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = cwd
-	cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
+	cmd.Env = backend.SanitizeChildEnv(os.Environ(), extraEnv, acct)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -512,35 +512,6 @@ func parseModelsCLIOutput(out string) []string {
 	return models
 }
 
-func formatPrompt(messages []backend.Message, reusedSession bool) string {
-	if len(messages) == 0 {
-		return ""
-	}
-	if reusedSession {
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "user" {
-				return messages[i].Content
-			}
-		}
-		return messages[len(messages)-1].Content
-	}
-	if len(messages) == 1 {
-		return messages[0].Content
-	}
-	var sb strings.Builder
-	for _, m := range messages {
-		switch m.Role {
-		case "system":
-			sb.WriteString("[System]\n" + m.Content + "\n\n")
-		case "assistant":
-			sb.WriteString("[Assistant]\n" + m.Content + "\n\n")
-		default:
-			sb.WriteString("[User]\n" + m.Content + "\n\n")
-		}
-	}
-	return strings.TrimSpace(sb.String())
-}
-
 func classifyCLIError(err error) error {
 	if err == nil {
 		return nil
@@ -563,46 +534,6 @@ func classifyCLIError(err error) error {
 	default:
 		return &backend.BackendError{Kind: backend.ErrKindTransient, StatusCode: 502, Message: msg, Cause: err}
 	}
-}
-
-func sanitizeChildEnv(baseEnv, extraEnv []string, acct config.AccountConfig) []string {
-	overrides := make(map[string]string, len(extraEnv)+3)
-	for _, kv := range extraEnv {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			overrides[k] = v
-		}
-	}
-	overrides["APX_IN_CHILD"] = "1"
-	overrides["APX_CHILD_BACKEND"] = acct.Backend
-	overrides["APX_CHILD_ACCOUNT"] = acct.ID
-
-	out := make([]string, 0, len(baseEnv)+len(overrides))
-	for _, kv := range baseEnv {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		if _, replaced := overrides[k]; replaced {
-			continue
-		}
-		switch k {
-		case "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL":
-			lower := strings.ToLower(v)
-			if strings.Contains(lower, "127.0.0.1") || strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]") {
-				continue
-			}
-		case "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "APX_API_KEY", "ACPX_API_KEY":
-			trimmed := strings.TrimSpace(v)
-			if strings.HasPrefix(trimmed, "apx_") || strings.HasPrefix(trimmed, "acpx_") {
-				continue
-			}
-		}
-		out = append(out, kv)
-	}
-	for k, v := range overrides {
-		out = append(out, k+"="+v)
-	}
-	return out
 }
 
 // attachmentNotes describes attachments for a CLI agent, which only takes a

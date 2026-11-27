@@ -1,6 +1,7 @@
 package httpbackend
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 
@@ -41,7 +42,7 @@ func openAIPart(a backend.Attachment) map[string]any {
 	case a.Text != "":
 		return map[string]any{"type": "text", "text": textAttachment(a)}
 	case a.Data != "":
-		return map[string]any{"type": "file", "file": map[string]any{"filename": nameOr(a.Name, a.Kind), "file_data": a.DataURL()}}
+		return map[string]any{"type": "file", "file": map[string]any{"filename": cmp.Or(a.Name, a.Kind), "file_data": a.DataURL()}}
 	}
 	return map[string]any{"type": "text", "text": linkNote(a)}
 }
@@ -66,7 +67,7 @@ func anthropicBlock(a backend.Attachment) map[string]any {
 	isPDF := a.MimeType == "application/pdf"
 	switch {
 	case a.Kind == backend.AttachImage && a.Data != "":
-		return map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": nameOr(a.MimeType, "image/png"), "data": a.Data}}
+		return map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": cmp.Or(a.MimeType, "image/png"), "data": a.Data}}
 	case a.Kind == backend.AttachImage && isHTTP(a.URI):
 		return map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": a.URI}}
 	case isPDF && a.Data != "":
@@ -82,7 +83,7 @@ func anthropicBlock(a backend.Attachment) map[string]any {
 }
 
 func textAttachment(a backend.Attachment) string {
-	return fmt.Sprintf("[Attached file %s]\n%s", nameOr(a.Name, a.URI), a.Text)
+	return fmt.Sprintf("[Attached file %s]\n%s", cmp.Or(a.Name, a.URI), a.Text)
 }
 
 func linkNote(a backend.Attachment) string {
@@ -101,11 +102,4 @@ func audioFormat(mimeType string) string {
 
 func isHTTP(u string) bool {
 	return strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")
-}
-
-func nameOr(s, fallback string) string {
-	if s != "" {
-		return s
-	}
-	return fallback
 }

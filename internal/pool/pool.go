@@ -629,7 +629,7 @@ func (m *Manager) RecordLatency(accountID string, durMs int64) {
 	st.ewmaLatencyMs = latencyEWMAWeight*float64(durMs) + (1-latencyEWMAWeight)*st.ewmaLatencyMs
 }
 
-// RecordError updates health state according to section 7 rules.
+// RecordError updates account health after a failed request.
 // Returns whether the gateway is allowed to fail over to another account.
 func (m *Manager) RecordError(accountID string, err error, rule config.RoutingRule) (allowFailover bool) {
 	return m.RecordErrorForGroup(accountID, "", err, rule)

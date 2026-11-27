@@ -17,7 +17,7 @@ const placeholderSuffix = "}}"
 const maxPlaceholderLen = 48
 
 var (
-	// Single combined high-confidence API key / secret token pattern (1 pass instead of 10).
+	// One combined pattern for high-confidence API keys and secret tokens.
 	combinedAPIKeyPattern = regexp.MustCompile(
 		`\b(?:` +
 			`sk-(?:proj-|ant-[A-Za-z0-9_-]+-|live-|test-)?[A-Za-z0-9_-]{16,}` +

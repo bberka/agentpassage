@@ -48,19 +48,19 @@ type ResultHook func(acct config.AccountConfig, models []string, err error)
 
 // Checker performs periodic and on-demand non-destructive health probes across configured accounts.
 type Checker struct {
-	mu           sync.RWMutex
-	getAccounts  func() []config.AccountConfig
-	probe        ProbeFunc
-	onResult     ResultHook
-	logs         *logbuf.Buffer
-	enabled      bool
-	interval     time.Duration
-	lastSweepAt  time.Time
-	results      map[string]Result
-	checking     map[string]bool
-	stopCh       chan struct{}
-	stopOnce     sync.Once
-	runningLoop  bool
+	mu          sync.RWMutex
+	getAccounts func() []config.AccountConfig
+	probe       ProbeFunc
+	onResult    ResultHook
+	logs        *logbuf.Buffer
+	enabled     bool
+	interval    time.Duration
+	lastSweepAt time.Time
+	results     map[string]Result
+	checking    map[string]bool
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	runningLoop bool
 }
 
 func New(getAccounts func() []config.AccountConfig, probe ProbeFunc, onResult ResultHook, logs *logbuf.Buffer, cfg config.HealthConfig) *Checker {
@@ -102,7 +102,7 @@ func (c *Checker) Start() {
 	c.mu.Unlock()
 
 	go func() {
-		// Short initial delay so startup stays <10ms and doesn't slow first boot.
+		// Delay the first sweep so probes don't compete with startup.
 		select {
 		case <-time.After(10 * time.Second):
 		case <-c.stopCh:

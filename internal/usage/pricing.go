@@ -3,9 +3,9 @@ package usage
 import "strings"
 
 type modelRate struct {
-	match        string
-	inputPer1M   float64
-	outputPer1M  float64
+	match       string
+	inputPer1M  float64
+	outputPer1M float64
 }
 
 // Reference USD per 1M token list rates used strictly for cost *estimates* when provider

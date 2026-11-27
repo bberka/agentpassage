@@ -1,12 +1,10 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -86,57 +84,39 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.setStatus("ACP tool activity streaming: "+cfg.ACP.ToolActivity, false)
 		case 5:
 			a.copyToClipboard("data directory", a.srv.DataDir())
-		case 6: // Install/start or restart OS background service (gracefully hands off local port!)
+		case 6: // Install/start or restart the OS background service
 			st := service.Status()
 			if !st.Installed {
-				wasLocal := !a.srv.Attached() && a.srv.Running()
-				if wasLocal {
-					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-					_ = a.srv.DetachAndStopLocal(ctx)
-					cancel()
-				}
+				wasLocal := a.detachLocalGateway()
 				if unit, err := service.Install(a.srv.DataDir(), true); err != nil {
 					if wasLocal {
 						_ = a.srv.Start()
 					}
 					a.setStatus("Service install failed: "+err.Error(), true)
 				} else {
-					time.Sleep(350 * time.Millisecond)
-					_, _ = a.srv.AttachIfRunning()
+					a.attachToService()
 					a.setStatus("Installed, enabled auto-start & attached to service: "+unit, false)
 				}
 			} else if !st.Running {
-				if !a.srv.Attached() && a.srv.Running() {
-					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-					_ = a.srv.DetachAndStopLocal(ctx)
-					cancel()
-				}
+				a.detachLocalGateway()
 				if err := service.Start(); err != nil {
 					a.setStatus("Service start failed: "+err.Error(), true)
 				} else {
-					time.Sleep(350 * time.Millisecond)
-					_, _ = a.srv.AttachIfRunning()
+					a.attachToService()
 					a.setStatus("Started & attached to background service", false)
 				}
 			} else {
 				if err := service.Restart(); err != nil {
 					a.setStatus("Service restart failed: "+err.Error(), true)
 				} else {
-					time.Sleep(350 * time.Millisecond)
-					_, _ = a.srv.AttachIfRunning()
+					a.attachToService()
 					a.setStatus("Restarted background service", false)
 				}
 			}
 		case 7: // Toggle Auto-Start on Login
 			st := service.Status()
 			next := !st.Enabled
-			if err := service.SetAutoStart(a.srv.DataDir(), next); err != nil {
-				a.setStatus("Auto-start toggle failed: "+err.Error(), true)
-			} else if next {
-				a.setStatus("Auto-start on login enabled", false)
-			} else {
-				a.setStatus("Auto-start on login disabled", false)
-			}
+			a.setAutoStart(next)
 		case 8: // Cycle Health Check Interval: off -> 1m -> 5m -> 15m -> 30m -> off
 			intervals := []int{0, 60, 300, 900, 1800}
 			cur := 0

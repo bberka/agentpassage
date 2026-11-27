@@ -46,23 +46,32 @@ func fetchDeepSeekBalance(ctx context.Context, acct config.AccountConfig, apiKey
 	// DeepSeek balance lives at /user/balance (strip trailing /v1 if present).
 	base = strings.TrimSuffix(base, "/v1")
 
-	qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(qctx, http.MethodGet, base+"/user/balance", nil)
+	body, err := bearerGet(ctx, base+"/user/balance", apiKey)
 	if err != nil {
 		return AccountQuota{}, err
+	}
+	return ParseDeepSeekBalance(body)
+}
+
+// bearerGet fetches a provider's balance endpoint and returns the body of a 2xx reply.
+func bearerGet(ctx context.Context, url, apiKey string) ([]byte, error) {
+	qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(qctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return AccountQuota{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return AccountQuota{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return ParseDeepSeekBalance(body)
+	return body, nil
 }
 
 // ParseDeepSeekBalance parses GET /user/balance JSON into an AccountQuota.
@@ -123,21 +132,9 @@ func fetchOpenRouterQuota(ctx context.Context, acct config.AccountConfig, apiKey
 	if base == "" {
 		base = "https://openrouter.ai/api/v1"
 	}
-	qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(qctx, http.MethodGet, base+"/auth/key", nil)
+	body, err := bearerGet(ctx, base+"/auth/key", apiKey)
 	if err != nil {
 		return AccountQuota{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return AccountQuota{}, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return AccountQuota{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	return ParseOpenRouterKey(body)
 }
@@ -828,7 +825,7 @@ func parseHeaderTime(raw string, now time.Time) *time.Time {
 	return nil
 }
 
-// FormatCompactTokens formats token counts cleanly (e.g. 5800 -> "5.8k", 1250000 -> "1.2M").
+// FormatCompactTokens abbreviates token counts (e.g. 5800 -> "5.8k", 1250000 -> "1.2M").
 func FormatCompactTokens(n int) string {
 	switch {
 	case n >= 1_000_000:

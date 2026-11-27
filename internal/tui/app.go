@@ -119,10 +119,10 @@ type App struct {
 
 	revealKey bool
 
-	acctCursor    int
-	modelCursor   int
-	showHidden    bool
-	routingCursor int
+	acctCursor       int
+	modelCursor      int
+	showHidden       bool
+	routingCursor    int
 	logCursor        int
 	logLevel         string
 	logInspect       bool

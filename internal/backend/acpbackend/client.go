@@ -116,7 +116,7 @@ func (m *Manager) LoginCommand(acct config.AccountConfig) (*exec.Cmd, string, er
 		return nil, profileDir, fmt.Errorf("backend %q has no login command configured", acct.Backend)
 	}
 	cmd := exec.Command(loginArgs[0], loginArgs[1:]...)
-	cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
+	cmd.Env = backend.SanitizeChildEnv(os.Environ(), extraEnv, acct)
 	return cmd, profileDir, nil
 }
 
@@ -225,7 +225,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		backend.RecordAnswer(req.SessionKey, acct.ID)
 	}()
 
-	promptText := formatPrompt(req.Messages, reused)
+	promptText := backend.FormatPrompt(req.Messages, reused)
 
 	m.mu.Lock()
 	toolMode := m.toolActivity
@@ -412,7 +412,7 @@ type worker struct {
 
 func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, extraEnv []string, mgr *Manager) (*worker, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Env = sanitizeChildEnv(os.Environ(), extraEnv, acct)
+	cmd.Env = backend.SanitizeChildEnv(os.Environ(), extraEnv, acct)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -1027,42 +1027,6 @@ func normalizeRPCID(raw json.RawMessage) string {
 	return strings.Trim(s, `"`)
 }
 
-func formatPrompt(messages []backend.Message, reusedSession bool) string {
-	if len(messages) == 0 {
-		return ""
-	}
-	if reusedSession {
-		// Session already has earlier turns; send the most recent user message.
-		for i := len(messages) - 1; i >= 0; i-- {
-			if messages[i].Role == "user" {
-				return messages[i].Content
-			}
-		}
-		return messages[len(messages)-1].Content
-	}
-	if len(messages) == 1 {
-		return messages[0].Content
-	}
-	var sb strings.Builder
-	for _, m := range messages {
-		switch m.Role {
-		case "system":
-			sb.WriteString("[System]\n")
-			sb.WriteString(m.Content)
-			sb.WriteString("\n\n")
-		case "assistant":
-			sb.WriteString("[Assistant]\n")
-			sb.WriteString(m.Content)
-			sb.WriteString("\n\n")
-		default:
-			sb.WriteString("[User]\n")
-			sb.WriteString(m.Content)
-			sb.WriteString("\n\n")
-		}
-	}
-	return strings.TrimSpace(sb.String())
-}
-
 func extractUpdateParts(raw json.RawMessage, toolMode string) (delta, thought string, passthrough bool) {
 	var u struct {
 		SessionUpdate string          `json:"sessionUpdate"`
@@ -1098,11 +1062,6 @@ func extractUpdateParts(raw json.RawMessage, toolMode string) (delta, thought st
 		return "", "", true
 	}
 	return "", "", false
-}
-
-func extractUpdateDelta(raw json.RawMessage, toolMode string) string {
-	d, _, _ := extractUpdateParts(raw, toolMode)
-	return d
 }
 
 func extractTextFromContent(raw json.RawMessage) string {
@@ -1182,49 +1141,4 @@ func classifyACPError(err error) error {
 	default:
 		return &backend.BackendError{Kind: backend.ErrKindTransient, StatusCode: 502, Message: msg, Cause: err}
 	}
-}
-
-// sanitizeChildEnv strips apx gateway loopback URLs/keys from inherited environment variables
-// (preventing recursive loops when a CLI like pi, opencode, codex, or claude is both connected
-// to apx and launched by apx as an upstream ACP backend), deduplicates overridden keys,
-// and tags the subprocess with APX_IN_CHILD metadata.
-func sanitizeChildEnv(baseEnv, extraEnv []string, acct config.AccountConfig) []string {
-	overrides := make(map[string]string, len(extraEnv)+3)
-	for _, kv := range extraEnv {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			overrides[k] = v
-		}
-	}
-	overrides["APX_IN_CHILD"] = "1"
-	overrides["APX_CHILD_BACKEND"] = acct.Backend
-	overrides["APX_CHILD_ACCOUNT"] = acct.ID
-
-	out := make([]string, 0, len(baseEnv)+len(overrides))
-	for _, kv := range baseEnv {
-		k, v, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		if _, replaced := overrides[k]; replaced {
-			continue
-		}
-		// Strip inherited apx gateway env vars so child ACP agents never call back into apx.
-		switch k {
-		case "OPENAI_BASE_URL", "ANTHROPIC_BASE_URL":
-			lower := strings.ToLower(v)
-			if strings.Contains(lower, "127.0.0.1") || strings.Contains(lower, "localhost") || strings.Contains(lower, "[::1]") {
-				continue
-			}
-		case "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "APX_API_KEY", "ACPX_API_KEY":
-			trimmed := strings.TrimSpace(v)
-			if strings.HasPrefix(trimmed, "apx_") || strings.HasPrefix(trimmed, "acpx_") {
-				continue
-			}
-		}
-		out = append(out, kv)
-	}
-	for k, v := range overrides {
-		out = append(out, k+"="+v)
-	}
-	return out
 }

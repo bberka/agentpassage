@@ -27,10 +27,10 @@ type fetchAllModelsMsg struct {
 }
 
 type modelPickerRow struct {
-	id       string
-	members  []string // concrete model IDs controlled by this row (base + collapsed effort variants)
-	efforts  []string
-	enabled  bool
+	id      string
+	members []string // concrete model IDs controlled by this row (base + collapsed effort variants)
+	efforts []string
+	enabled bool
 }
 
 type modelPickerState struct {

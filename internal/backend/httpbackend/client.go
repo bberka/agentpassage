@@ -57,10 +57,37 @@ func New() *Client {
 	}
 }
 
-func (c *Client) SetHTTPClient(hc *http.Client) {
-	if hc != nil {
-		c.httpClient = hc
+// post sends a JSON request to path under the account's base URL and reports
+// the response headers to the header hook. The caller closes the body.
+func (c *Client) post(ctx context.Context, acct config.AccountConfig, apiKey, path string, body []byte, accept string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
+	applyAuth(req, acct, apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
+	}
+	c.emitHeaders(acct, resp.Header)
+	return resp, nil
+}
+
+// readBody reads up to limit bytes of a response, turning a read failure or a
+// non-2xx status into an error.
+func readBody(resp *http.Response, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, makeHTTPError(resp, body)
+	}
+	return body, nil
 }
 
 // SetHeaderHook registers a callback invoked with upstream HTTP response headers
@@ -293,26 +320,15 @@ func (c *Client) completeOpenAI(ctx context.Context, acct config.AccountConfig, 
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+"/chat/completions", bytes.NewReader(bodyBytes))
+	resp, err := c.post(ctx, acct, apiKey, "/chat/completions", bodyBytes, "")
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	applyAuth(httpReq, acct, apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
 	defer resp.Body.Close()
-	c.emitHeaders(acct, resp.Header)
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	respBody, err := readBody(resp, 16<<20)
 	if err != nil {
-		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, makeHTTPError(resp, respBody)
+		return nil, err
 	}
 
 	var parsed struct {
@@ -349,20 +365,11 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 	if err != nil {
 		return err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+"/chat/completions", bytes.NewReader(bodyBytes))
+	resp, err := c.post(ctx, acct, apiKey, "/chat/completions", bodyBytes, "text/event-stream")
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	applyAuth(httpReq, acct, apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
 	defer resp.Body.Close()
-	c.emitHeaders(acct, resp.Header)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -473,26 +480,15 @@ func (c *Client) completeAnthropic(ctx context.Context, acct config.AccountConfi
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+"/messages", bytes.NewReader(bodyBytes))
+	resp, err := c.post(ctx, acct, apiKey, "/messages", bodyBytes, "")
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	applyAuth(httpReq, acct, apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
 	defer resp.Body.Close()
-	c.emitHeaders(acct, resp.Header)
 
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	respBody, err := readBody(resp, 16<<20)
 	if err != nil {
-		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, makeHTTPError(resp, respBody)
+		return nil, err
 	}
 
 	var parsed struct {
@@ -534,20 +530,11 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 	if err != nil {
 		return err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+"/messages", bytes.NewReader(bodyBytes))
+	resp, err := c.post(ctx, acct, apiKey, "/messages", bodyBytes, "text/event-stream")
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	applyAuth(httpReq, acct, apiKey)
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
 	defer resp.Body.Close()
-	c.emitHeaders(acct, resp.Header)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))

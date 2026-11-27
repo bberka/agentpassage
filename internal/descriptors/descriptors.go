@@ -63,7 +63,7 @@ func BuiltInACP() []ACPDescriptor {
 			Name:        "Google Antigravity",
 			Description: "Google's AI coding agent (official agy CLI)",
 			Detect:      "agy",
-			Command: []string{"agy", "acp"},
+			Command:     []string{"agy", "acp"},
 			// NOTE: On Linux, agy's ChainedAuth checks the shared desktop D-Bus keyring first,
 			// which would make all agy accounts overwrite and share a single Google login!
 			// Setting AGY_ACP_FORCE_FILE_STORAGE=1 + DBUS_SESSION_BUS_ADDRESS=disabled: forces
@@ -77,7 +77,7 @@ func BuiltInACP() []ACPDescriptor {
 				"AGY_ACP_FORCE_FILE_STORAGE": "1",
 				"DBUS_SESSION_BUS_ADDRESS":   "disabled:",
 			},
-			Login: []string{"agy", "acp", "--login", "--app-data-dir", "antigravity-cli"},
+			Login:       []string{"agy", "acp", "--login", "--app-data-dir", "antigravity-cli"},
 			InstallNote: "Install Google Antigravity CLI (agy) from your Antigravity installer.",
 			DefaultModels: []string{
 				"default",
@@ -105,7 +105,7 @@ func LoadRegistry(dataDir string) (*Registry, []error) {
 		presets: make(map[string]ProviderPreset),
 	}
 
-	// 1. Load official ACP Registry (cached synced copy if present, else embedded 46-agent snapshot).
+	// 1. Load official ACP Registry (cached synced copy if present, else the embedded snapshot).
 	regBytes := embeddedRegistryJSON
 	if dataDir != "" {
 		if cached, err := os.ReadFile(filepath.Join(dataDir, "registry.json")); err == nil && len(cached) > 0 {
@@ -181,7 +181,7 @@ func (r *Registry) GetACP(id string) (ACPDescriptor, bool) {
 }
 
 func (r *Registry) ListACP() []ACPDescriptor {
-	// Put the primary user-requested tools at the top, followed alphabetically by all other registry agents.
+	// Primary tools first, then every other registry agent alphabetically.
 	order := map[string]int{
 		"agy":        1,
 		"codex":      2,
@@ -272,7 +272,7 @@ func (r *Registry) FindLocalBinary(d ACPDescriptor) (string, bool) {
 	return "", false
 }
 
-// DetectInstalled scans local acpx bin dir and PATH for every known ACP descriptor.
+// DetectInstalled checks apx's bin dir and PATH for every known ACP descriptor.
 func (r *Registry) DetectInstalled() []DetectedCLI {
 	descs := r.ListACP()
 	out := make([]DetectedCLI, 0, len(descs))
@@ -316,7 +316,7 @@ func (d ACPDescriptor) ExpandCommand(profileDir string, customCmd []string) []st
 	if len(customCmd) > 0 {
 		parts = append(parts, customCmd...)
 	} else {
-		// If the descriptor has a direct Detect binary on PATH and Command defaults to npx, prefer the installed binary!
+		// Prefer an installed binary over fetching it through npx.
 		if len(d.Command) > 0 && d.Command[0] == "npx" && d.Detect != "" {
 			if p, err := exec.LookPath(d.Detect); err == nil {
 				parts = append(parts, p)
@@ -355,17 +355,19 @@ func (d ACPDescriptor) ExpandLogin(profileDir string, customLogin []string) []st
 
 // ExpandEnv returns KEY=VALUE entries to merge into child process env.
 func (d ACPDescriptor) ExpandEnv(profileDir string, customEnv map[string]string) []string {
-	accountName := filepath.Base(profileDir)
+	return expandEnv(profileDir, filepath.Base(profileDir), d.ProfileEnv, customEnv)
+}
+
+// expandEnv merges customEnv over profileEnv, substituting {profile} and
+// {account}, and returns sorted KEY=VALUE entries.
+func expandEnv(profileDir, accountName string, profileEnv, customEnv map[string]string) []string {
 	merged := make(map[string]string)
-	for k, v := range d.ProfileEnv {
-		v = strings.ReplaceAll(v, "{profile}", profileDir)
-		v = strings.ReplaceAll(v, "{account}", accountName)
-		merged[k] = v
-	}
-	for k, v := range customEnv {
-		v = strings.ReplaceAll(v, "{profile}", profileDir)
-		v = strings.ReplaceAll(v, "{account}", accountName)
-		merged[k] = v
+	for _, env := range []map[string]string{profileEnv, customEnv} {
+		for k, v := range env {
+			v = strings.ReplaceAll(v, "{profile}", profileDir)
+			v = strings.ReplaceAll(v, "{account}", accountName)
+			merged[k] = v
+		}
 	}
 	out := make([]string, 0, len(merged))
 	for k, v := range merged {
@@ -375,7 +377,7 @@ func (d ACPDescriptor) ExpandEnv(profileDir string, customEnv map[string]string)
 	return out
 }
 
-// CanInstall reports whether acpx knows how to install this ACP CLI automatically (binary, npm/npx, or uvx).
+// CanInstall reports whether apx can install this ACP CLI itself (binary, npm/npx, or uvx).
 func (d ACPDescriptor) CanInstall() bool {
 	return len(d.InstallCmd) > 0 || d.InstallPackage != "" || d.BinaryArchive != "" || d.UVXPackage != ""
 }
