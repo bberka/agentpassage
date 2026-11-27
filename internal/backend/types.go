@@ -143,16 +143,11 @@ func (e *BackendError) Error() string {
 func (e *BackendError) Unwrap() error { return e.Cause }
 
 func ClassifyHTTPStatus(status int, body string) ErrorKind {
-	lower := strings.ToLower(body)
-	if strings.Contains(lower, "account restricted") ||
-		strings.Contains(lower, "account suspended") ||
-		strings.Contains(lower, "account banned") ||
-		strings.Contains(lower, "account disabled") ||
-		strings.Contains(lower, "terms of service") {
-		return ErrKindRestricted
-	}
 	switch {
-	case status == 429:
+	case (status == 401 || status == 403) && restrictedRe.MatchString(body):
+		return ErrKindRestricted
+	// 402 is an account that is out of credit, which another account may cover.
+	case status == 402 || status == 429:
 		return ErrKindRateLimit
 	case status == 401 || status == 403:
 		return ErrKindAuth

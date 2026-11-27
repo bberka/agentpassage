@@ -114,12 +114,12 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 			if msg == "" {
 				msg = err.Error()
 			}
-			return nil, classifyCLIError(errors.New(msg))
+			return nil, backend.ClassifyAgentError(errors.New(msg))
 		}
 		outStr := string(out)
 		lowerOut := strings.ToLower(outStr)
 		if strings.Contains(lowerOut, "not authenticated") || strings.Contains(lowerOut, "not logged in") || strings.Contains(lowerOut, "authentication required") {
-			return nil, classifyCLIError(errors.New(strings.TrimSpace(outStr)))
+			return nil, backend.ClassifyAgentError(errors.New(strings.TrimSpace(outStr)))
 		}
 		parsed := parseModelsCLIOutput(outStr)
 		if len(parsed) > 0 {
@@ -317,7 +317,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		if errMsg == "" {
 			errMsg = waitErr.Error()
 		}
-		return classifyCLIError(fmt.Errorf("%s failed: %s", argv[0], errMsg))
+		return backend.ClassifyAgentError(fmt.Errorf("%s failed: %s", argv[0], errMsg))
 	}
 
 	return cb(backend.StreamChunk{
@@ -532,30 +532,6 @@ func parseModelsCLIOutput(out string) []string {
 		}
 	}
 	return models
-}
-
-func classifyCLIError(err error) error {
-	if err == nil {
-		return nil
-	}
-	msg := err.Error()
-	lower := strings.ToLower(msg)
-	switch {
-	case strings.Contains(lower, "restricted") || strings.Contains(lower, "suspended") || strings.Contains(lower, "banned"):
-		return &backend.BackendError{Kind: backend.ErrKindRestricted, StatusCode: 403, Message: msg, Cause: err}
-	case strings.Contains(lower, "429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "rate_limit") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "quota") || strings.Contains(lower, "usage limit") || strings.Contains(lower, "resource_exhausted"):
-		return &backend.BackendError{
-			Kind:       backend.ErrKindRateLimit,
-			StatusCode: 429,
-			Message:    msg,
-			RetryAfter: backend.ParseResetDurationSeconds(msg),
-			Cause:      err,
-		}
-	case strings.Contains(lower, "sign in") || strings.Contains(lower, "log in") || strings.Contains(lower, "not logged in") || strings.Contains(lower, "authentication") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "401"):
-		return &backend.BackendError{Kind: backend.ErrKindAuth, StatusCode: 401, Message: msg, Cause: err}
-	default:
-		return &backend.BackendError{Kind: backend.ErrKindTransient, StatusCode: 502, Message: msg, Cause: err}
-	}
 }
 
 // attachmentNotes describes attachments for a CLI agent, which only takes a

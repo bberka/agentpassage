@@ -294,7 +294,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 			_ = w.notify("session/cancel", sessionCancelParams{SessionID: sess.id})
 			return ctx.Err()
 		}
-		return classifyACPError(err)
+		return backend.ClassifyAgentError(err)
 	}
 
 	cbMu.Lock()
@@ -302,7 +302,7 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	quotaMsg := quotaReply
 	cbMu.Unlock()
 	if quotaMsg != "" {
-		return classifyACPError(errors.New(quotaMsg))
+		return backend.ClassifyAgentError(errors.New(quotaMsg))
 	}
 	if firstErr != nil {
 		return firstErr
@@ -532,7 +532,7 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 	})
 	if err != nil {
 		w.close()
-		return nil, classifyACPError(fmt.Errorf("ACP initialize failed: %w", err))
+		return nil, backend.ClassifyAgentError(fmt.Errorf("ACP initialize failed: %w", err))
 	}
 
 	var initRes initializeResult
@@ -766,22 +766,8 @@ func (w *worker) handlePermission(msg rpcMessage) {
 	}
 
 	pickOption := func(approve bool) permissionOutcome {
-		for _, o := range opts {
-			lowerID := strings.ToLower(o.ID)
-			lowerKind := strings.ToLower(o.Kind)
-			lowerName := strings.ToLower(o.Name)
-			if approve {
-				if strings.Contains(lowerKind, "allow") || strings.Contains(lowerID, "allow") || strings.Contains(lowerName, "allow") {
-					return permissionOutcome{Outcome: "selected", OptionID: o.ID}
-				}
-			} else {
-				if strings.Contains(lowerKind, "reject") || strings.Contains(lowerID, "reject") || strings.Contains(lowerID, "deny") || strings.Contains(lowerName, "reject") || strings.Contains(lowerName, "deny") {
-					return permissionOutcome{Outcome: "selected", OptionID: o.ID}
-				}
-			}
-		}
-		if approve && len(opts) > 0 {
-			return permissionOutcome{Outcome: "selected", OptionID: opts[0].ID}
+		if id := permissionOption(opts, approve); id != "" {
+			return permissionOutcome{Outcome: "selected", OptionID: id}
 		}
 		return permissionOutcome{Outcome: "cancelled"}
 	}
@@ -858,7 +844,7 @@ func (w *worker) newSession(ctx context.Context, cwd string, mcpServers []any) (
 		MCPServers: mcpServers,
 	})
 	if err != nil {
-		return nil, classifyACPError(err)
+		return nil, backend.ClassifyAgentError(err)
 	}
 	var res sessionNewResult
 	if err := json.Unmarshal(resRaw, &res); err != nil {
@@ -1180,31 +1166,4 @@ func isAgyQuotaReply(delta string) bool {
 	t := strings.TrimSpace(delta)
 	return strings.HasPrefix(t, "⚠") && len(t) < 400 && !strings.Contains(t, "\n") &&
 		strings.Contains(strings.ToLower(t), "quota reached")
-}
-
-func classifyACPError(err error) error {
-	if err == nil {
-		return nil
-	}
-	if _, ok := backend.AsBackendError(err); ok {
-		return err
-	}
-	msg := err.Error()
-	lower := strings.ToLower(msg)
-	switch {
-	case strings.Contains(lower, "restricted") || strings.Contains(lower, "suspended") || strings.Contains(lower, "banned"):
-		return &backend.BackendError{Kind: backend.ErrKindRestricted, StatusCode: 403, Message: msg, Cause: err}
-	case strings.Contains(lower, "429") || strings.Contains(lower, "rate limit") || strings.Contains(lower, "rate_limit") || strings.Contains(lower, "too many requests") || strings.Contains(lower, "quota") || strings.Contains(lower, "usage limit") || strings.Contains(lower, "resource_exhausted"):
-		return &backend.BackendError{
-			Kind:       backend.ErrKindRateLimit,
-			StatusCode: 429,
-			Message:    msg,
-			RetryAfter: backend.ParseResetDurationSeconds(msg),
-			Cause:      err,
-		}
-	case strings.Contains(lower, "401") || strings.Contains(lower, "403") || strings.Contains(lower, "unauthenticated") || strings.Contains(lower, "not logged in") || strings.Contains(lower, "login required") || strings.Contains(lower, "auth"):
-		return &backend.BackendError{Kind: backend.ErrKindAuth, StatusCode: 401, Message: msg, Cause: err}
-	default:
-		return &backend.BackendError{Kind: backend.ErrKindTransient, StatusCode: 502, Message: msg, Cause: err}
-	}
 }
