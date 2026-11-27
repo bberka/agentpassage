@@ -3,6 +3,7 @@ package usage
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +24,8 @@ type Record struct {
 	PromptTokens     int       `json:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`
 	TotalTokens      int       `json:"total_tokens"`
+	CacheReadTokens  int       `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int       `json:"cache_write_tokens,omitempty"`
 	EstimatedCostUSD float64   `json:"estimated_cost_usd,omitempty"`
 	Estimated        bool      `json:"estimated,omitempty"`
 }
@@ -81,20 +84,23 @@ type ProjectUsage struct {
 }
 
 type Summary struct {
-	GeneratedAt      time.Time      `json:"generated_at"`
-	Period           string         `json:"period"`
-	TotalRequests    int            `json:"total_requests"`
-	SuccessRequests  int            `json:"success_requests"`
-	ErrorRequests    int            `json:"error_requests"`
-	SuccessRate      float64        `json:"success_rate"`
-	Requests24h      int            `json:"requests_24h"`
-	Requests7d       int            `json:"requests_7d"`
-	PromptTokens     int            `json:"prompt_tokens"`
-	CompletionTokens int            `json:"completion_tokens"`
-	TotalTokens      int            `json:"total_tokens"`
-	Tokens24h        int            `json:"tokens_24h"`
-	EstimatedCostUSD float64        `json:"estimated_cost_usd"`
-	CostEstimated    bool           `json:"cost_estimated"`
+	GeneratedAt      time.Time `json:"generated_at"`
+	Period           string    `json:"period"`
+	TotalRequests    int       `json:"total_requests"`
+	SuccessRequests  int       `json:"success_requests"`
+	ErrorRequests    int       `json:"error_requests"`
+	SuccessRate      float64   `json:"success_rate"`
+	Requests24h      int       `json:"requests_24h"`
+	Requests7d       int       `json:"requests_7d"`
+	PromptTokens     int       `json:"prompt_tokens"`
+	CompletionTokens int       `json:"completion_tokens"`
+	TotalTokens      int       `json:"total_tokens"`
+	Tokens24h        int       `json:"tokens_24h"`
+	EstimatedCostUSD float64   `json:"estimated_cost_usd"`
+	CostEstimated    bool      `json:"cost_estimated"`
+	// UnpricedRequests used tokens on a model with no listed price, so
+	// EstimatedCostUSD leaves them out.
+	UnpricedRequests int            `json:"unpriced_requests,omitempty"`
 	AvgLatencyMs     int64          `json:"avg_latency_ms"`
 	Hourly24h        []Bucket       `json:"hourly_24h"`
 	Daily14d         []Bucket       `json:"daily_14d"`
@@ -121,6 +127,7 @@ type Tracker struct {
 	records []Record
 	version uint64
 	cache   map[string]cachedSummary
+	offset  int64 // bytes of the usage file already loaded
 }
 
 func New(dataDir string) *Tracker {
@@ -130,7 +137,7 @@ func New(dataDir string) *Tracker {
 	}
 	if dataDir != "" {
 		t.path = filepath.Join(dataDir, "usage.jsonl")
-		t.loadExisting()
+		t.syncLocked()
 		if err := os.MkdirAll(dataDir, 0o700); err == nil {
 			if f, err := os.OpenFile(t.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 				t.file = f
@@ -151,23 +158,53 @@ func (t *Tracker) Close() error {
 	return nil
 }
 
-func (t *Tracker) loadExisting() {
+// syncLocked loads records appended to the usage file since the last read,
+// including those written by other apx processes (`apx acp`). A line still
+// being written is left for the next call.
+func (t *Tracker) syncLocked() {
+	if t.path == "" {
+		return
+	}
 	f, err := os.Open(t.path)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 32*1024), 1024*1024)
-	for sc.Scan() {
+	if info, err := f.Stat(); err != nil || info.Size() == t.offset {
+		return
+	} else if info.Size() < t.offset {
+		t.offset, t.records = 0, t.records[:0] // truncated or replaced
+	}
+	if _, err := f.Seek(t.offset, io.SeekStart); err != nil {
+		return
+	}
+	r := bufio.NewReader(f)
+	for {
+		line, err := r.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+		t.offset += int64(len(line))
 		var rec Record
-		if err := json.Unmarshal(sc.Bytes(), &rec); err == nil && !rec.Time.IsZero() {
+		if json.Unmarshal(line, &rec) == nil && !rec.Time.IsZero() {
 			t.records = append(t.records, rec)
+			t.version++
 		}
 	}
+	t.trimLocked()
+}
+
+func (t *Tracker) trimLocked() {
 	if len(t.records) > maxInMemoryRecords {
 		t.records = t.records[len(t.records)-maxInMemoryRecords:]
 	}
+}
+
+// Refresh picks up records other processes have written.
+func (t *Tracker) Refresh() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.syncLocked()
 }
 
 func (t *Tracker) Record(rec Record) {
@@ -177,24 +214,36 @@ func (t *Tracker) Record(rec Record) {
 	if rec.TotalTokens == 0 && (rec.PromptTokens > 0 || rec.CompletionTokens > 0) {
 		rec.TotalTokens = rec.PromptTokens + rec.CompletionTokens
 	}
-	if rec.EstimatedCostUSD == 0 && rec.TotalTokens > 0 {
-		if usd, ok := EstimateCostUSD(rec.Model, rec.PromptTokens, rec.CompletionTokens); ok {
-			rec.EstimatedCostUSD = usd
-		}
+	if usd, ok := rec.cost(); ok {
+		rec.EstimatedCostUSD = usd
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.records = append(t.records, rec)
-	if len(t.records) > maxInMemoryRecords {
-		t.records = t.records[len(t.records)-maxInMemoryRecords:]
-	}
-	t.version++
 	if t.file != nil {
 		if raw, err := json.Marshal(rec); err == nil {
-			_, _ = t.file.Write(append(raw, '\n'))
+			if _, err := t.file.Write(append(raw, '\n')); err == nil {
+				t.syncLocked()
+				return
+			}
 		}
 	}
+	t.records = append(t.records, rec)
+	t.trimLocked()
+	t.version++
+}
+
+// cost prices a record from its token counts with the current price table.
+func (r Record) cost() (float64, bool) {
+	if r.TotalTokens == 0 {
+		return 0, false
+	}
+	return EstimateCostUSD(r.Model, Tokens{
+		Prompt:     r.PromptTokens,
+		CacheRead:  r.CacheReadTokens,
+		CacheWrite: r.CacheWriteTokens,
+		Completion: r.CompletionTokens,
+	}, r.Time)
 }
 
 // EstimateTokens provides a lightweight ~4 chars/token estimate when streaming ACP/CLI backends omit usage counts.
@@ -215,6 +264,7 @@ func (t *Tracker) SummaryAt(now time.Time) Summary {
 }
 
 func (t *Tracker) SummaryPeriod(period string) Summary {
+	t.Refresh()
 	now := time.Now()
 	normPeriod, _ := periodCutoff(now, period)
 	t.mu.RLock()
@@ -254,6 +304,7 @@ func periodCutoff(now time.Time, period string) (string, time.Time) {
 }
 
 func (t *Tracker) SummaryPeriodAt(now time.Time, period string) Summary {
+	t.Refresh()
 	t.mu.RLock()
 	recs := append([]Record(nil), t.records...)
 	t.mu.RUnlock()
@@ -342,11 +393,10 @@ func (t *Tracker) SummaryPeriodAt(now time.Time, period string) Summary {
 		}
 		filtered = append(filtered, r)
 
-		cost := r.EstimatedCostUSD
-		if cost == 0 && r.TotalTokens > 0 {
-			if usd, okC := EstimateCostUSD(r.Model, r.PromptTokens, r.CompletionTokens); okC {
-				cost = usd
-			}
+		// Stored costs are ignored so that old records follow price fixes.
+		cost, priced := r.cost()
+		if !priced && r.TotalTokens > 0 {
+			s.UnpricedRequests++
 		}
 
 		s.TotalRequests++

@@ -1564,6 +1564,8 @@ func (s *Server) recordUsageForRequest(r *http.Request, model, acct, backendID s
 		PromptTokens:     u.PromptTokens,
 		CompletionTokens: u.CompletionTokens,
 		TotalTokens:      u.TotalTokens,
+		CacheReadTokens:  u.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens,
 		Estimated:        estimated,
 	})
 }

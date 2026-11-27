@@ -475,6 +475,26 @@ func mapAnthropicStopReason(r string) string {
 	}
 }
 
+// anthropicUsage is the Messages API usage block, where input_tokens counts
+// only the uncached input.
+type anthropicUsage struct {
+	InputTokens   int `json:"input_tokens"`
+	OutputTokens  int `json:"output_tokens"`
+	CacheRead     int `json:"cache_read_input_tokens"`
+	CacheCreation int `json:"cache_creation_input_tokens"`
+}
+
+func (a anthropicUsage) usage() backend.Usage {
+	prompt := a.InputTokens + a.CacheRead + a.CacheCreation
+	return backend.Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: a.OutputTokens,
+		TotalTokens:      prompt + a.OutputTokens,
+		CacheReadTokens:  a.CacheRead,
+		CacheWriteTokens: a.CacheCreation,
+	}
+}
+
 func (c *Client) completeAnthropic(ctx context.Context, acct config.AccountConfig, apiKey string, req backend.ChatRequest) (*backend.ChatResponse, error) {
 	bodyBytes, err := buildAnthropicPayload(req, false)
 	if err != nil {
@@ -498,10 +518,7 @@ func (c *Client) completeAnthropic(ctx context.Context, acct config.AccountConfi
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
+		Usage anthropicUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return nil, fmt.Errorf("decode anthropic response: %w", err)
@@ -517,11 +534,7 @@ func (c *Client) completeAnthropic(ctx context.Context, acct config.AccountConfi
 		Model:        req.Model,
 		Content:      sb.String(),
 		FinishReason: mapAnthropicStopReason(parsed.StopReason),
-		Usage: backend.Usage{
-			PromptTokens:     parsed.Usage.InputTokens,
-			CompletionTokens: parsed.Usage.OutputTokens,
-			TotalTokens:      parsed.Usage.InputTokens + parsed.Usage.OutputTokens,
-		},
+		Usage:        parsed.Usage.usage(),
 	}, nil
 }
 
@@ -546,6 +559,7 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(*bufPtr, 4*1024*1024)
 	var eventName string
+	var started anthropicUsage
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "event:") {
@@ -557,6 +571,15 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		switch eventName {
+		case "message_start":
+			var ev struct {
+				Message struct {
+					Usage anthropicUsage `json:"usage"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(data), &ev); err == nil {
+				started = ev.Message.Usage
+			}
 		case "content_block_delta":
 			var ev struct {
 				Delta struct {
@@ -580,9 +603,11 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 			}
 			if err := json.Unmarshal([]byte(data), &ev); err == nil {
 				if ev.Delta.StopReason != "" {
+					started.OutputTokens = ev.Usage.OutputTokens
+					u := started.usage()
 					if err := cb(backend.StreamChunk{
 						FinishReason: mapAnthropicStopReason(ev.Delta.StopReason),
-						Usage:        &backend.Usage{CompletionTokens: ev.Usage.OutputTokens, TotalTokens: ev.Usage.OutputTokens},
+						Usage:        &u,
 					}); err != nil {
 						return err
 					}

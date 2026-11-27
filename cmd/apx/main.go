@@ -28,6 +28,7 @@ import (
 	"github.com/bberka/agentpassage/internal/secrets"
 	"github.com/bberka/agentpassage/internal/service"
 	"github.com/bberka/agentpassage/internal/tui"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 func main() {
@@ -819,8 +820,12 @@ func cmdUsage(args []string) error {
 	fmt.Printf("AgentPassage (apx) Usage Report [period=%s] — %s\n", sum.Period, hubURL)
 	fmt.Printf("Requests: %d total (24h: %d, 7d: %d) | Success: %.1f%% (%d errors)\n",
 		sum.TotalRequests, sum.Requests24h, sum.Requests7d, sum.SuccessRate, sum.ErrorRequests)
-	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Est. Cost: %s (ref rates) | Avg latency: %dms\n\n",
-		sum.TotalTokens, sum.PromptTokens, sum.CompletionTokens, sum.Tokens24h, fmtCost(sum.EstimatedCostUSD), sum.AvgLatencyMs)
+	unpriced := ""
+	if sum.UnpricedRequests > 0 {
+		unpriced = fmt.Sprintf(", %d requests unpriced", sum.UnpricedRequests)
+	}
+	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Est. Cost: %s (list prices %s%s) | Avg latency: %dms\n\n",
+		sum.TotalTokens, sum.PromptTokens, sum.CompletionTokens, sum.Tokens24h, fmtCost(sum.EstimatedCostUSD), usage.PricesChecked, unpriced, sum.AvgLatencyMs)
 
 	fmt.Println("Subscription Limits (Hourly / Weekly):")
 	if len(qrep.Accounts) == 0 {

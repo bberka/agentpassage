@@ -38,6 +38,30 @@ type Usage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// CacheReadTokens and CacheWriteTokens are the parts of PromptTokens read
+	// from or written to the provider's prompt cache.
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+}
+
+// UnmarshalJSON also reads the cache fields OpenAI-compatible providers send.
+func (u *Usage) UnmarshalJSON(b []byte) error {
+	type plain Usage
+	var v struct {
+		plain
+		Details struct {
+			Cached int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		DeepSeekHit int `json:"prompt_cache_hit_tokens"`
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*u = Usage(v.plain)
+	if u.CacheReadTokens == 0 {
+		u.CacheReadTokens = max(v.Details.Cached, v.DeepSeekHit)
+	}
+	return nil
 }
 
 type ChatResponse struct {

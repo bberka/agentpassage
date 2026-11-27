@@ -232,6 +232,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 				flusher.Flush()
 			}
 
+			var reported backend.Usage
 			deltaRestorer := privSess.NewStreamRestorer()
 			cb := func(ch backend.StreamChunk) error {
 				if ch.Delta == "" && ch.FinishReason == "" {
@@ -256,8 +257,11 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 				if ch.FinishReason == "length" {
 					stopReason = "max_tokens"
 				}
-				if ch.Usage != nil && ch.Usage.CompletionTokens > 0 {
-					outputTokens = ch.Usage.CompletionTokens
+				if ch.Usage != nil {
+					reported = *ch.Usage
+					if ch.Usage.CompletionTokens > 0 {
+						outputTokens = ch.Usage.CompletionTokens
+					}
 				}
 				return nil
 			}
@@ -300,7 +304,11 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 				})
 				writeAnthropicEvent(w, "message_stop", map[string]any{"type": "message_stop"})
 				flusher.Flush()
-				u := backend.Usage{PromptTokens: estimateMessagesTokens(req.Messages), CompletionTokens: outputTokens}
+				u := reported
+				if u.PromptTokens == 0 {
+					u.PromptTokens = estimateMessagesTokens(req.Messages)
+				}
+				u.CompletionTokens = outputTokens
 				u.TotalTokens = u.PromptTokens + u.CompletionTokens
 				s.recordUsageForRequest(r, usedModel, acctName, acct.Backend, http.StatusOK, start, u, outputTokens == 0)
 				s.logRequest(r, usedModel, acctName, http.StatusOK, start, nil)

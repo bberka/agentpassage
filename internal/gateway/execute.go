@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/bberka/agentpassage/internal/pool"
 	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/router"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 // applyRouteDefaults applies per-route DefaultEffort (including "off"/"none" to disable thinking)
@@ -167,6 +169,8 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 			tried[acct.ID] = true
 
 			emitted := false
+			var reported *backend.Usage
+			var replyLen int
 			deltaRestorer := privSess.NewStreamRestorer()
 			reasonRestorer := privSess.NewStreamRestorer()
 			wrapped := func(ch backend.StreamChunk) error {
@@ -178,6 +182,10 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 				}
 				if ch.Delta != "" {
 					emitted = true
+					replyLen += len(ch.Delta)
+				}
+				if ch.Usage != nil {
+					reported = ch.Usage
 				}
 				if ch.Delta == "" && ch.Reasoning == "" && len(ch.RawACPUpdate) == 0 && ch.FinishReason == "" && ch.Usage == nil {
 					return nil
@@ -210,6 +218,7 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 				s.pool.PinSession(req.SessionKey, acct.ID)
 				s.pool.RecordLatency(acct.ID, time.Since(callStart).Milliseconds())
 				s.recordPrivacyHeader(nil, privSess, plan.RequestedModel)
+				s.recordDirectUsage(plan.RequestedModel, acctName, acct.Backend, http.StatusOK, callStart, req, reported, replyLen)
 				return acctName, nil
 			}
 
@@ -218,6 +227,7 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
 			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
 			if emitted {
+				s.recordDirectUsage(plan.RequestedModel, acctName, acct.Backend, httpStatusFromError(streamErr), callStart, req, reported, replyLen)
 				return acctName, streamErr
 			}
 			if !allowFailover {
@@ -237,4 +247,37 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 		lastErr = pool.ErrNoAvailableAccount
 	}
 	return lastAcct, lastErr
+}
+
+// recordDirectUsage logs a turn that did not come over HTTP (`apx acp`). When
+// the agent reports no token counts they are estimated from the newest user
+// message and the reply, which leaves out the agent's own context.
+func (s *Server) recordDirectUsage(model, acct, backendID string, status int, start time.Time, req backend.ChatRequest, reported *backend.Usage, replyLen int) {
+	if s.usage == nil {
+		return
+	}
+	var u backend.Usage
+	estimated := reported == nil
+	if estimated {
+		u.PromptTokens = usage.EstimateTokens(backend.FormatPrompt(req.Messages, true))
+		u.CompletionTokens = (replyLen + 3) / 4
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	} else {
+		u = *reported
+	}
+	s.usage.Record(usage.Record{
+		Time:             time.Now(),
+		Account:          acct,
+		Backend:          backendID,
+		Model:            model,
+		Endpoint:         "acp",
+		Status:           status,
+		DurationMs:       time.Since(start).Milliseconds(),
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		CacheReadTokens:  u.CacheReadTokens,
+		CacheWriteTokens: u.CacheWriteTokens,
+		Estimated:        estimated,
+	})
 }

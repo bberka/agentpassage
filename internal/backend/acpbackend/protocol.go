@@ -115,6 +115,14 @@ type sessionPromptParams struct {
 
 type sessionPromptResult struct {
 	StopReason string `json:"stopReason"`
+	// Usage is reported by agents such as claude-agent-acp; inputTokens
+	// excludes the cached input.
+	Usage *struct {
+		InputTokens       int `json:"inputTokens"`
+		OutputTokens      int `json:"outputTokens"`
+		CachedReadTokens  int `json:"cachedReadTokens"`
+		CachedWriteTokens int `json:"cachedWriteTokens"`
+	} `json:"usage,omitempty"`
 }
 
 type sessionCancelParams struct {

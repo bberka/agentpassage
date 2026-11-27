@@ -22,6 +22,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/gateway"
 	"github.com/bberka/agentpassage/internal/router"
+	"github.com/bberka/agentpassage/internal/skills"
 )
 
 type rpcMsg struct {
@@ -249,6 +250,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.saveSession(bs)
 
 			replyOK(msg.ID, s.sessionReply(sid, defaultModel, configOpts, availModels, defaultMode))
+			sendSkills(notify, sid, p.Cwd)
 
 		case "session/load", "session/resume":
 			var p struct {
@@ -303,6 +305,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 
 			replyOK(msg.ID, s.sessionReply(bs.id, resolvedModel, configOpts, availModels, normalizeBridgeMode(curMode)))
+			sendSkills(notify, bs.id, bs.cwd)
 
 		case "session/list":
 			list := s.listPersistedSessions()
@@ -359,6 +362,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.saveSession(forked)
 
 			replyOK(msg.ID, s.sessionReply(newSID, resolvedModel, configOpts, availModels, forked.mode))
+			sendSkills(notify, newSID, forkCwd)
 
 		case "session/set_config_option":
 			var p struct {
@@ -488,6 +492,10 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				}
 			}
 			userText := promptSB.String()
+			home, _ := os.UserHomeDir()
+			if note := skills.Instructions(userText, skills.Discover(home, bs.cwd)); note != "" {
+				userText += "\n\n" + note
+			}
 
 			s.sessMu.Lock()
 			if bs.model == "" {

@@ -122,7 +122,7 @@ const usageHubHTML = `<!doctype html>
     <div class="card"><div class="kpi-label">Success Rate</div><div class="kpi-val" id="kRate">100%</div><div class="kpi-sub" id="kErrSub">0 errors</div></div>
     <div class="card"><div class="kpi-label">Total Tokens</div><div class="kpi-val" id="kTok">0</div><div class="kpi-sub" id="kTokSub">in: 0 · out: 0</div></div>
     <div class="card"><div class="kpi-label">Avg Latency</div><div class="kpi-val" id="kLat">0 ms</div><div class="kpi-sub" id="kModels">0 models</div></div>
-    <div class="card"><div class="kpi-label">Est. Cost (Ref)</div><div class="kpi-val" id="kCost">$0.00</div><div class="kpi-sub">estimate — list rates</div></div>
+    <div class="card"><div class="kpi-label">Est. Cost (Ref)</div><div class="kpi-val" id="kCost">$0.00</div><div class="kpi-sub" id="kCostSub">estimate at list prices</div></div>
   </section>
 
   <section class="card">
@@ -311,6 +311,7 @@ function render() {
   $('kLat').textContent = fmt(u.avg_latency_ms) + ' ms';
   $('kModels').textContent = fmt(s.models_count) + ' exposed models · ' + esc(s.secrets_backend || '');
   $('kCost').textContent = fmtCost(u.estimated_cost_usd);
+  $('kCostSub').textContent = 'estimate at list prices' + (u.unpriced_requests ? ' · ' + fmt(u.unpriced_requests) + ' requests unpriced' : '');
 
   const buckets = chartMode === '24h' ? (u.hourly_24h || []) : (u.daily_14d || []);
   $('chartTitle').textContent = chartMode === '24h' ? 'Requests — Last 24 Hours' : 'Requests — Last 14 Days';

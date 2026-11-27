@@ -334,6 +334,9 @@ func (a *App) viewUsage(bodyHeight int) string {
 			costStr = fmt.Sprintf("~$%.2f est", u.EstimatedCostUSD)
 		}
 	}
+	if u.UnpricedRequests > 0 {
+		costStr += fmt.Sprintf(" (%d unpriced)", u.UnpricedRequests)
+	}
 
 	hubURL := a.srv.UsageHubURL(false)
 	topLines := []string{

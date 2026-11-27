@@ -19,6 +19,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/skills"
 )
 
 type PermissionHandler func(ctx context.Context, req backend.PermissionRequest) backend.PermissionDecision
@@ -302,11 +303,44 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	case "cancelled":
 		finish = "stop"
 	}
+	var used *backend.Usage
+	if u := res.Usage; u != nil && u.InputTokens+u.OutputTokens+u.CachedReadTokens+u.CachedWriteTokens > 0 {
+		prompt := u.InputTokens + u.CachedReadTokens + u.CachedWriteTokens
+		used = &backend.Usage{
+			PromptTokens:     prompt,
+			CompletionTokens: u.OutputTokens,
+			TotalTokens:      prompt + u.OutputTokens,
+			CacheReadTokens:  u.CachedReadTokens,
+			CacheWriteTokens: u.CachedWriteTokens,
+		}
+	}
 	return cb(backend.StreamChunk{
+		Usage:        used,
 		FinishReason: finish,
 		ToolsIgnored: req.HasTools,
 		SessionID:    sess.id,
 	})
+}
+
+// shareSkills makes ~/.agents/skills visible to agents whose isolated profile
+// hides the user's home. Codex reads that folder itself.
+func (m *Manager) shareSkills(acct config.AccountConfig, profileDir string) {
+	var dir string
+	switch acct.Backend {
+	case "claude":
+		dir = filepath.Join(profileDir, "skills")
+	case "agy":
+		dir = filepath.Join(profileDir, ".gemini", "config", "skills")
+	default:
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err == nil {
+		err = skills.Share(home, dir)
+	}
+	if err != nil && m.logs != nil {
+		m.logs.Warn("acp", fmt.Sprintf("share skills with %s/%s: %v", acct.Backend, acct.Name, err))
+	}
 }
 
 func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfig) (*worker, error) {
@@ -346,6 +380,7 @@ func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfi
 
 		argv = desc.ExpandCommand(profileDir, acct.CustomCommand)
 		extraEnv = desc.ExpandEnv(profileDir, acct.CustomEnv)
+		m.shareSkills(acct, profileDir)
 	}
 	if len(argv) == 0 {
 		return nil, fmt.Errorf("ACP backend %q has no command configured", acct.Backend)
