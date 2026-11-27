@@ -6,16 +6,21 @@ To reach your `apx` gateway safely from a laptop, phone, VPS, or work machine, k
 
 ## Step 1: Create a dedicated client API key
 
-> **Warning:** a key that can call an ACP or CLI model (Claude, AGY, Codex, Grok) can run that agent on the host with the account's `permission_mode` (default `auto-approve`), and the caller can choose its working folder with `X-Apx-Cwd`. Treat such a key like shell access. The `client` role does not prevent this. To share access, limit the key to API-key models, for example `--models "deepseek/*"`.
+A `client` key reaches API-key models only. It can call the `/v1` endpoints, but gets `403 Forbidden` from `/admin/*`, which is where the Usage Hub gets its data, and from ACP and CLI models, which it also doesn't see in `/v1/models`.
 
-Always create a separate `client`-role key per remote device so you can revoke one device instantly without rotating your primary key. `client`-role keys can call `/v1/models`, `/v1/chat/completions`, and `/v1/messages`, but get `403 Forbidden` from `/admin/*`, which is where the Usage Hub gets its data.
+> **Warning:** `apx keys agents <name> on` lets a client key run your ACP and CLI accounts (Claude, AGY, Codex, Grok). Those agents act on the host with the account's `permission_mode` (default `auto-approve`), and the caller can choose their working folder with `X-Apx-Cwd`. Treat such a key like shell access. Admin keys, including the primary key, always have this access.
+
+Create a separate `client` key per remote device so you can revoke one device without rotating your primary key.
 
 ```bash
-# Full model catalog, inference-only role:
+# API-key models only:
 apx keys create laptop --role client
 
-# Optional: restrict a device/client key to specific models only:
-apx keys create work-ide --role client --models "gemini-4-neon,gpt-6-luna,deepseek/*"
+# Optional: restrict a key to specific models:
+apx keys create work-ide --role client --models "deepseek/*"
+
+# Optional: let a trusted device run your agent accounts:
+apx keys agents work-ide on
 
 # View, disable, or revoke anytime (hot-reloads the running service):
 apx keys list

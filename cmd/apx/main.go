@@ -1368,10 +1368,11 @@ func cmdKeys(args []string) error {
 				Name     string   `json:"name"`
 				Role     string   `json:"role"`
 				Disabled bool     `json:"disabled"`
+				Agents   bool     `json:"agents"`
 				Models   []string `json:"models,omitempty"`
 				Key      string   `json:"key"`
 			}
-			out := []keyOut{{Name: "primary", Role: config.KeyRoleAdmin, Key: secrets.Mask(cfg.Server.LocalKey)}}
+			out := []keyOut{{Name: "primary", Role: config.KeyRoleAdmin, Agents: true, Key: secrets.Mask(cfg.Server.LocalKey)}}
 			if reveal {
 				out[0].Key = cfg.Server.LocalKey
 			}
@@ -1380,7 +1381,7 @@ func cmdKeys(args []string) error {
 				if reveal {
 					val = k.Key
 				}
-				out = append(out, keyOut{Name: k.Name, Role: k.EffectiveRole(), Disabled: k.Disabled, Models: k.Models, Key: val})
+				out = append(out, keyOut{Name: k.Name, Role: k.EffectiveRole(), Disabled: k.Disabled, Agents: k.AllowsAgents(), Models: k.Models, Key: val})
 			}
 			return json.NewEncoder(os.Stdout).Encode(out)
 		}
@@ -1392,8 +1393,8 @@ func cmdKeys(args []string) error {
 			return secrets.Mask(k)
 		}
 		fmt.Printf("API Keys (%d total):\n", 1+len(cfg.Server.APIKeys))
-		fmt.Printf("  %-18s %-8s %-10s %-26s %s\n", "NAME", "ROLE", "STATUS", "KEY", "MODELS")
-		fmt.Printf("  %-18s %-8s %-10s %-26s %s\n", "primary", "admin", "active", fmtKey(cfg.Server.LocalKey), "all")
+		fmt.Printf("  %-18s %-8s %-10s %-7s %-26s %s\n", "NAME", "ROLE", "STATUS", "AGENTS", "KEY", "MODELS")
+		fmt.Printf("  %-18s %-8s %-10s %-7s %-26s %s\n", "primary", "admin", "active", "yes", fmtKey(cfg.Server.LocalKey), "all")
 		for _, k := range cfg.Server.APIKeys {
 			st := "active"
 			if k.Disabled {
@@ -1403,7 +1404,11 @@ func cmdKeys(args []string) error {
 			if len(k.Models) > 0 {
 				mods = strings.Join(k.Models, ",")
 			}
-			fmt.Printf("  %-18s %-8s %-10s %-26s %s\n", k.Name, k.EffectiveRole(), st, fmtKey(k.Key), mods)
+			agents := "no"
+			if k.AllowsAgents() {
+				agents = "yes"
+			}
+			fmt.Printf("  %-18s %-8s %-10s %-7s %-26s %s\n", k.Name, k.EffectiveRole(), st, agents, fmtKey(k.Key), mods)
 		}
 		return nil
 
@@ -1413,8 +1418,11 @@ func cmdKeys(args []string) error {
 		var models []string
 		name := ""
 		asJSON := false
+		agents := false
 		for i := 0; i < len(args); i++ {
 			switch args[i] {
+			case "--agents":
+				agents = true
 			case "--role":
 				if i+1 < len(args) {
 					i++
@@ -1443,17 +1451,15 @@ func cmdKeys(args []string) error {
 			}
 		}
 		if name == "" {
-			return fmt.Errorf("usage: apx keys create <name> [--role client|admin] [--project name] [--models a,b] [--json]")
+			return fmt.Errorf("usage: apx keys create <name> [--role client|admin] [--agents] [--project name] [--models a,b] [--json]")
 		}
 		ck, err := cfg.AddAPIKey(name, role, models)
 		if err != nil {
 			return err
 		}
-		if project != "" {
-			if stored := cfg.FindAPIKey(ck.ID); stored != nil {
-				stored.Project = project
-				ck.Project = project
-			}
+		if stored := cfg.FindAPIKey(ck.ID); stored != nil {
+			stored.Project, stored.Agents = project, agents
+			ck = *stored
 		}
 		if err := config.Save(dataDir, cfg); err != nil {
 			return err
@@ -1469,6 +1475,32 @@ func cmdKeys(args []string) error {
 		fmt.Printf("  %s\n", ck.Key)
 		if len(ck.Models) > 0 {
 			fmt.Printf("  Allowed models: %s\n", strings.Join(ck.Models, ", "))
+		}
+		if agents {
+			fmt.Println("  Warning: this key can run your agent accounts, which can act on this machine.")
+		}
+		return nil
+
+	case "agents":
+		if len(args) != 2 || (args[1] != "on" && args[1] != "off") {
+			return fmt.Errorf("usage: apx keys agents <name> on|off")
+		}
+		ck := cfg.FindAPIKey(args[0])
+		if ck == nil {
+			return fmt.Errorf("API key %q not found", args[0])
+		}
+		if ck.EffectiveRole() == config.KeyRoleAdmin {
+			return fmt.Errorf("API key %q is an admin key, which always may use agent accounts", ck.Name)
+		}
+		ck.Agents = args[1] == "on"
+		if err := config.Save(dataDir, cfg); err != nil {
+			return err
+		}
+		gateway.NotifyRunningDaemon(cfg)
+		if ck.Agents {
+			fmt.Printf("API key %q can now run your agent accounts, which can act on this machine. Anyone holding it can do the same.\n", ck.Name)
+		} else {
+			fmt.Printf("API key %q can no longer use agent accounts.\n", ck.Name)
 		}
 		return nil
 
@@ -1503,7 +1535,7 @@ func cmdKeys(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("usage: apx keys [list [--reveal|--json] | create <name> [--role client|admin] [--models a,b] | enable <name> | disable <name> | revoke <name>]")
+		return fmt.Errorf("usage: apx keys [list [--reveal|--json] | create <name> [--role client|admin] [--agents] [--models a,b] | agents <name> on|off | enable <name> | disable <name> | revoke <name>]")
 	}
 }
 
@@ -1524,6 +1556,8 @@ Keep apx bound to 127.0.0.1 — let Tailscale or Cloudflare terminate HTTPS safe
 
 1. Create a dedicated client-role key per remote device (blocks /admin/* & /usage):
    apx keys create laptop --role client
+   A client key reaches API-key models only. "apx keys agents laptop on" also
+   lets it run your agent accounts, which can act on this machine.
 
 2. Option A — Tailscale Serve (Private Tailnet HTTPS — Recommended):
    tailscale serve --bg --https=443 http://127.0.0.1:%d

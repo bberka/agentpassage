@@ -39,12 +39,12 @@ func applyRouteDefaults(req backend.ChatRequest, rule config.RoutingRule) backen
 
 // buildPoolSelectRequest builds a pool.SelectRequest enriched with live quota percentages
 // and USD spend budget checks for the candidate accounts.
-func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, exclude map[string]bool) pool.SelectRequest {
+func (s *Server) buildPoolSelectRequest(ctx context.Context, plan *router.Plan, sessionKey string, exclude map[string]bool) pool.SelectRequest {
 	qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
 	req := pool.SelectRequest{
 		RuleKey:                  plan.Rule.Pattern,
 		Strategy:                 plan.Rule.Strategy,
-		CandidateIDs:             plan.CandidateIDs,
+		CandidateIDs:             s.allowedCandidates(principalFromContext(ctx), plan.CandidateIDs),
 		SessionKey:               sessionKey,
 		SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
 		ExcludeIDs:               exclude,
@@ -142,20 +142,46 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 	if err != nil {
 		return "", err
 	}
+	start := time.Now()
+	res, err := s.streamPlan(ctx, primaryPlan, "", req, cb)
+	if res.account != "" && (err == nil || res.emitted) {
+		status := http.StatusOK
+		if err != nil {
+			status = httpStatusFromError(err)
+		}
+		s.recordDirectUsage(res.model, res.account, res.backendID, status, start, req, res.usage, res.replyLen)
+	}
+	return res.account, err
+}
 
+// streamResult says which account and model served a turn.
+type streamResult struct {
+	account   string
+	backendID string
+	model     string
+	usage     *backend.Usage // nil when the account reported none
+	replyLen  int
+	emitted   bool // reply text reached the caller
+}
+
+// streamPlan streams one turn, failing over between accounts and fallback
+// models. The caller records usage. The key in ctx, if any, limits the
+// accounts and fallback models.
+func (s *Server) streamPlan(ctx context.Context, primaryPlan *router.Plan, project string, req backend.ChatRequest, cb backend.StreamCallback) (streamResult, error) {
+	principal := principalFromContext(ctx)
 	privSess := s.newPrivacySession()
 	req = applyPrivacyToRequest(privSess, req)
 
-	chain := s.buildModelChain(primaryPlan, "", nil)
+	chain := s.buildModelChain(primaryPlan, project, principal)
 	var lastErr error
-	var lastAcct string
+	var last streamResult
 
 	for _, plan := range chain {
 		tried := make(map[string]bool)
 		var planErr error
 
 		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
+			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(ctx, plan, req.SessionKey, tried))
 			if err != nil {
 				if planErr == nil {
 					planErr = err
@@ -165,7 +191,7 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 
 			acct := lease.Account
 			acctName := acct.Backend + "/" + acct.Name
-			lastAcct = acctName
+			last = streamResult{account: acctName, backendID: acct.Backend, model: plan.RequestedModel}
 			tried[acct.ID] = true
 
 			emitted := false
@@ -218,8 +244,8 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 				s.pool.PinSession(req.SessionKey, acct.ID)
 				s.pool.RecordLatency(acct.ID, time.Since(callStart).Milliseconds())
 				s.recordPrivacyHeader(nil, privSess, plan.RequestedModel)
-				s.recordDirectUsage(plan.RequestedModel, acctName, acct.Backend, http.StatusOK, callStart, req, reported, replyLen)
-				return acctName, nil
+				last.usage, last.replyLen, last.emitted = reported, replyLen, emitted
+				return last, nil
 			}
 
 			planErr = streamErr
@@ -227,8 +253,8 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
 			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
 			if emitted {
-				s.recordDirectUsage(plan.RequestedModel, acctName, acct.Backend, httpStatusFromError(streamErr), callStart, req, reported, replyLen)
-				return acctName, streamErr
+				last.usage, last.replyLen, last.emitted = reported, replyLen, true
+				return last, streamErr
 			}
 			if !allowFailover {
 				break
@@ -246,7 +272,7 @@ func (s *Server) StreamDirect(ctx context.Context, req backend.ChatRequest, cb b
 	if lastErr == nil {
 		lastErr = pool.ErrNoAvailableAccount
 	}
-	return lastAcct, lastErr
+	return last, lastErr
 }
 
 // recordDirectUsage logs a turn that did not come over HTTP (`apx acp`). When

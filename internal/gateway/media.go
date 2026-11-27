@@ -74,6 +74,11 @@ func (s *Server) proxyMediaRaw(w http.ResponseWriter, r *http.Request, upstreamS
 		return
 	}
 
+	if accessErr := s.agentAccessError(principal, plan); accessErr != nil {
+		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", accessErr.Error())
+		return
+	}
+
 	// Rewrite `model` in JSON payloads to the upstream model ID (strip `<backend>/` prefix).
 	sendBody := body
 	if strings.Contains(strings.ToLower(contentType), "application/json") && plan.UpstreamModel != "" && plan.UpstreamModel != model {
@@ -92,7 +97,7 @@ func (s *Server) proxyMediaRaw(w http.ResponseWriter, r *http.Request, upstreamS
 	client := &http.Client{Timeout: 120 * time.Second}
 
 	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-		lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, "", tried))
+		lease, err := s.pool.Acquire(s.buildPoolSelectRequest(r.Context(), plan, "", tried))
 		if err != nil {
 			if lastErr == nil {
 				lastErr = err

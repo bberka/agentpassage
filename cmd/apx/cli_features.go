@@ -730,6 +730,7 @@ Use --json for structured output and --yes to skip interactive prompts.
 ## Scoped API Keys & Remote Access
   apx keys create work-bot --role client --project work --models "deepseek/*,openai/*" --json
   apx keys disable|enable|revoke work-bot
+  apx keys agents work-bot on|off      Let a client key run agent accounts
   apx remote
 
 ## Embeddings & Reranking

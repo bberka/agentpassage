@@ -68,6 +68,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		sessionKey = strings.TrimSpace(req.Metadata.UserID)
 	}
 	project := projectFromRequest(r)
+	sessionKey = sessionScope(principalFromContext(r.Context()), sessionKey)
 
 	effort := ""
 	if req.OutputConfig != nil && req.OutputConfig.Effort != "" {
@@ -102,6 +103,11 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	if loopErr := checkLoopGuard(r, plan); loopErr != nil {
 		s.logRequest(r, req.Model, plan.Backend, http.StatusLoopDetected, start, loopErr)
 		writeAnthropicError(w, http.StatusLoopDetected, "loop_detected", loopErr.Error())
+		return
+	}
+	if accessErr := s.agentAccessError(principal, plan); accessErr != nil {
+		s.logRequest(r, req.Model, "", http.StatusForbidden, start, accessErr)
+		writeAnthropicError(w, http.StatusForbidden, "permission_error", accessErr.Error())
 		return
 	}
 	chatReq.UpstreamModel = plan.UpstreamModel
@@ -179,7 +185,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 		var planErr error
 
 		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
+			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(r.Context(), plan, req.SessionKey, tried))
 			if err != nil {
 				if planErr == nil {
 					planErr = err

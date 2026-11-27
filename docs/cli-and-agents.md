@@ -57,6 +57,7 @@ apx privacy test --json "Contact alice@example.com with sk-proj-1234567890abcdef
 ```sh
 apx keys list --json
 apx keys create work-ci --role client --project work --models "deepseek/*,openai/*" --json
+apx keys agents work-ci on      # let it run ACP and CLI accounts, which act on this machine
 apx keys disable work-ci
 apx keys enable work-ci
 apx keys revoke work-ci

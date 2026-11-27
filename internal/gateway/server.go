@@ -1017,6 +1017,9 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 		if p != nil && p.Client != nil && !p.Client.AllowsModel(m.ID) {
 			continue
 		}
+		if plan, err := s.router.Resolve(m.ID); err == nil && s.agentAccessError(p, plan) != nil {
+			continue
+		}
 		owner := m.Backend
 		if m.AccountName != "" {
 			owner = m.Backend + "/" + m.AccountName
@@ -1104,6 +1107,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		sessionKey = strings.TrimSpace(req.User)
 	}
 	project := projectFromRequest(r)
+	sessionKey = sessionScope(principalFromContext(r.Context()), sessionKey)
 
 	chatReq := backend.ChatRequest{
 		Model:           req.Model,
@@ -1141,6 +1145,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if loopErr := checkLoopGuard(r, plan); loopErr != nil {
 		s.logRequest(r, req.Model, plan.Backend, http.StatusLoopDetected, start, loopErr)
 		writeOpenAIError(w, http.StatusLoopDetected, "loop_detected", loopErr.Error())
+		return
+	}
+	if accessErr := s.agentAccessError(principal, plan); accessErr != nil {
+		s.logRequest(r, req.Model, "", http.StatusForbidden, start, accessErr)
+		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", accessErr.Error())
 		return
 	}
 	chatReq.UpstreamModel = plan.UpstreamModel
@@ -1273,7 +1282,7 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 	var lastErr error
 
 	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-		lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
+		lease, err := s.pool.Acquire(s.buildPoolSelectRequest(ctx, plan, req.SessionKey, tried))
 		if err != nil {
 			if lastErr != nil {
 				return nil, lastAcct, httpStatusFromError(lastErr), lastErr
@@ -1343,7 +1352,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 		var planErr error
 
 		for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
-			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(plan, req.SessionKey, tried))
+			lease, err := s.pool.Acquire(s.buildPoolSelectRequest(r.Context(), plan, req.SessionKey, tried))
 			if err != nil {
 				if planErr == nil {
 					planErr = err

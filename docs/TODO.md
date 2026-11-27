@@ -2,7 +2,6 @@
 
 ## Security
 
-- Stop `client` API keys from reaching ACP and CLI models unless the key allows it. Today such a key can run an agent on the host.
 - Check whether `apx acp` should forward permission requests to the host when the host sets no mode.
 
 ## Reliability

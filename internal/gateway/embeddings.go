@@ -60,6 +60,12 @@ func (s *Server) handleHTTPProxyEndpoint(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	if accessErr := s.agentAccessError(principal, primaryPlan); accessErr != nil {
+		s.logRequest(r, head.Model, "", http.StatusForbidden, start, accessErr)
+		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", accessErr.Error())
+		return
+	}
+
 	sessionKey := headerFirst(r, "X-Apx-Session", "X-Acpx-Session")
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(head.User)
@@ -83,8 +89,8 @@ func (s *Server) handleHTTPProxyEndpoint(w http.ResponseWriter, r *http.Request,
 			lease, err := s.pool.Acquire(pool.SelectRequest{
 				RuleKey:                  plan.Rule.Pattern,
 				Strategy:                 plan.Rule.Strategy,
-				CandidateIDs:             plan.CandidateIDs,
-				SessionKey:               sessionKey,
+				CandidateIDs:             s.allowedCandidates(principal, plan.CandidateIDs),
+				SessionKey:               sessionScope(principal, sessionKey),
 				SubscriptionWarningAcked: plan.Rule.SubscriptionWarningAcked,
 				ExcludeIDs:               tried,
 			})

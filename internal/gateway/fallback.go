@@ -80,7 +80,7 @@ func (s *Server) buildModelChain(primary *router.Plan, project string, principal
 		if err != nil || fbPlan == nil {
 			continue
 		}
-		if visited[fbPlan.CanonicalModel] {
+		if visited[fbPlan.CanonicalModel] || s.agentAccessError(principal, fbPlan) != nil {
 			continue
 		}
 		visited[fbModel] = true

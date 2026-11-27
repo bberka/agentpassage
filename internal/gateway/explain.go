@@ -67,7 +67,7 @@ func (s *Server) explainRouteLocal(model, sessionKey string) RouteExplanation {
 	ex.UpstreamModel = plan.UpstreamModel
 	ex.Backend = plan.Backend
 	ex.Rule = plan.Rule.Pattern
-	ex.Pool = s.pool.Explain(s.buildPoolSelectRequest(plan, sessionKey, nil))
+	ex.Pool = s.pool.Explain(s.buildPoolSelectRequest(context.Background(), plan, sessionKey, nil))
 	return ex
 }
 

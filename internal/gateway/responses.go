@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -15,43 +16,40 @@ import (
 	"github.com/bberka/agentpassage/internal/usage"
 )
 
+// storedResponse is what a follow-up request needs to continue a response.
+type storedResponse struct {
+	messages []backend.Message // without instructions, which don't carry over
+	session  string
+}
+
 type responsesStore struct {
 	mu      sync.Mutex
-	history map[string][]backend.Message
+	history map[string]storedResponse
 	order   []string
 }
 
-var globalRespStore = &responsesStore{
-	history: make(map[string][]backend.Message),
-}
+var globalRespStore = &responsesStore{history: make(map[string]storedResponse)}
 
-func (rs *responsesStore) get(id string) []backend.Message {
-	if id == "" {
-		return nil
-	}
+func (rs *responsesStore) get(id string) (storedResponse, bool) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
-	if h, ok := rs.history[id]; ok {
-		return append([]backend.Message(nil), h...)
-	}
-	return nil
+	h, ok := rs.history[id]
+	h.messages = slices.Clone(h.messages)
+	return h, ok
 }
 
-func (rs *responsesStore) put(id string, msgs []backend.Message) {
-	if id == "" {
-		return
-	}
+func (rs *responsesStore) put(id string, h storedResponse) {
 	rs.mu.Lock()
 	defer rs.mu.Unlock()
 	if _, exists := rs.history[id]; !exists {
 		rs.order = append(rs.order, id)
 		if len(rs.order) > 500 {
-			evict := rs.order[0]
+			delete(rs.history, rs.order[0])
 			rs.order = rs.order[1:]
-			delete(rs.history, evict)
 		}
 	}
-	rs.history[id] = append([]backend.Message(nil), msgs...)
+	h.messages = slices.Clone(h.messages)
+	rs.history[id] = h
 }
 
 type openAIResponsesRequest struct {
@@ -127,19 +125,20 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", fmt.Sprintf("API key %q is not permitted to use model %q", principal.Client.Name, req.Model))
 		return
 	}
-	keyName := "local"
-	if principal != nil && principal.KeyName != "" {
-		keyName = principal.KeyName
+	var prev storedResponse
+	if id := strings.TrimSpace(req.PreviousResponseID); id != "" {
+		var ok bool
+		if prev, ok = globalRespStore.get(sessionScope(principal, id)); !ok {
+			writeOpenAIError(w, http.StatusNotFound, "previous_response_not_found",
+				fmt.Sprintf("Previous response %q is unknown or expired. Send the full input without previous_response_id.", id))
+			return
+		}
 	}
-
-	var msgs []backend.Message
-	if prev := globalRespStore.get(req.PreviousResponseID); len(prev) > 0 {
-		msgs = append(msgs, prev...)
-	}
+	history := append(prev.messages, parseResponsesInput(req.Input)...)
+	msgs := history
 	if strings.TrimSpace(req.Instructions) != "" {
-		msgs = append([]backend.Message{{Role: "system", Content: req.Instructions}}, msgs...)
+		msgs = append([]backend.Message{{Role: "system", Content: req.Instructions}}, history...)
 	}
-	msgs = append(msgs, parseResponsesInput(req.Input)...)
 	if len(msgs) == 0 {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "input is required")
 		return
@@ -150,12 +149,21 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		effort = router.NormalizeEffort(req.Reasoning.Effort)
 	}
 	project := projectFromRequest(r)
-	sessionKey := strings.TrimSpace(r.Header.Get("X-Apx-Session"))
-	if sessionKey == "" {
-		sessionKey = strings.TrimSpace(req.PreviousResponseID)
+
+	respID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
+	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
+	createdAt := time.Now().Unix()
+
+	// A conversation keeps one session across its chain of responses.
+	session := sessionScope(principal, headerFirst(r, "X-Apx-Session", "X-Acpx-Session"))
+	if session == "" {
+		session = prev.session
 	}
-	if sessionKey == "" {
-		sessionKey = strings.TrimSpace(req.User)
+	if session == "" {
+		session = sessionScope(principal, strings.TrimSpace(req.User))
+	}
+	if session == "" {
+		session = sessionScope(principal, respID)
 	}
 
 	chatReq := backend.ChatRequest{
@@ -165,203 +173,107 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		Stream:          req.Stream,
 		Temperature:     req.Temperature,
 		MaxTokens:       req.MaxOutputTokens,
-		SessionKey:      sessionKey,
-		Cwd:             strings.TrimSpace(r.Header.Get("X-Apx-Cwd")),
+		SessionKey:      session,
+		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
+	}
+	if resolved, _, ok := s.ResolveDecisionModel(req.Model, chatReq); ok && resolved != "" {
+		chatReq.Model = resolved
+	}
+	plan, err := s.router.ResolveForProject(chatReq.Model, project)
+	if err != nil {
+		s.logRequest(r, req.Model, "", http.StatusNotFound, start, err)
+		writeOpenAIError(w, http.StatusNotFound, "model_not_found", err.Error())
+		return
+	}
+	if loopErr := checkLoopGuard(r, plan); loopErr != nil {
+		s.logRequest(r, req.Model, plan.Backend, http.StatusLoopDetected, start, loopErr)
+		writeOpenAIError(w, http.StatusLoopDetected, "loop_detected", loopErr.Error())
+		return
+	}
+	if accessErr := s.agentAccessError(principal, plan); accessErr != nil {
+		s.logRequest(r, req.Model, "", http.StatusForbidden, start, accessErr)
+		writeOpenAIError(w, http.StatusForbidden, "model_not_allowed", accessErr.Error())
+		return
 	}
 
-	respID := fmt.Sprintf("resp_%d", time.Now().UnixNano())
-	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
-	createdAt := time.Now().Unix()
-
-	if !req.Stream {
-		var textSB strings.Builder
-		var finalUsage backend.Usage
-		acctName, err := s.StreamDirect(r.Context(), chatReq, func(ch backend.StreamChunk) error {
-			if ch.Delta != "" {
-				textSB.WriteString(ch.Delta)
-			}
-			if ch.Usage != nil {
-				finalUsage = *ch.Usage
-			}
-			return nil
-		})
-		durMs := time.Since(start).Milliseconds()
-		if err != nil {
-			status := httpStatusFromError(err)
-			s.logs.Add(logbuf.Entry{
-				Level:      logbuf.LevelError,
-				Kind:       "request",
-				Method:     r.Method,
-				Path:       r.URL.Path,
-				Model:      req.Model,
-				Effort:     effort,
-				Project:    project,
-				Account:    acctName,
-				Status:     status,
-				DurationMs: durMs,
-				Error:      err.Error(),
-			})
-			writeOpenAIError(w, status, "api_error", err.Error())
+	var flusher http.Flusher
+	if req.Stream {
+		var ok bool
+		if flusher, ok = w.(http.Flusher); !ok {
+			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming unsupported")
 			return
 		}
-		replyText := textSB.String()
-		globalRespStore.put(respID, append(msgs, backend.Message{Role: "assistant", Content: replyText}))
-		estimated := false
-		if finalUsage.PromptTokens == 0 {
-			finalUsage.PromptTokens = estimateMessagesTokens(msgs)
-			estimated = true
-		}
-		if finalUsage.CompletionTokens == 0 {
-			finalUsage.CompletionTokens = usage.EstimateTokens(replyText)
-			estimated = true
-		}
-		if finalUsage.TotalTokens == 0 {
-			finalUsage.TotalTokens = finalUsage.PromptTokens + finalUsage.CompletionTokens
-		}
-		if s.usage != nil {
-			s.usage.Record(usage.Record{
-				Time:             time.Now(),
-				Model:            req.Model,
-				Account:          acctName,
-				Endpoint:         r.URL.Path,
-				APIKey:           keyName,
-				Project:          project,
-				PromptTokens:     finalUsage.PromptTokens,
-				CompletionTokens: finalUsage.CompletionTokens,
-				TotalTokens:      finalUsage.TotalTokens,
-				CacheReadTokens:  finalUsage.CacheReadTokens,
-				CacheWriteTokens: finalUsage.CacheWriteTokens,
-				Estimated:        estimated,
-				Status:           http.StatusOK,
-				DurationMs:       durMs,
-			})
-		}
-		s.logs.Add(logbuf.Entry{
-			Level:      logbuf.LevelInfo,
-			Kind:       "request",
-			Method:     r.Method,
-			Path:       r.URL.Path,
-			Model:      req.Model,
-			Effort:     effort,
-			Project:    project,
-			Account:    acctName,
-			Status:     http.StatusOK,
-			DurationMs: durMs,
-			TokensIn:   finalUsage.PromptTokens,
-			TokensOut:  finalUsage.CompletionTokens,
-		})
-		writeJSON(w, http.StatusOK, buildOpenAIResponseObj(respID, msgID, req.Model, replyText, createdAt, finalUsage))
-		return
 	}
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "streaming unsupported")
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
 	writeRespSSE := func(event string, data any) {
 		b, _ := json.Marshal(data)
 		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 		flusher.Flush()
 	}
-
-	writeRespSSE("response.created", map[string]any{
-		"type": "response.created",
-		"response": map[string]any{
-			"id":         respID,
-			"object":     "response",
-			"created_at": createdAt,
-			"status":     "in_progress",
-			"model":      req.Model,
-			"output":     []any{},
-		},
-	})
+	if req.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusOK)
+		writeRespSSE("response.created", map[string]any{
+			"type": "response.created",
+			"response": map[string]any{
+				"id":         respID,
+				"object":     "response",
+				"created_at": createdAt,
+				"status":     "in_progress",
+				"model":      req.Model,
+				"output":     []any{},
+			},
+		})
+	}
 
 	var textSB strings.Builder
-	var finalUsage backend.Usage
-	acctName, err := s.StreamDirect(r.Context(), chatReq, func(ch backend.StreamChunk) error {
+	res, err := s.streamPlan(r.Context(), plan, project, chatReq, func(ch backend.StreamChunk) error {
 		if ch.Delta != "" {
 			textSB.WriteString(ch.Delta)
-			writeRespSSE("response.output_text.delta", map[string]any{
-				"type":          "response.output_text.delta",
-				"item_id":       msgID,
-				"output_index":  0,
-				"content_index": 0,
-				"delta":         ch.Delta,
-			})
-		}
-		if ch.Usage != nil {
-			finalUsage = *ch.Usage
+			if req.Stream {
+				writeRespSSE("response.output_text.delta", map[string]any{
+					"type":          "response.output_text.delta",
+					"item_id":       msgID,
+					"output_index":  0,
+					"content_index": 0,
+					"delta":         ch.Delta,
+				})
+			}
 		}
 		return nil
 	})
-	durMs := time.Since(start).Milliseconds()
-	if err != nil {
-		writeRespSSE("response.failed", map[string]any{
-			"type":  "response.failed",
-			"error": map[string]any{"message": err.Error()},
-		})
-		s.logs.Add(logbuf.Entry{
-			Level:      logbuf.LevelError,
-			Kind:       "request",
-			Method:     r.Method,
-			Path:       r.URL.Path,
-			Model:      req.Model,
-			Effort:     effort,
-			Project:    project,
-			Account:    acctName,
-			Status:     httpStatusFromError(err),
-			DurationMs: durMs,
-			Error:      err.Error(),
-		})
-		return
-	}
-
 	replyText := textSB.String()
-	globalRespStore.put(respID, append(msgs, backend.Message{Role: "assistant", Content: replyText}))
-	estimated := false
-	if finalUsage.PromptTokens == 0 {
-		finalUsage.PromptTokens = estimateMessagesTokens(msgs)
-		estimated = true
-	}
-	if finalUsage.CompletionTokens == 0 {
-		finalUsage.CompletionTokens = usage.EstimateTokens(replyText)
-		estimated = true
-	}
-	if finalUsage.TotalTokens == 0 {
-		finalUsage.TotalTokens = finalUsage.PromptTokens + finalUsage.CompletionTokens
-	}
-	writeRespSSE("response.completed", map[string]any{
-		"type":     "response.completed",
-		"response": buildOpenAIResponseObj(respID, msgID, req.Model, replyText, createdAt, finalUsage),
-	})
-	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
-	flusher.Flush()
 
-	if s.usage != nil {
-		s.usage.Record(usage.Record{
-			Time:             time.Now(),
-			Model:            req.Model,
-			Account:          acctName,
-			Endpoint:         r.URL.Path,
-			APIKey:           keyName,
-			Project:          project,
-			PromptTokens:     finalUsage.PromptTokens,
-			CompletionTokens: finalUsage.CompletionTokens,
-			TotalTokens:      finalUsage.TotalTokens,
-			CacheReadTokens:  finalUsage.CacheReadTokens,
-			CacheWriteTokens: finalUsage.CacheWriteTokens,
-			Estimated:        estimated,
-			Status:           http.StatusOK,
-			DurationMs:       durMs,
-		})
+	var u backend.Usage
+	if res.usage != nil {
+		u = *res.usage
 	}
-	s.logs.Add(logbuf.Entry{
+	estimated := false
+	if err == nil || res.emitted {
+		if u.PromptTokens == 0 {
+			u.PromptTokens = estimateMessagesTokens(msgs)
+			estimated = true
+		}
+		if u.CompletionTokens == 0 {
+			u.CompletionTokens = usage.EstimateTokens(replyText)
+			estimated = true
+		}
+		if u.TotalTokens == 0 {
+			u.TotalTokens = u.PromptTokens + u.CompletionTokens
+		}
+	}
+
+	status := http.StatusOK
+	if err != nil {
+		status, err = finalFailure(err)
+	}
+	model := res.model
+	if model == "" {
+		model = req.Model
+	}
+	s.recordUsageForRequest(r, model, res.account, res.backendID, status, start, u, estimated)
+	entry := logbuf.Entry{
 		Level:      logbuf.LevelInfo,
 		Kind:       "request",
 		Method:     r.Method,
@@ -369,12 +281,43 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		Model:      req.Model,
 		Effort:     effort,
 		Project:    project,
-		Account:    acctName,
-		Status:     http.StatusOK,
-		DurationMs: durMs,
-		TokensIn:   finalUsage.PromptTokens,
-		TokensOut:  finalUsage.CompletionTokens,
+		Account:    res.account,
+		Status:     status,
+		DurationMs: time.Since(start).Milliseconds(),
+		TokensIn:   u.PromptTokens,
+		TokensOut:  u.CompletionTokens,
+	}
+	if err != nil {
+		entry.Level, entry.Error = logbuf.LevelError, err.Error()
+	}
+	if s.logs != nil {
+		s.logs.Add(entry)
+	}
+
+	if err != nil {
+		if req.Stream {
+			writeRespSSE("response.failed", map[string]any{
+				"type":  "response.failed",
+				"error": map[string]any{"message": err.Error()},
+			})
+			return
+		}
+		writeOpenAIError(w, status, "api_error", err.Error())
+		return
+	}
+
+	globalRespStore.put(sessionScope(principal, respID), storedResponse{
+		messages: append(history, backend.Message{Role: "assistant", Content: replyText}),
+		session:  session,
 	})
+	obj := buildOpenAIResponseObj(respID, msgID, req.Model, replyText, createdAt, u)
+	if !req.Stream {
+		writeJSON(w, http.StatusOK, obj)
+		return
+	}
+	writeRespSSE("response.completed", map[string]any{"type": "response.completed", "response": obj})
+	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	flusher.Flush()
 }
 
 func buildOpenAIResponseObj(respID, msgID, model, text string, createdAt int64, u backend.Usage) map[string]any {

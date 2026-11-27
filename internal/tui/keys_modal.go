@@ -67,6 +67,21 @@ func (a *App) updateKeysModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus(fmt.Sprintf("Key %s role -> %s", cfg.Server.APIKeys[idx].Name, cfg.Server.APIKeys[idx].Role), false)
 		}
+	case "g":
+		if a.keyCursor > 0 {
+			ck := &cfg.Server.APIKeys[a.keyCursor-1]
+			if ck.EffectiveRole() == config.KeyRoleAdmin {
+				a.setStatus("Admin keys always may use agents", false)
+				break
+			}
+			ck.Agents = !ck.Agents
+			_ = a.srv.ReloadConfig(cfg)
+			if ck.Agents {
+				a.setStatus(ck.Name+" can now run agents on this machine", true)
+			} else {
+				a.setStatus(ck.Name+" can no longer use agents", false)
+			}
+		}
 	case "d":
 		if a.keyCursor > 0 {
 			idx := a.keyCursor - 1
@@ -108,7 +123,7 @@ func (a *App) viewKeysModal() string {
 
 	var lines []string
 	lines = append(lines, a.styles.Title.Render(fmt.Sprintf("◆ API Keys (%d total)", 1+len(cfg.Server.APIKeys))))
-	lines = append(lines, a.styles.Muted.Render("Create one 'client' key per remote device/tunnel (blocks /admin/*). Primary key always has 'admin' scope."))
+	lines = append(lines, a.styles.Muted.Render("Create one client key per device. Client keys can't run agents unless you allow it."))
 	lines = append(lines, a.styles.Divider.Render(strings.Repeat("─", innerW)))
 
 	lines = append(lines, "  "+a.styles.JoinRow(2,
@@ -147,6 +162,9 @@ func (a *App) viewKeysModal() string {
 		}
 		role := ck.EffectiveRole()
 		kDisp := fmtKey(ck.Key)
+		if role != config.KeyRoleAdmin && ck.Agents {
+			kDisp += "  +agents"
+		}
 		if len(ck.Models) > 0 {
 			kDisp += "  [" + strings.Join(ck.Models, ",") + "]"
 		}
@@ -175,6 +193,7 @@ func (a *App) viewKeysModal() string {
 		a.styles.KeyHint("c", "copy"),
 		a.styles.KeyHint("v", "reveal"),
 		a.styles.KeyHint("r", "role"),
+		a.styles.KeyHint("g", "agents"),
 		a.styles.KeyHint("d", "toggle"),
 		a.styles.KeyHint("x", "revoke"),
 		a.styles.KeyHint("esc", "close"),

@@ -172,6 +172,7 @@ type ClientKey struct {
 	Role             string   `toml:"role,omitempty" json:"role,omitempty"`                             // "client" (default) or "admin"
 	Project          string   `toml:"project,omitempty" json:"project,omitempty"`                       // optional project scope for project-based routing & usage
 	Models           []string `toml:"models,omitempty" json:"models,omitempty"`                         // optional glob allowlist (empty = all)
+	Agents           bool     `toml:"agents,omitempty" json:"agents,omitempty"`                         // lets a client key run ACP and CLI accounts
 	DailyBudgetUSD   float64  `toml:"daily_budget_usd,omitempty" json:"daily_budget_usd,omitempty"`     // optional daily USD spend cap (0 = unlimited)
 	MonthlyBudgetUSD float64  `toml:"monthly_budget_usd,omitempty" json:"monthly_budget_usd,omitempty"` // optional 30d USD spend cap (0 = unlimited)
 	Disabled         bool     `toml:"disabled,omitempty" json:"disabled,omitempty"`
@@ -183,6 +184,12 @@ func (k ClientKey) EffectiveRole() string {
 		return KeyRoleAdmin
 	}
 	return KeyRoleClient
+}
+
+// AllowsAgents reports whether the key may call ACP and CLI accounts, which
+// run an agent on this machine. Admin keys always may.
+func (k ClientKey) AllowsAgents() bool {
+	return k.Agents || k.EffectiveRole() == KeyRoleAdmin
 }
 
 func (k ClientKey) AllowsModel(modelID string) bool {
