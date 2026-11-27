@@ -10,9 +10,11 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -193,13 +195,38 @@ var attachmentClient = &http.Client{
 					return err
 				}
 				ip := net.ParseIP(host)
-				if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+				if ip == nil || !isPublicIP(ip) {
 					return fmt.Errorf("refusing to fetch attachment from non-public address %s", host)
 				}
 				return nil
 			},
 		}).DialContext,
 	},
+}
+
+// nonPublicNets are ranges net.IP's own predicates miss: CGNAT (which
+// Tailscale uses) and NAT64, which can map onto private IPv4 addresses.
+var nonPublicNets = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+}
+
+func isPublicIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, p := range nonPublicNets {
+		if p.Contains(addr) {
+			return false
+		}
+	}
+	return true
 }
 
 // attachmentDir is where SaveAttachment writes files; it is private to the user.
@@ -227,7 +254,7 @@ func SaveAttachment(a Attachment) (string, error) {
 		return "", fmt.Errorf("attachment %q has no content", a.Name)
 	}
 	dir := attachmentDir()
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return "", err
 	}
 	pruneAttachments(dir)
@@ -247,6 +274,29 @@ func SaveAttachment(a Attachment) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// ensurePrivateDir creates dir, or accepts an existing one only if it is a
+// real directory owned by this user. The shared temp directory lets another
+// local user create it first.
+func ensurePrivateDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("attachment directory %s is not a directory", dir)
+	}
+	if !ownedByCurrentUser(info) {
+		return fmt.Errorf("attachment directory %s belongs to another user", dir)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
+		return os.Chmod(dir, 0o700)
+	}
+	return nil
 }
 
 func pruneAttachments(dir string) {
