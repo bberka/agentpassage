@@ -607,7 +607,10 @@ func (m *Manager) RecordSuccess(accountID string) {
 		st.consecutiveAuthErr = 0
 		st.loginNeeded = false
 		st.autoDisabled = false
-		st.banner = ""
+		// A pause still running keeps its explanation.
+		if !m.now().Before(st.cooldownUntil) {
+			st.banner = ""
+		}
 		st.lastError = ""
 	}
 }
@@ -638,6 +641,26 @@ func later(a, b time.Time) time.Time {
 		return a
 	}
 	return b
+}
+
+// restrictedPause is how long the other agy accounts rest after one of them is
+// restricted, since Google can link accounts used from one machine.
+const restrictedPause = 24 * time.Hour
+
+// pauseSiblingsLocked cools down the other subscription accounts of a's
+// backend and reports whether there were any.
+func (m *Manager) pauseSiblingsLocked(a *config.AccountConfig, now time.Time) bool {
+	paused := false
+	for id, other := range m.accounts {
+		if id == a.ID || other.Backend != a.Backend || other.Kind == config.KindAPIKey || !other.Enabled {
+			continue
+		}
+		st := m.states[id]
+		st.cooldownUntil = later(st.cooldownUntil, now.Add(restrictedPause))
+		st.banner = fmt.Sprintf("Paused for 24h because %s/%s was restricted. Check this account, then restart apx to resume sooner.", a.Backend, a.Name)
+		paused = true
+	}
+	return paused
 }
 
 // RecordError updates account health after a failed request.
@@ -741,6 +764,10 @@ func (m *Manager) RecordErrorForGroup(accountID, quotaGroup string, err error, r
 		a.Enabled = false
 		autoDisableReason = "Account restricted by provider. Stop using this account immediately to protect it."
 		st.banner = autoDisableReason
+		if a.Backend == "agy" && a.Kind != config.KindAPIKey && m.pauseSiblingsLocked(a, now) {
+			autoDisableReason = "Account restricted by provider. Your other agy accounts are paused for 24h."
+			st.banner = autoDisableReason
+		}
 		allowFailover = false
 
 	default:

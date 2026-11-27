@@ -23,14 +23,14 @@ import (
 	"github.com/bberka/agentpassage/internal/skills"
 )
 
-// Manager executes direct CLI proxy requests (claude -p, codex exec, agy --print, opencode run, etc.)
-// without requiring an external ACP adapter.
 // cliSession is a CLI conversation that later turns can resume.
 type cliSession struct {
 	id      string
 	history string // see backend.ContinueSession
 }
 
+// Manager executes direct CLI proxy requests (claude -p, codex exec, agy --print, opencode run, etc.)
+// without requiring an external ACP adapter.
 type Manager struct {
 	mu       sync.Mutex
 	dataDir  string

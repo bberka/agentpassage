@@ -66,3 +66,27 @@ func TestCanceledCallCostsTheAccountNothing(t *testing.T) {
 		t.Errorf("cancel counted against the account: %+v", snap)
 	}
 }
+
+func TestRestrictedAgyAccountPausesTheOthers(t *testing.T) {
+	account := func(id, backendID, kind string) config.AccountConfig {
+		return config.AccountConfig{ID: id, Name: id, Kind: kind, Backend: backendID, Enabled: true, MaxConcurrency: 1}
+	}
+	m := NewManager([]config.AccountConfig{
+		account("one", "agy", config.KindACP), account("two", "agy", config.KindACP),
+		account("codex", "codex", config.KindACP), account("key", "agy", config.KindAPIKey),
+	})
+	m.RecordError("one", &backend.BackendError{Kind: backend.ErrKindRestricted, StatusCode: 403}, config.RoutingRule{})
+	m.RecordSuccess("two") // a turn that was already running
+	for id, want := range map[string]bool{"one": false, "two": false, "codex": true, "key": true} {
+		lease, err := m.Acquire(SelectRequest{CandidateIDs: []string{id}})
+		lease.Release()
+		if (err == nil) != want {
+			t.Errorf("%s usable=%v, want %v", id, err == nil, want)
+		}
+	}
+	for _, s := range m.Snapshots() {
+		if s.ID == "two" && s.Banner == "" {
+			t.Error("paused account should say why")
+		}
+	}
+}

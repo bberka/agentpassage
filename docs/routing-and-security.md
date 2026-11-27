@@ -48,6 +48,7 @@ An ACP or CLI account continues its own session for a conversation only when the
 
 Applied automatically across all strategies:
 
+- **Restricted `agy` account:** apx disables it and pauses your other `agy` accounts for 24h. Restarting apx ends the pause sooner.
 - **HTTP 429 / quota / rate limit:** Places that account into cooldown (respecting `Retry-After` headers and parsed reset durations like `"Resets in 48m24s"` up to 6h, or exponential backoff from 60s up to 10m). By default, `failover` switches to the next eligible account (`allow_cross_account_retry_on_429 = true`, toggleable with `4` in Routing).
 - **Live quota:** Every strategy skips an account whose quota for the requested model is used up. Only the windows that meter that model count: agy uses its Gemini or Claude & GPT group (Gemini ranks by weekly, but a used-up 5h window still blocks it), and Claude adds the Fable/Opus/Sonnet weekly limit only for that model. If every account looks used up, apx tries them anyway, since quota data can be a few minutes old.
 - **Conversations keep their account while it has quota:** Requests that share a session key (`X-Apx-Session`, the OpenAI `user` field, or the ACP session) prefer the account they last succeeded on. When that account runs out of quota or is cooling down after a 429, apx switches the conversation to another eligible account by default. To keep the conversation on the same account and return 429 until quota resets instead:
