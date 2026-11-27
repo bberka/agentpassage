@@ -86,8 +86,11 @@ func parseResponsesInput(raw json.RawMessage) []backend.Message {
 	out := make([]backend.Message, 0, len(items))
 	for _, it := range items {
 		role := it.Role
-		if role == "" {
+		switch role {
+		case "":
 			role = "user"
+		case "developer": // many chat completions providers reject this role
+			role = "system"
 		}
 		text := it.Text
 		var atts []backend.Attachment
@@ -225,6 +228,18 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 				"output":     []any{},
 			},
 		})
+		// Clients such as Codex ignore text deltas until the item they belong to is open.
+		writeRespSSE("response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": 0,
+			"item": map[string]any{
+				"id": msgID, "type": "message", "role": "assistant", "status": "in_progress", "content": []any{},
+			},
+		})
+		writeRespSSE("response.content_part.added", map[string]any{
+			"type": "response.content_part.added", "item_id": msgID, "output_index": 0, "content_index": 0,
+			"part": map[string]any{"type": "output_text", "text": ""},
+		})
 	}
 
 	var textSB strings.Builder
@@ -315,6 +330,17 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, obj)
 		return
 	}
+	writeRespSSE("response.output_text.done", map[string]any{
+		"type": "response.output_text.done", "item_id": msgID, "output_index": 0, "content_index": 0, "text": replyText,
+	})
+	writeRespSSE("response.content_part.done", map[string]any{
+		"type": "response.content_part.done", "item_id": msgID, "output_index": 0, "content_index": 0,
+		"part": map[string]any{"type": "output_text", "text": replyText},
+	})
+	writeRespSSE("response.output_item.done", map[string]any{
+		"type": "response.output_item.done", "output_index": 0,
+		"item": obj["output"].([]map[string]any)[0],
+	})
 	writeRespSSE("response.completed", map[string]any{"type": "response.completed", "response": obj})
 	_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()

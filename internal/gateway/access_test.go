@@ -110,6 +110,27 @@ func TestClientKeyNeedsPermissionForAgentModels(t *testing.T) {
 	}
 }
 
+// Codex shows nothing unless the stream opens and closes the reply item.
+func TestResponsesStreamEvents(t *testing.T) {
+	_, url, seen := keyedGateway(t)
+	body := `{"model":"deepseek/chat","stream":true,"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"rules"}]},{"role":"user","content":"hi"}]}`
+	status, out := call(t, "POST", url+"/v1/responses", "admin-key", body)
+	var events []string
+	for _, line := range strings.Split(out, "\n") {
+		if name, ok := strings.CutPrefix(line, "event: "); ok {
+			events = append(events, name)
+		}
+	}
+	want := "response.created response.output_item.added response.content_part.added response.output_text.delta " +
+		"response.output_text.done response.content_part.done response.output_item.done response.completed"
+	if got := strings.Join(events, " "); status != http.StatusOK || got != want {
+		t.Errorf("status %d, events %q", status, got)
+	}
+	if role := seen()[0][0]["role"]; role != "system" {
+		t.Errorf("developer message reached the provider as %v", role)
+	}
+}
+
 func TestResponsesRecordsUsageOnceAndChainsPerKey(t *testing.T) {
 	srv, url, seen := keyedGateway(t)
 	first := `{"model":"deepseek/chat","instructions":"be brief","input":"one"}`

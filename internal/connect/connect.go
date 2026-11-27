@@ -1022,7 +1022,7 @@ return {
 				"name = \"apx\"\n"+
 				"base_url = %q\n"+
 				"env_key = \"APX_API_KEY\"\n"+
-				"wire_api = \"chat\"\n"+
+				"wire_api = \"responses\"\n"+
 				"# --- apx end ---\n",
 			baseURL,
 		)
