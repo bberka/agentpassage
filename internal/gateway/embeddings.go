@@ -66,6 +66,13 @@ func (s *Server) handleHTTPProxyEndpoint(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	privSess := s.newPrivacySession()
+	rawBody, err = privSess.RedactPassthrough("application/json", rawBody)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
+		return
+	}
+
 	sessionKey := headerFirst(r, "X-Apx-Session", "X-Acpx-Session")
 	if sessionKey == "" {
 		sessionKey = strings.TrimSpace(head.User)
@@ -141,8 +148,9 @@ func (s *Server) handleHTTPProxyEndpoint(w http.ResponseWriter, r *http.Request,
 				}
 				s.recordUsageForRequest(r, plan.RequestedModel, acctName, acct.Backend, http.StatusOK, start, u, false)
 				s.logRequest(r, plan.RequestedModel, acctName, http.StatusOK, start, nil)
+				s.recordPrivacyHeader(w, privSess, plan.RequestedModel)
 				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write(respBody)
+				_, _ = w.Write(privSess.RestorePassthrough(respBody))
 				return
 			}
 

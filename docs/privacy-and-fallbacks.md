@@ -6,6 +6,8 @@ When enabled, AgentPassage detects sensitive values in outgoing requests, replac
 
 Because placeholders are reversible in memory per request (not hashed), the upstream model can reference `{{APX_EMAIL_1}}` in its answer and the client still receives the exact original value.
 
+The filter covers chat, responses and messages, and the text fields of embeddings, rerank, image, speech and transcription requests (`input`, `query`, `documents`, `prompt`, `instructions`). It does not read attached or uploaded files such as images and audio.
+
 ### What is detected
 
 - **API keys & tokens (`redact_api_keys`):** OpenAI/Anthropic `sk-...`, GitHub `ghp_`/`github_pat_`, GitLab `glpat-`, Slack `xox...`, AWS `AKIA...`, Google `AIza...`, AgentPassage `apx_`/`acpx_`, Groq/HF keys, JWTs, and `api_key=`/`access_token=` assignments.

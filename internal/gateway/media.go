@@ -91,6 +91,13 @@ func (s *Server) proxyMediaRaw(w http.ResponseWriter, r *http.Request, upstreamS
 		}
 	}
 
+	privSess := s.newPrivacySession()
+	sendBody, err = privSess.RedactPassthrough(contentType, sendBody)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "invalid request body: "+err.Error())
+		return
+	}
+
 	tried := make(map[string]bool)
 	var lastErr error
 	var lastAcct string
@@ -144,8 +151,9 @@ func (s *Server) proxyMediaRaw(w http.ResponseWriter, r *http.Request, upstreamS
 				w.Header().Set("Content-Type", ct)
 			}
 			w.Header().Set("X-Apx-Account", lastAcct)
+			s.recordPrivacyHeader(w, privSess, model)
 			w.WriteHeader(resp.StatusCode)
-			_, _ = w.Write(respBody)
+			_, _ = w.Write(privSess.RestorePassthrough(respBody))
 			if s.logs != nil {
 				s.logs.Add(logbuf.Entry{
 					Level:         logbuf.LevelInfo,
