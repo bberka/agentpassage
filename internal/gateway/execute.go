@@ -250,8 +250,7 @@ func (s *Server) streamPlan(ctx context.Context, primaryPlan *router.Plan, proje
 
 			planErr = streamErr
 			lastErr = streamErr
-			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
-			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
+			allowFailover := s.recordFailure(ctx, acct.ID, plan, streamErr)
 			if emitted {
 				last.usage, last.replyLen, last.emitted = reported, replyLen, true
 				return last, streamErr
@@ -264,7 +263,7 @@ func (s *Server) streamPlan(ctx context.Context, primaryPlan *router.Plan, proje
 		if planErr != nil {
 			lastErr = planErr
 		}
-		if !shouldFallbackModel(lastErr, primaryPlan.Rule) {
+		if ctx.Err() != nil || !shouldFallbackModel(lastErr, primaryPlan.Rule) {
 			break
 		}
 	}

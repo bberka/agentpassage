@@ -11,7 +11,6 @@ import (
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/privacy"
-	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/router"
 )
 
@@ -323,8 +322,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 
 			planErr = streamErr
 			lastErr = streamErr
-			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
-			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
+			allowFailover := s.recordFailure(r.Context(), acct.ID, plan, streamErr)
 			if headersSent {
 				s.logRequest(r, usedModel, acctName, httpStatusFromError(streamErr), start, streamErr)
 				writeAnthropicEvent(w, "error", map[string]any{
@@ -342,7 +340,7 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 		if planErr != nil {
 			lastErr = planErr
 		}
-		if !shouldFallbackModel(lastErr, primaryPlan.Rule) {
+		if r.Context().Err() != nil || !shouldFallbackModel(lastErr, primaryPlan.Rule) {
 			break
 		}
 	}

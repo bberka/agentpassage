@@ -1319,8 +1319,7 @@ func (s *Server) executeNonStream(ctx context.Context, plan *router.Plan, req ba
 		}
 
 		lastErr = callErr
-		qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
-		allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, callErr, plan.Rule)
+		allowFailover := s.recordFailure(ctx, acct.ID, plan, callErr)
 		if !allowFailover {
 			return nil, &acct, httpStatusFromError(callErr), callErr
 		}
@@ -1513,8 +1512,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 
 			planErr = streamErr
 			lastErr = streamErr
-			qGroup := quota.GroupForModel(plan.Backend, plan.UpstreamModel)
-			allowFailover := s.pool.RecordErrorForGroup(acct.ID, qGroup, streamErr, plan.Rule)
+			allowFailover := s.recordFailure(r.Context(), acct.ID, plan, streamErr)
 			if headersSent {
 				// Cannot retry after streaming started; report the error and close.
 				s.logRequest(r, usedModel, acctName, httpStatusFromError(streamErr), start, streamErr)
@@ -1533,7 +1531,7 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 		if planErr != nil {
 			lastErr = planErr
 		}
-		if !shouldFallbackModel(lastErr, primaryPlan.Rule) {
+		if r.Context().Err() != nil || !shouldFallbackModel(lastErr, primaryPlan.Rule) {
 			break
 		}
 		if planIdx+1 < len(chain) && s.logs != nil {
@@ -1611,6 +1609,15 @@ func (s *Server) logRequest(r *http.Request, model, acct string, status int, sta
 		DurationMs: time.Since(start).Milliseconds(),
 		Error:      errStr,
 	})
+}
+
+// recordFailure notes a failed call against the account and reports whether the
+// request may try another one. A caller that gave up costs the account nothing.
+func (s *Server) recordFailure(ctx context.Context, accountID string, plan *router.Plan, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	return s.pool.RecordErrorForGroup(accountID, quota.GroupForModel(plan.Backend, plan.UpstreamModel), err, plan.Rule)
 }
 
 // finalFailure is the status and error to report once every candidate failed.

@@ -131,10 +131,7 @@ func (s *Server) executeNonStreamWithFallback(ctx context.Context, primary *rout
 			Status:    status,
 			Err:       err,
 		}
-		if i == 0 && !shouldFallbackModel(err, primary.Rule) {
-			return last
-		}
-		if i > 0 && !shouldFallbackModel(err, primary.Rule) {
+		if ctx.Err() != nil || !shouldFallbackModel(err, primary.Rule) {
 			return last
 		}
 		if i+1 < len(chain) && s.logs != nil {

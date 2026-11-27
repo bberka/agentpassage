@@ -148,7 +148,7 @@ func (s *Server) handleHTTPProxyEndpoint(w http.ResponseWriter, r *http.Request,
 
 			planErr = callErr
 			lastErr = callErr
-			if !s.pool.RecordError(acct.ID, callErr, plan.Rule) {
+			if !s.recordFailure(r.Context(), acct.ID, plan, callErr) {
 				break
 			}
 		}
@@ -156,7 +156,7 @@ func (s *Server) handleHTTPProxyEndpoint(w http.ResponseWriter, r *http.Request,
 		if planErr != nil {
 			lastErr = planErr
 		}
-		if !shouldFallbackModel(lastErr, primaryPlan.Rule) {
+		if r.Context().Err() != nil || !shouldFallbackModel(lastErr, primaryPlan.Rule) {
 			break
 		}
 	}

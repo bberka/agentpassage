@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -630,6 +631,15 @@ func (m *Manager) RecordLatency(accountID string, durMs int64) {
 	st.ewmaLatencyMs = latencyEWMAWeight*float64(durMs) + (1-latencyEWMAWeight)*st.ewmaLatencyMs
 }
 
+// later returns the later of two times, so a short cooldown never replaces a
+// longer one.
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
+}
+
 // RecordError updates account health after a failed request.
 // Returns whether the gateway is allowed to fail over to another account.
 func (m *Manager) RecordError(accountID string, err error, rule config.RoutingRule) (allowFailover bool) {
@@ -645,6 +655,12 @@ func (m *Manager) RecordErrorForGroup(accountID, quotaGroup string, err error, r
 	a, okA := m.accounts[accountID]
 	st, okS := m.states[accountID]
 	if !okA || !okS {
+		m.mu.Unlock()
+		return false
+	}
+
+	// The caller giving up says nothing about the account.
+	if errors.Is(err, context.Canceled) {
 		m.mu.Unlock()
 		return false
 	}
@@ -690,15 +706,14 @@ func (m *Manager) RecordErrorForGroup(accountID, quotaGroup string, err error, r
 			if st.groupCooldowns == nil {
 				st.groupCooldowns = make(map[string]time.Time)
 			}
-			st.groupCooldowns[quotaGroup] = now.Add(cooldown)
+			st.groupCooldowns[quotaGroup] = later(st.groupCooldowns[quotaGroup], now.Add(cooldown))
 		} else {
-			st.cooldownUntil = now.Add(cooldown)
+			st.cooldownUntil = later(st.cooldownUntil, now.Add(cooldown))
 		}
 		allowFailover = rule.AllowCrossAccountRetryOn429 && rule.Strategy != config.StrategyManual
 
 	case backend.ErrKindAuth:
 		st.consecutiveAuthErr++
-		st.loginNeeded = true
 		if a.Kind == config.KindAPIKey {
 			// API-key providers (e.g. DeepSeek) can return transient 401s during
 			// server/governor outages; back off temporarily instead of permanently
@@ -708,9 +723,10 @@ func (m *Manager) RecordErrorForGroup(accountID, quotaGroup string, err error, r
 			if cooldown > 10*time.Minute {
 				cooldown = 10 * time.Minute
 			}
-			st.cooldownUntil = now.Add(cooldown)
+			st.cooldownUntil = later(st.cooldownUntil, now.Add(cooldown))
 			allowFailover = rule.Strategy != config.StrategyManual
 		} else {
+			st.loginNeeded = true
 			if st.consecutiveAuthErr >= 2 {
 				st.autoDisabled = true
 				a.Enabled = false
