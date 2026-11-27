@@ -21,11 +21,16 @@ type openCodeServer struct {
 
 var openCodeVar = regexp.MustCompile(`\{env:([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// loadOpenCode reads both layouts OpenCode accepts: servers directly under
-// "mcp", and under "mcp.servers". A later file wins for a repeated name.
-func loadOpenCode(dir string) (map[string]server, error) {
+// loadOpenCode reads both layouts OpenCode and its fork Kilo accept: servers
+// directly under "mcp", and under "mcp.servers". It reads <base>.json and
+// <base>.jsonc for each base, and a later file wins for a repeated name.
+func loadOpenCode(dir string, bases ...string) (map[string]server, error) {
+	var names []string
+	for _, base := range bases {
+		names = append(names, base+".json", base+".jsonc")
+	}
 	out := make(map[string]server)
-	for _, name := range []string{"opencode.json", "opencode.jsonc"} {
+	for _, name := range names {
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if os.IsNotExist(err) {
@@ -63,7 +68,7 @@ func loadOpenCode(dir string) (map[string]server, error) {
 				delete(out, id)
 				continue
 			}
-			conv := server{URL: s.URL, Env: expandVars(s.Environment), Headers: expandVars(s.Headers)}
+			conv := server{URL: s.URL, Env: expand(openCodeVar, s.Environment), Headers: expand(openCodeVar, s.Headers)}
 			if len(s.Command) > 0 {
 				conv.Command, conv.Args = s.Command[0], s.Command[1:]
 			}
@@ -73,11 +78,13 @@ func loadOpenCode(dir string) (map[string]server, error) {
 	return out, nil
 }
 
-func expandVars(m map[string]string) map[string]string {
+// expand replaces each reference to an environment variable, which ref matches
+// with the name as its first group.
+func expand(ref *regexp.Regexp, m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
 	for k, v := range m {
-		out[k] = openCodeVar.ReplaceAllStringFunc(v, func(ref string) string {
-			return os.Getenv(openCodeVar.FindStringSubmatch(ref)[1])
+		out[k] = ref.ReplaceAllStringFunc(v, func(found string) string {
+			return os.Getenv(ref.FindStringSubmatch(found)[1])
 		})
 	}
 	return out

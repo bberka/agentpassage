@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -244,6 +245,13 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	argv, err := buildCLIArgs(desc, effectiveAcct, req.UpstreamModel, req.ReasoningEffort, promptText, existingSID, cwd, profileDir)
 	if err != nil {
 		return err
+	}
+
+	if req.HostTools && !acct.UseHostProfile && len(acct.CustomCommand) == 0 {
+		args, env, cleanup := m.hostMCP(acct, profileDir, cwd)
+		defer cleanup()
+		argv = slices.Insert(argv, 1, args...)
+		extraEnv = append(extraEnv, env...)
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)

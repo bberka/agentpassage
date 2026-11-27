@@ -81,3 +81,29 @@ func TestShareSourcesAndRemovedSkills(t *testing.T) {
 		t.Fatalf("a link apx did not make was removed: %v", err)
 	}
 }
+
+func TestOtherAgentsGetTheSkillsTheirProfileHides(t *testing.T) {
+	home, profile := t.TempDir(), t.TempDir()
+	for _, dir := range []string{".config/goose/skills/own", ".config/agents/skills/common", ".config/muse/skills/meta"} {
+		path := filepath.Join(home, dir)
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "SKILL.md"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for agent, want := range map[string][]string{
+		"goose":     {".config/goose/skills/own", ".config/agents/skills/common"},
+		"muse-code": {".config/muse/skills/meta"},
+	} {
+		if err := ShareWithProfile(agent, home, filepath.Join(profile, agent)); err != nil {
+			t.Fatal(err)
+		}
+		for _, w := range want {
+			if _, err := os.Stat(filepath.Join(profile, agent, w, "SKILL.md")); err != nil {
+				t.Errorf("%s profile lacks %s: %v", agent, w, err)
+			}
+		}
+	}
+}

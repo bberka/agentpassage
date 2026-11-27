@@ -37,9 +37,10 @@ type server struct {
 }
 
 // Load returns the MCP servers the user configured for agent ("claude",
-// "codex", "agy", "grok", "cursor", "gemini" or "opencode"), keyed by name. cwd
-// adds Claude's servers for that project. Errors name only the file, because its
-// content can hold secrets.
+// "codex", "agy", "grok", "cursor", "gemini", "opencode", "cline",
+// "muse-code", "kilo", "goose" or "amp-acp"), keyed by name. cwd adds Claude's
+// servers for that project. Errors name only the file, because its content can
+// hold secrets.
 func Load(home, agent, cwd string) (map[string]server, error) {
 	var path string
 	switch agent {
@@ -55,8 +56,18 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 		path = filepath.Join(home, ".cursor", "mcp.json")
 	case "gemini":
 		path = filepath.Join(home, ".gemini", "settings.json")
+	case "cline":
+		path = filepath.Join(home, ".cline", "data", "settings", "cline_mcp_settings.json")
+	case "muse-code":
+		path = filepath.Join(home, ".config", "muse", "settings.json")
 	case "opencode":
-		return loadOpenCode(filepath.Join(home, ".config", "opencode"))
+		return loadOpenCode(filepath.Join(home, ".config", "opencode"), "opencode")
+	case "kilo":
+		return loadOpenCode(filepath.Join(home, ".config", "kilo"), "opencode", "kilo")
+	case "goose":
+		return loadGoose(filepath.Join(home, ".config", "goose", "config.yaml"))
+	case "amp-acp":
+		return loadAmp(filepath.Join(home, ".config", "amp"))
 	default:
 		return nil, nil
 	}
@@ -69,6 +80,7 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 	}
 	var file struct {
 		Servers  map[string]server `json:"mcpServers" toml:"mcp_servers"`
+		Muse     map[string]server `json:"mcp_servers" toml:"-"`
 		Projects map[string]struct {
 			Servers map[string]server `json:"mcpServers"`
 		} `json:"projects"`
@@ -83,6 +95,9 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 	}
 	out := make(map[string]server)
 	maps.Copy(out, file.Servers)
+	if agent == "muse-code" {
+		maps.Copy(out, file.Muse)
+	}
 	maps.Copy(out, file.Projects[cwd].Servers)
 	for name, s := range out {
 		if agent == "gemini" {
@@ -91,6 +106,11 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 			} else if s.URL != "" {
 				s.Type = "sse"
 			}
+			out[name] = s
+		}
+		// Cline's remote servers use SSE unless they name streamable HTTP.
+		if agent == "cline" && s.URL != "" && s.Type != "streamableHttp" {
+			s.Type = "sse"
 			out[name] = s
 		}
 		if s.Disabled || (s.Enabled != nil && !*s.Enabled) {

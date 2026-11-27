@@ -12,8 +12,10 @@
 
 ## Agent profiles
 
-- Share Claude and Codex plugins, and give CLI-backend accounts the shared MCP servers.
-- Share MCP servers and skills with Cline, Muse Code and agents that keep their config under `~/.config`.
+- Share Claude and Codex plugins.
+- Give the `agy`, `grok`, `cursor` and `gemini` CLI backends the shared MCP servers without exposing them to API requests.
+- Test MCP and skills sharing live with Pi, Cursor, Gemini, Cline, Muse Code, Kilo, Goose and Amp accounts.
+- The `cursor` backend runs `agent`, which Grok also installs under that name. Detect Cursor by `cursor-agent`.
 
 ## Tests
 

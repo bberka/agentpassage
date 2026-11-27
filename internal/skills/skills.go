@@ -129,22 +129,34 @@ var agentDirs = map[string]struct {
 	dest   string
 	agents bool
 }{
-	"claude":   {[]string{".claude/skills"}, "skills", true},
-	"codex":    {[]string{".codex/skills"}, "skills", false},
-	"agy":      {[]string{".gemini/config/skills"}, ".gemini/config/skills", true},
-	"grok":     {[]string{".grok/skills"}, ".grok/skills", true},
-	"cursor":   {[]string{".cursor/skills"}, ".cursor/skills", true},
-	"gemini":   {[]string{".gemini/skills"}, ".gemini/skills", false},
-	"pi":       {[]string{".pi/agent/skills"}, "skills", false},
-	"opencode": {[]string{".config/opencode/skills", ".config/opencode/skill"}, ".config/opencode/skills", false},
+	"claude":    {[]string{".claude/skills"}, "skills", true},
+	"codex":     {[]string{".codex/skills"}, "skills", false},
+	"agy":       {[]string{".gemini/config/skills"}, ".gemini/config/skills", true},
+	"grok":      {[]string{".grok/skills"}, ".grok/skills", true},
+	"cursor":    {[]string{".cursor/skills"}, ".cursor/skills", true},
+	"gemini":    {[]string{".gemini/skills"}, ".gemini/skills", false},
+	"pi":        {[]string{".pi/agent/skills"}, "skills", false},
+	"opencode":  {[]string{".config/opencode/skills", ".config/opencode/skill"}, ".config/opencode/skills", false},
+	"cline":     {[]string{".cline/skills"}, ".cline/skills", true},
+	"muse-code": {[]string{".config/muse/skills", ".claude/skills", ".codex/skills"}, ".config/muse/skills", true},
 }
 
 // ShareWithProfile links the user's skills for agent into its isolated profile.
 // Skills added to the agent itself win over same-named ones in
-// ~/.agents/skills. Unknown agents are left alone.
+// ~/.agents/skills. Any other agent gets the skills under ~/.config that its
+// profile hides: its own and the shared ~/.config/agents/skills.
 func ShareWithProfile(agent, home, profileDir string) error {
 	d, ok := agentDirs[agent]
 	if !ok {
+		for _, name := range []string{strings.TrimSuffix(agent, "-acp"), "agents"} {
+			dir := filepath.Join(".config", name, "skills")
+			if !validName.MatchString(name) {
+				continue
+			}
+			if err := Share(filepath.Join(profileDir, dir), filepath.Join(home, dir)); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	var sources []string

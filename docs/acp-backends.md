@@ -96,8 +96,11 @@ Accounts run in isolated profiles that hide your agent's own folders, so apx lin
 | Pi | `~/.pi/agent/skills` (Pi reads `~/.agents/skills` itself) |
 | OpenCode | `~/.config/opencode/skills` (OpenCode reads `~/.agents/skills` itself) |
 | Gemini | `~/.gemini/skills` (Gemini reads `~/.agents/skills` itself) |
+| Cline | `~/.cline/skills`, `~/.agents/skills` |
+| Muse Code | `~/.config/muse/skills`, `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills` |
+| Any other | `~/.config/<agent>/skills` and `~/.config/agents/skills` (`<agent>` is the backend ID without `-acp`) |
 
-CLI-backend accounts of these agents get the same skills.
+CLI-backend accounts get the same skills.
 
 The agent's own folder wins over `~/.agents/skills` for a shared name. apx never replaces an entry already in a profile, and removes only its own links to skills you deleted. It doesn't install or update skills; use your skill manager for that.
 
@@ -115,8 +118,25 @@ The agent's own folder wins over `~/.agents/skills` for a shared name. apx never
 | Gemini | `~/.gemini/settings.json` |
 | OpenCode | `~/.config/opencode/opencode.json` and `opencode.jsonc` |
 | Pi | `~/.pi/agent/mcp.json`, linked into the account's profile (its adapter ignores servers sent over ACP) |
+| Cline | `~/.cline/data/settings/cline_mcp_settings.json` |
+| Muse Code | `~/.config/muse/settings.json` |
+| Kilo | `~/.config/kilo/` (`kilo.json`, `opencode.json` and their `.jsonc` forms) |
+| Goose | `~/.config/goose/config.yaml` (command and streamable HTTP extensions) |
+| Amp | `~/.config/amp/settings.json` and `settings.jsonc` |
 
 Other agents get no servers from apx. Those that apx isolates only through `XDG_CONFIG_HOME` still read files in your home folder, but not ones under `~/.config`.
+
+apx sends these servers over ACP; whether an agent uses them is up to the agent. This is tested live with OpenCode, but not with Cline, Muse Code, Kilo, Goose, Amp, Cursor or Gemini.
+
+CLI-backend accounts used through `apx acp` get the servers for one run at a time:
+
+| CLI backend | How |
+|---|---|
+| `claude` | `--mcp-config` with a temporary file |
+| `codex` | `-p` with a temporary profile file |
+| `opencode` | `OPENCODE_CONFIG_CONTENT` |
+
+The `agy`, `grok`, `cursor` and `gemini` CLI backends get none: apx would have to write the servers into the profile, where API requests would load them too. Use an ACP account for these. An account with a custom command gets none either. The CLI's own permission rules still apply to MCP tools.
 
 A server the host sends wins over one with the same name. Disabled servers are skipped, as are HTTP and SSE servers when the agent doesn't accept them. Servers that need an OAuth sign-in stored by the agent aren't covered. Each server starts with your real home folder, so it keeps its own settings and sign-ins.
 
