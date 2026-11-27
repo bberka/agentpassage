@@ -127,6 +127,7 @@ type App struct {
 	logLevel         string
 	logInspect       bool
 	usageShow14d     bool
+	usageTotalView   bool
 	usagePeriod      string
 	usageQuotaOffset int
 	settingCursor    int

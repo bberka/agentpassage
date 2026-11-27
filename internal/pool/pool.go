@@ -228,10 +228,10 @@ type SelectRequest struct {
 	// QuotaExhausted lists accounts whose quota for the requested model is used
 	// up, with the reset time (zero when unknown). New conversations skip them.
 	QuotaExhausted map[string]time.Time
-	// SwitchExhaustedSessions lets a conversation that already ran on an
-	// account move to another one when that account runs out of quota. When
-	// false the request fails with ErrSessionWaitForReset until the reset.
-	SwitchExhaustedSessions bool
+	// WaitForResetWhenExhausted keeps a conversation on its pinned account and
+	// fails with ErrSessionWaitForReset until the quota resets instead of
+	// switching to another eligible account. Off by default.
+	WaitForResetWhenExhausted bool
 }
 
 // sessionPin records the account a conversation last succeeded on.
@@ -328,7 +328,7 @@ func sessionWaitError(name string, until, now time.Time) error {
 		when = "it resets at " + until.Local().Format("Jan 2 15:04")
 		be.RetryAfter = max(int(until.Sub(now).Seconds()), 1)
 	}
-	be.Message = fmt.Sprintf("%s has no quota left for this model; this conversation stays on that account until %s (set [sessions] switch_account_when_exhausted = true to switch accounts instead)", name, when)
+	be.Message = fmt.Sprintf("%s has no quota left for this model; this conversation stays on that account until %s (unset [sessions] wait_for_reset_when_exhausted to switch accounts instead)", name, when)
 	return be
 }
 
@@ -360,7 +360,7 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	}
 
 	pinnedID := m.pinnedLocked(req.SessionKey, req.CandidateIDs, now)
-	if pinnedID != "" && !req.SwitchExhaustedSessions {
+	if pinnedID != "" && req.WaitForResetWhenExhausted {
 		if blocked, until := m.quotaBlockLocked(pinnedID, req, now); blocked {
 			return nil, sessionWaitError(m.accounts[pinnedID].Backend+"/"+m.accounts[pinnedID].Name, until, now)
 		}

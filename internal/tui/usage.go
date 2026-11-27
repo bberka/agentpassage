@@ -21,15 +21,23 @@ func (a *App) updateUsage(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.usageQuotaOffset--
 		}
 	case "down", "j":
-		total := len(quotaRows(a.srv.LiveQuota().Accounts))
+		total := len(a.currentQuotaRows(a.srv.LiveQuota().Accounts))
 		if a.usageQuotaOffset < max(total-1, 0) {
 			a.usageQuotaOffset++
 		}
 	case "pgup":
 		a.usageQuotaOffset = max(a.usageQuotaOffset-6, 0)
 	case "pgdown":
-		total := len(quotaRows(a.srv.LiveQuota().Accounts))
+		total := len(a.currentQuotaRows(a.srv.LiveQuota().Accounts))
 		a.usageQuotaOffset = min(a.usageQuotaOffset+6, max(total-1, 0))
+	case "v":
+		a.usageTotalView = !a.usageTotalView
+		a.usageQuotaOffset = 0
+		if a.usageTotalView {
+			a.setStatus("Usage view -> total (pooled by provider)", false)
+		} else {
+			a.setStatus("Usage view -> accounts (per account)", false)
+		}
 	case "u":
 		a.copyToClipboard("Usage Hub URL", a.srv.UsageHubURL(true))
 	case "o":
@@ -71,8 +79,15 @@ type quotaRow struct {
 	showLocal bool // account-wide request counts appear on the first row only
 }
 
-// quotaRows expands accounts that report quota groups into one row per group.
-func quotaRows(accounts []quota.AccountQuota) []quotaRow {
+func (a *App) currentQuotaRows(accounts []quota.AccountQuota) []quotaRow {
+	if a.usageTotalView {
+		return totalQuotaRows(accounts)
+	}
+	return accountQuotaRows(accounts)
+}
+
+// accountQuotaRows expands accounts that report quota groups into one row per group.
+func accountQuotaRows(accounts []quota.AccountQuota) []quotaRow {
 	rows := make([]quotaRow, 0, len(accounts))
 	for _, q := range accounts {
 		if len(q.Groups) == 0 {
@@ -87,25 +102,45 @@ func quotaRows(accounts []quota.AccountQuota) []quotaRow {
 			rows = append(rows, r)
 		}
 	}
-	return append(rows, totalRows(accounts)...)
+	return rows
 }
 
-// totalRows adds a pooled "<backend> total" row for each backend with two or
-// more accounts reporting limits, one per quota group. Each window shows the
-// average left across the accounts (they have equal allowances) and the
-// soonest reset.
-func totalRows(accounts []quota.AccountQuota) []quotaRow {
+// totalQuotaRows builds one pooled row per backend (and per quota group) across
+// all accounts. Each window shows the average left across accounts in that
+// backend and the soonest reset, with local request/token counts summed.
+func totalQuotaRows(accounts []quota.AccountQuota) []quotaRow {
 	type groupKey struct{ backend, id string }
+	type backendTotals struct {
+		count   int
+		local5h int
+		local7d int
+		tok5h   int
+		tok7d   int
+		credits string
+		source  string
+		plan    string
+	}
 	var order []groupKey
 	names := map[groupKey]string{}
 	prim := map[groupKey][]*quota.Window{}
 	sec := map[groupKey][]*quota.Window{}
-	acctCount := map[string]int{}
+	byBackend := map[string]*backendTotals{}
+
 	for _, q := range accounts {
-		if q.Primary == nil && q.Secondary == nil && len(q.Groups) == 0 {
-			continue
+		bt, ok := byBackend[q.Backend]
+		if !ok {
+			bt = &backendTotals{credits: q.Credits, source: q.Source, plan: q.PlanType}
+			byBackend[q.Backend] = bt
 		}
-		acctCount[q.Backend]++
+		bt.count++
+		bt.local5h += q.Local5h
+		bt.local7d += q.Local7d
+		bt.tok5h += q.Tokens5h
+		bt.tok7d += q.Tokens7d
+		if bt.count > 1 {
+			bt.credits = ""
+		}
+
 		groups := q.Groups
 		if len(groups) == 0 {
 			groups = []quota.QuotaGroup{{Primary: q.Primary, Secondary: q.Secondary}}
@@ -124,19 +159,33 @@ func totalRows(accounts []quota.AccountQuota) []quotaRow {
 			}
 		}
 	}
+
+	seenBackend := map[string]bool{}
 	var rows []quotaRow
 	for _, k := range order {
-		n := acctCount[k.backend]
-		if n < 2 {
-			continue
-		}
-		name := fmt.Sprintf("%s total (%d)", k.backend, n)
+		bt := byBackend[k.backend]
+		name := fmt.Sprintf("%s (%d)", k.backend, bt.count)
 		if names[k] != "" {
 			name += " · " + names[k]
 		}
-		r := quotaRow{name: name}
+		firstForBackend := !seenBackend[k.backend]
+		seenBackend[k.backend] = true
+
+		r := quotaRow{name: name, showLocal: firstForBackend}
 		r.Backend = k.backend
-		r.PlanType = "pooled"
+		r.Local5h = bt.local5h
+		r.Local7d = bt.local7d
+		r.Tokens5h = bt.tok5h
+		r.Tokens7d = bt.tok7d
+		if bt.count > 1 {
+			r.PlanType = "pooled"
+		} else {
+			r.PlanType = bt.plan
+			r.Source = bt.source
+			if k.id == "" {
+				r.Credits = bt.credits
+			}
+		}
 		r.Primary = pooledWindow(prim[k])
 		r.Secondary = pooledWindow(sec[k])
 		rows = append(rows, r)
@@ -315,11 +364,11 @@ func (a *App) viewUsage(bodyHeight int) string {
 	if !qRep.UpdatedAt.IsZero() {
 		qMeta = "updated " + qRep.UpdatedAt.Format("15:04:05")
 	}
-	rows := quotaRows(qRep.Accounts)
+	rows := a.currentQuotaRows(qRep.Accounts)
 	totalQ := len(rows)
 	nameW := 16
 	for _, r := range rows {
-		if len(r.Groups) > 0 || r.PlanType == "pooled" {
+		if len(r.Groups) > 0 || a.usageTotalView {
 			nameW = clamp(lipgloss.Width(r.name), nameW, 30)
 		}
 	}
@@ -336,13 +385,21 @@ func (a *App) viewUsage(bodyHeight int) string {
 	}
 	endQ := min(startQ+maxQ, totalQ)
 
-	qHeader := a.styles.Subtitle.Render(fmt.Sprintf("Subscription Limits (Hourly / Weekly) (%d)", len(qRep.Accounts))) + a.styles.ColGap(3) + a.styles.Muted.Render(qMeta)
+	viewLabel := "accounts"
+	col1Title := "ACCOUNT"
+	if a.usageTotalView {
+		viewLabel = "total"
+		col1Title = "PROVIDER"
+	}
+	qHeader := a.styles.Subtitle.Render(fmt.Sprintf("Subscription Limits (Hourly / Weekly) (%d)", len(qRep.Accounts))) +
+		a.styles.ColGap(2) + a.styles.Highlight.Render("["+viewLabel+" · v:view]") +
+		a.styles.ColGap(2) + a.styles.Muted.Render(qMeta)
 	if totalQ > maxQ {
 		qHeader += a.styles.ColGap(2) + a.styles.Highlight.Render(fmt.Sprintf("[%d–%d of %d · j/k scroll]", startQ+1, endQ, totalQ))
 	}
 	qLines = append(qLines, qHeader)
 	qLines = append(qLines, a.styles.JoinRow(2,
-		a.styles.TableHeader.Render(fmt.Sprintf("%-*s", nameW, "ACCOUNT")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-*s", nameW, col1Title)),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-8s", "PLAN")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-34s", "PRIMARY / HOURLY")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-26s", "WEEKLY / SECONDARY")),

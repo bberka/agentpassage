@@ -14,7 +14,7 @@ import (
 	"github.com/bberka/agentpassage/internal/service"
 )
 
-const settingsCount = 16
+const settingsCount = 17
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -198,6 +198,14 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus(fmt.Sprintf("Decision model (%s) = %v", cfg.Decision.ModelID, cfg.Decision.Enabled), false)
+		case 16: // Toggle Session Wait-for-Reset on Quota Exhaustion
+			cfg.Sessions.WaitForResetWhenExhausted = !cfg.Sessions.WaitForResetWhenExhausted
+			_ = a.srv.ReloadConfig(cfg)
+			if cfg.Sessions.WaitForResetWhenExhausted {
+				a.setStatus("Wait on quota enabled (conversations wait for reset instead of switching accounts)", false)
+			} else {
+				a.setStatus("Wait on quota disabled (conversations switch accounts when exhausted)", false)
+			}
 		}
 	case "S":
 		// Uninstall background service when on Settings
@@ -260,6 +268,10 @@ func (a *App) viewSettings(bodyHeight int) string {
 	if cfg.Decision.Enabled {
 		decVal = fmt.Sprintf("ON (%s -> fast=%s coding=%s reasoning=%s)", decID, cfg.Decision.FastModel, cfg.Decision.CodingModel, cfg.Decision.ReasoningModel)
 	}
+	waitVal := "off   (switch accounts mid-conversation when exhausted; enter to toggle)"
+	if cfg.Sessions.WaitForResetWhenExhausted {
+		waitVal = "ON    (wait for quota reset on same account; enter to toggle)"
+	}
 
 	rows := []struct {
 		label string
@@ -281,6 +293,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Alerts Webhook", webhookVal},
 		{"Response Cache", cacheVal},
 		{"Decision Model", decVal},
+		{"Wait on Quota", waitVal},
 	}
 
 	var lines []string

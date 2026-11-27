@@ -48,7 +48,7 @@ func TestNewSessionSkipsExhaustedAccount(t *testing.T) {
 	}
 }
 
-func TestExistingSessionWaitsForReset(t *testing.T) {
+func TestExistingSessionSwitchesByDefaultAndWaitsWhenOptedIn(t *testing.T) {
 	m, now := newQuotaTestManager(t)
 	m.PinSession("s1", "agy-a")
 	reset := now.Add(90 * time.Minute)
@@ -57,6 +57,13 @@ func TestExistingSessionWaitsForReset(t *testing.T) {
 		SessionKey:     "s1",
 		QuotaExhausted: map[string]time.Time{"agy-a": reset},
 	}
+	// Default: switch to another eligible account when the pinned one is exhausted.
+	if got := acquireID(t, m, req); got != "agy-b" {
+		t.Fatalf("default exhausted switch picked %s, want agy-b", got)
+	}
+
+	// Opt-in: wait for reset on the pinned account instead of switching.
+	req.WaitForResetWhenExhausted = true
 	_, err := m.Acquire(req)
 	if !errors.Is(err, ErrSessionWaitForReset) {
 		t.Fatalf("expected ErrSessionWaitForReset, got %v", err)
@@ -65,24 +72,23 @@ func TestExistingSessionWaitsForReset(t *testing.T) {
 	if !ok || be.Kind != backend.ErrKindRateLimit || be.StatusCode != 429 || be.RetryAfter != 5400 {
 		t.Fatalf("unexpected wait error %+v", be)
 	}
-
-	// Opt-in switches the conversation to another account instead.
-	req.SwitchExhaustedSessions = true
-	if got := acquireID(t, m, req); got != "agy-b" {
-		t.Fatalf("switch opt-in picked %s, want agy-b", got)
-	}
 }
 
-func TestExistingSessionWaitsOutRateLimitCooldown(t *testing.T) {
+func TestExistingSessionRateLimitCooldown(t *testing.T) {
 	m, _ := newQuotaTestManager(t)
 	m.PinSession("s1", "agy-a")
 	rule := config.RoutingRule{Strategy: config.StrategyFailover, AllowCrossAccountRetryOn429: true}
 	m.RecordErrorForGroup("agy-a", "gemini", &backend.BackendError{Kind: backend.ErrKindRateLimit, RetryAfter: 120}, rule)
 
-	// The gateway retries with the failed account excluded; the conversation must not move.
+	// Default: gateway retry with the failed account excluded swaps to agy-b.
 	req := SelectRequest{CandidateIDs: []string{"agy-a", "agy-b"}, SessionKey: "s1", QuotaGroup: "gemini", ExcludeIDs: map[string]bool{"agy-a": true}}
+	if got := acquireID(t, m, req); got != "agy-b" {
+		t.Fatalf("default cooldown failover picked %s, want agy-b", got)
+	}
+	// Opt-in: keep the conversation on agy-a and wait out the cooldown.
+	req.WaitForResetWhenExhausted = true
 	if _, err := m.Acquire(req); !errors.Is(err, ErrSessionWaitForReset) {
-		t.Fatalf("expected wait during cooldown, got %v", err)
+		t.Fatalf("expected wait during cooldown when opted in, got %v", err)
 	}
 	// Another model group on the same account is unaffected.
 	req.QuotaGroup = "claude-gpt"
@@ -90,8 +96,8 @@ func TestExistingSessionWaitsOutRateLimitCooldown(t *testing.T) {
 	if got := acquireID(t, m, req); got != "agy-a" {
 		t.Fatalf("claude-gpt request picked %s, want agy-a", got)
 	}
-	// A new conversation fails over freely.
-	req = SelectRequest{CandidateIDs: []string{"agy-a", "agy-b"}, SessionKey: "fresh", QuotaGroup: "gemini"}
+	// A new conversation fails over freely even when wait-for-reset is enabled.
+	req = SelectRequest{CandidateIDs: []string{"agy-a", "agy-b"}, SessionKey: "fresh", QuotaGroup: "gemini", WaitForResetWhenExhausted: true}
 	if got := acquireID(t, m, req); got != "agy-b" {
 		t.Fatalf("new session picked %s, want agy-b", got)
 	}

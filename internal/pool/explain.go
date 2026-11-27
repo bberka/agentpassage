@@ -62,7 +62,7 @@ func (m *Manager) Explain(req SelectRequest) Explanation {
 	pinnedID := m.pinnedLocked(req.SessionKey, req.CandidateIDs, now)
 	if pinnedID != "" {
 		ex.PinnedTo = label(pinnedID)
-		if !req.SwitchExhaustedSessions {
+		if req.WaitForResetWhenExhausted {
 			if blocked, until := m.quotaBlockLocked(pinnedID, req, now); blocked {
 				ex.Error = sessionWaitError(label(pinnedID), until, now).Error()
 				_, _ = m.eligibleLocked(req, pinnedID, now, note)

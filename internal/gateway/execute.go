@@ -53,7 +53,7 @@ func (s *Server) buildPoolSelectRequest(plan *router.Plan, sessionKey string, ex
 	s.mu.RLock()
 	cfg := s.cfg
 	s.mu.RUnlock()
-	req.SwitchExhaustedSessions = cfg.Sessions.SwitchAccountWhenExhausted
+	req.WaitForResetWhenExhausted = cfg.Sessions.WaitForResetWhenExhausted
 
 	if s.quota != nil {
 		candidate := make(map[string]bool, len(plan.CandidateIDs))

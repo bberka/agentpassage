@@ -37,15 +37,21 @@ func TestExplainMatchesAcquireWithoutChangingState(t *testing.T) {
 	}
 }
 
-func TestExplainExistingSessionWaits(t *testing.T) {
+func TestExplainExistingSessionSwitchesByDefaultAndWaitsWhenOptedIn(t *testing.T) {
 	m, now := newQuotaTestManager(t)
 	m.PinSession("s1", "agy-a")
-	ex := m.Explain(SelectRequest{
+	req := SelectRequest{
 		CandidateIDs:   []string{"agy-a", "agy-b"},
 		SessionKey:     "s1",
 		QuotaExhausted: map[string]time.Time{"agy-a": now.Add(time.Hour)},
-	})
+	}
+	ex := m.Explain(req)
+	if ex.PinnedTo != "agy/a" || ex.ChosenID != "agy-b" || ex.Error != "" {
+		t.Fatalf("default pinned conversation should switch to agy-b, got %+v", ex)
+	}
+	req.WaitForResetWhenExhausted = true
+	ex = m.Explain(req)
 	if ex.PinnedTo != "agy/a" || ex.ChosenID != "" || !strings.Contains(ex.Error, "stays on that account") {
-		t.Fatalf("pinned conversation should be refused, got %+v", ex)
+		t.Fatalf("opt-in pinned conversation should be refused, got %+v", ex)
 	}
 }
