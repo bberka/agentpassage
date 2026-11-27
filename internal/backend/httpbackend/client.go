@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -380,6 +379,7 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 	defer scanBufPool.Put(bufPtr)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(*bufPtr, 4*1024*1024)
+	finished := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if !strings.HasPrefix(line, "data:") {
@@ -401,15 +401,20 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Usage *backend.Usage `json:"usage"`
+			Error *providerError `json:"error"`
 		}
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			continue
+		}
+		if ev.Error != nil {
+			return ev.Error.backendError()
 		}
 		chunk := backend.StreamChunk{Usage: ev.Usage}
 		if len(ev.Choices) > 0 {
 			chunk.Delta = ev.Choices[0].Delta.Content
 			chunk.Reasoning = ev.Choices[0].Delta.ReasoningContent
 			chunk.FinishReason = ev.Choices[0].FinishReason
+			finished = finished || chunk.FinishReason != ""
 		}
 		if chunk.Delta != "" || chunk.Reasoning != "" || chunk.FinishReason != "" || chunk.Usage != nil {
 			if err := cb(chunk); err != nil {
@@ -417,10 +422,7 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
-	return nil
+	return streamEnd(ctx, finished, scanner.Err())
 }
 
 // --- Outbound Anthropic Messages API translation ---
@@ -560,6 +562,7 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 	scanner.Buffer(*bufPtr, 4*1024*1024)
 	var eventName string
 	var started anthropicUsage
+	finished := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "event:") {
@@ -603,6 +606,7 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 			}
 			if err := json.Unmarshal([]byte(data), &ev); err == nil {
 				if ev.Delta.StopReason != "" {
+					finished = true
 					started.OutputTokens = ev.Usage.OutputTokens
 					u := started.usage()
 					if err := cb(backend.StreamChunk{
@@ -615,10 +619,13 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 			}
 		case "message_stop":
 			return nil
+		case "error":
+			var ev struct {
+				Error providerError `json:"error"`
+			}
+			_ = json.Unmarshal([]byte(data), &ev)
+			return ev.Error.backendError()
 		}
 	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
-	}
-	return nil
+	return streamEnd(ctx, finished, scanner.Err())
 }
