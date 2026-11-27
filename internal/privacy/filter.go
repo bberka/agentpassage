@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -209,6 +210,13 @@ func (s *Session) RedactMessages(msgs []backend.Message) []backend.Message {
 	out := make([]backend.Message, len(msgs))
 	for i, m := range msgs {
 		m.Content = s.RedactText(m.Content)
+		if len(m.ToolCalls) > 0 {
+			calls := slices.Clone(m.ToolCalls)
+			for j := range calls {
+				calls[j].Arguments = s.RedactText(calls[j].Arguments)
+			}
+			m.ToolCalls = calls
+		}
 		if len(m.Attachments) > 0 {
 			atts := make([]backend.Attachment, len(m.Attachments))
 			for j, a := range m.Attachments {
@@ -338,12 +346,47 @@ func (s *Session) HeaderValue() string {
 // StreamRestorer restores placeholders across streaming text chunks without breaking
 // placeholders that are split across chunk boundaries (e.g. "{{APX_" + "EMAIL_1}}").
 type StreamRestorer struct {
-	session *Session
-	pending string
+	session  *Session
+	pending  string
+	jsonText bool
 }
 
 func (s *Session) NewStreamRestorer() *StreamRestorer {
 	return &StreamRestorer{session: s}
+}
+
+func (sr *StreamRestorer) restore(text string) string {
+	if sr.jsonText {
+		return sr.session.RestoreJSON(text)
+	}
+	return sr.session.RestoreText(text)
+}
+
+// NewJSONRestorer restores a stream of JSON text, such as the arguments of a
+// tool call.
+func (s *Session) NewJSONRestorer() *StreamRestorer {
+	sr := s.NewStreamRestorer()
+	if sr != nil {
+		sr.jsonText = true
+	}
+	return sr
+}
+
+// RestoreJSON restores placeholders found inside JSON strings, escaping the
+// original values so the JSON stays valid.
+func (s *Session) RestoreJSON(text string) string {
+	if s == nil || !strings.Contains(text, placeholderPrefix) {
+		return text
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for ph, orig := range s.phToVal {
+		quoted, err := json.Marshal(orig)
+		if err == nil {
+			text = strings.ReplaceAll(text, ph, string(quoted[1:len(quoted)-1]))
+		}
+	}
+	return text
 }
 
 // Push feeds one streamed delta and returns the safe restored prefix ready to emit.
@@ -362,7 +405,7 @@ func (sr *StreamRestorer) Push(chunk string) string {
 		tail := buf[idx:]
 		if !strings.Contains(tail, placeholderSuffix) && len(tail) < maxPlaceholderLen {
 			sr.pending = tail
-			return sr.session.RestoreText(buf[:idx])
+			return sr.restore(buf[:idx])
 		}
 	}
 
@@ -372,11 +415,11 @@ func (sr *StreamRestorer) Push(chunk string) string {
 		suffix := buf[len(buf)-hold:]
 		if strings.HasPrefix(placeholderPrefix, suffix) {
 			sr.pending = suffix
-			return sr.session.RestoreText(buf[:len(buf)-hold])
+			return sr.restore(buf[:len(buf)-hold])
 		}
 	}
 
-	return sr.session.RestoreText(buf)
+	return sr.restore(buf)
 }
 
 // Flush restores and returns any buffered tail at end-of-stream.
@@ -389,7 +432,7 @@ func (sr *StreamRestorer) Flush() string {
 	if sr.session == nil {
 		return tail
 	}
-	return sr.session.RestoreText(tail)
+	return sr.restore(tail)
 }
 
 func hasAtLeastDigits(s string, minCount int) bool {

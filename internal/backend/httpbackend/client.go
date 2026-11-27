@@ -326,6 +326,7 @@ func buildOpenAIPayload(req backend.ChatRequest, stream bool) ([]byte, error) {
 	if req.ReasoningEffort != "" {
 		payload["reasoning_effort"] = req.ReasoningEffort
 	}
+	addOpenAITools(payload, req)
 	return json.Marshal(payload)
 }
 
@@ -350,7 +351,8 @@ func (c *Client) completeOpenAI(ctx context.Context, acct config.AccountConfig, 
 		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
-				Content string `json:"content"`
+				Content   string           `json:"content"`
+				ToolCalls []openAIToolCall `json:"tool_calls"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -367,6 +369,9 @@ func (c *Client) completeOpenAI(ctx context.Context, acct config.AccountConfig, 
 	}
 	if len(parsed.Choices) > 0 {
 		out.Content = parsed.Choices[0].Message.Content
+		for _, tc := range parsed.Choices[0].Message.ToolCalls {
+			out.ToolCalls = append(out.ToolCalls, backend.ToolCall{ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+		}
 		if parsed.Choices[0].FinishReason != "" {
 			out.FinishReason = parsed.Choices[0].FinishReason
 		}
@@ -410,8 +415,9 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 		var ev struct {
 			Choices []struct {
 				Delta struct {
-					Content          string `json:"content"`
-					ReasoningContent string `json:"reasoning_content"`
+					Content          string           `json:"content"`
+					ReasoningContent string           `json:"reasoning_content"`
+					ToolCalls        []openAIToolCall `json:"tool_calls"`
 				} `json:"delta"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
@@ -430,8 +436,14 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 			chunk.Reasoning = ev.Choices[0].Delta.ReasoningContent
 			chunk.FinishReason = ev.Choices[0].FinishReason
 			finished = finished || chunk.FinishReason != ""
+			for i, tc := range ev.Choices[0].Delta.ToolCalls {
+				if tc.Index != nil {
+					i = *tc.Index
+				}
+				chunk.ToolCalls = append(chunk.ToolCalls, backend.ToolCallDelta{Index: i, ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments})
+			}
 		}
-		if chunk.Delta != "" || chunk.Reasoning != "" || chunk.FinishReason != "" || chunk.Usage != nil {
+		if chunk.Delta != "" || chunk.Reasoning != "" || chunk.FinishReason != "" || chunk.Usage != nil || len(chunk.ToolCalls) > 0 {
 			if err := cb(chunk); err != nil {
 				return err
 			}
@@ -444,21 +456,12 @@ func (c *Client) streamOpenAI(ctx context.Context, acct config.AccountConfig, ap
 
 func buildAnthropicPayload(req backend.ChatRequest, stream bool) ([]byte, error) {
 	var systemParts []string
-	msgs := make([]map[string]any, 0, len(req.Messages))
 	for _, m := range req.Messages {
 		if m.Role == "system" {
 			systemParts = append(systemParts, m.Content)
-			continue
 		}
-		role := m.Role
-		if role != "assistant" {
-			role = "user"
-		}
-		msgs = append(msgs, map[string]any{
-			"role":    role,
-			"content": anthropicContent(m),
-		})
 	}
+	msgs := anthropicMessages(req.Messages)
 	if len(msgs) == 0 {
 		msgs = append(msgs, map[string]any{"role": "user", "content": ""})
 	}
@@ -478,6 +481,7 @@ func buildAnthropicPayload(req backend.ChatRequest, stream bool) ([]byte, error)
 	if req.Temperature != nil {
 		payload["temperature"] = *req.Temperature
 	}
+	addAnthropicTools(payload, req)
 	return json.Marshal(payload)
 }
 
@@ -532,8 +536,11 @@ func (c *Client) completeAnthropic(ctx context.Context, acct config.AccountConfi
 		ID         string `json:"id"`
 		StopReason string `json:"stop_reason"`
 		Content    []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		Usage anthropicUsage `json:"usage"`
 	}
@@ -541,12 +548,17 @@ func (c *Client) completeAnthropic(ctx context.Context, acct config.AccountConfi
 		return nil, fmt.Errorf("decode anthropic response: %w", err)
 	}
 	var sb strings.Builder
+	var calls []backend.ToolCall
 	for _, b := range parsed.Content {
-		if b.Type == "text" {
+		switch b.Type {
+		case "text":
 			sb.WriteString(b.Text)
+		case "tool_use":
+			calls = append(calls, backend.ToolCall{ID: b.ID, Name: b.Name, Arguments: string(b.Input)})
 		}
 	}
 	return &backend.ChatResponse{
+		ToolCalls:    calls,
 		ID:           parsed.ID,
 		Model:        req.Model,
 		Content:      sb.String(),
@@ -578,6 +590,9 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 	var eventName string
 	var started anthropicUsage
 	finished := false
+	calls := 0        // tool calls started
+	hasInput := false // the current tool call received arguments
+	inTool := false
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if strings.HasPrefix(line, "event:") {
@@ -598,18 +613,50 @@ func (c *Client) streamAnthropic(ctx context.Context, acct config.AccountConfig,
 			if err := json.Unmarshal([]byte(data), &ev); err == nil {
 				started = ev.Message.Usage
 			}
-		case "content_block_delta":
+		case "content_block_start":
 			var ev struct {
-				Delta struct {
+				Block struct {
 					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"delta"`
+					ID   string `json:"id"`
+					Name string `json:"name"`
+				} `json:"content_block"`
 			}
-			if err := json.Unmarshal([]byte(data), &ev); err == nil && ev.Delta.Text != "" {
-				if err := cb(backend.StreamChunk{Delta: ev.Delta.Text}); err != nil {
+			if err := json.Unmarshal([]byte(data), &ev); err == nil && ev.Block.Type == "tool_use" {
+				inTool, hasInput = true, false
+				calls++
+				if err := cb(backend.StreamChunk{ToolCalls: []backend.ToolCallDelta{{Index: calls - 1, ID: ev.Block.ID, Name: ev.Block.Name}}}); err != nil {
 					return err
 				}
 			}
+		case "content_block_delta":
+			var ev struct {
+				Delta struct {
+					Type    string `json:"type"`
+					Text    string `json:"text"`
+					Partial string `json:"partial_json"`
+				} `json:"delta"`
+			}
+			if err := json.Unmarshal([]byte(data), &ev); err != nil {
+				continue
+			}
+			chunk := backend.StreamChunk{Delta: ev.Delta.Text}
+			if inTool && ev.Delta.Partial != "" {
+				hasInput = true
+				chunk.ToolCalls = []backend.ToolCallDelta{{Index: calls - 1, Arguments: ev.Delta.Partial}}
+			}
+			if chunk.Delta != "" || chunk.ToolCalls != nil {
+				if err := cb(chunk); err != nil {
+					return err
+				}
+			}
+		case "content_block_stop":
+			// A call without arguments streams none, but clients parse JSON.
+			if inTool && !hasInput {
+				if err := cb(backend.StreamChunk{ToolCalls: []backend.ToolCallDelta{{Index: calls - 1, Arguments: "{}"}}}); err != nil {
+					return err
+				}
+			}
+			inTool = false
 		case "message_delta":
 			var ev struct {
 				Delta struct {

@@ -13,6 +13,18 @@ import (
 func openAIMessages(msgs []backend.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
+		if len(m.ToolCalls) > 0 {
+			var content any
+			if m.Content != "" {
+				content = m.Content
+			}
+			out = append(out, map[string]any{"role": m.Role, "content": content, "tool_calls": openAIToolCalls(m.ToolCalls)})
+			continue
+		}
+		if m.Role == "tool" {
+			out = append(out, map[string]any{"role": m.Role, "tool_call_id": m.ToolCallID, "content": m.Content})
+			continue
+		}
 		if len(m.Attachments) == 0 {
 			out = append(out, map[string]any{"role": m.Role, "content": m.Content})
 			continue

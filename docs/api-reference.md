@@ -34,6 +34,10 @@ Provider `file_id` references cannot be resolved and are passed on as references
 
 For image generation and voice, use `POST /v1/images/generations`, `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`. These pass through to API-key or local accounts (OpenAI, OpenRouter, a local server).
 
+### Tool calls
+
+`/v1/chat/completions` and `/v1/messages` pass tool definitions, tool choice, tool calls and tool results between the client and API-key or local accounts, converting between the two formats when needed. The client runs the tools. `/v1/responses` returns text only. ACP and CLI accounts ignore client tools and use their own (`X-Apx-Tools-Ignored: true`).
+
 ### `POST /v1/embeddings`
 OpenAI-compatible embeddings endpoint routed to HTTP API-key providers:
 

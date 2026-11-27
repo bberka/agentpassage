@@ -14,6 +14,8 @@ type Message struct {
 	Role        string       `json:"role"`
 	Content     string       `json:"content"`
 	Attachments []Attachment `json:"-"` // images, audio and files sent with the message
+	ToolCalls   []ToolCall   `json:"-"` // calls an assistant message made
+	ToolCallID  string       `json:"-"` // the call a "tool" message answers
 }
 
 type ChatRequest struct {
@@ -37,6 +39,8 @@ type ChatRequest struct {
 	SharedSession bool
 	Cwd           string
 	HasTools      bool
+	Tools         []Tool
+	ToolChoice    ToolChoice
 	RawOpenAIBody []byte // preserved for transparent OpenAI HTTP pass-through
 }
 
@@ -78,9 +82,11 @@ type ChatResponse struct {
 	Usage        Usage
 	ToolsIgnored bool
 	SessionID    string
+	ToolCalls    []ToolCall
 }
 
 type StreamChunk struct {
+	ToolCalls    []ToolCallDelta
 	Delta        string
 	Reasoning    string
 	RawACPUpdate json.RawMessage // raw upstream ACP session/update payload (thoughts, tools, plan, usage_update)

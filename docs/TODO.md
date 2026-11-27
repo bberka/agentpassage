@@ -8,6 +8,9 @@
 
 - Lock `config.toml` across processes while saving, so concurrent saves can't drop each other's changes.
 - Fail an API-key model's turn when it returns tool-call markup as text.
+- Pass tool calls through `/v1/responses`, so Codex can use tools with API-key models.
+- Give up on a silent ACP or CLI agent. Only HTTP providers have a silence limit, since an agent turn can wait long on tools or permission.
+- Stop `agy`'s internal 429 retries early, if they can be seen. Its local logs showed quota errors but no retry loop to act on.
 
 ## Agent profiles
 

@@ -22,6 +22,7 @@ type anthropicRequest struct {
 	Temperature *float64          `json:"temperature,omitempty"`
 	Stream      bool              `json:"stream"`
 	Tools       []json.RawMessage `json:"tools,omitempty"`
+	ToolChoice  json.RawMessage   `json:"tool_choice,omitempty"`
 	Thinking    *struct {
 		Type         string `json:"type"`
 		BudgetTokens int    `json:"budget_tokens"`
@@ -54,13 +55,9 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	for _, m := range req.Messages {
-		text, atts := parseContent(m.Content, "")
-		msgs = append(msgs, backend.Message{
-			Role:        m.Role,
-			Content:     text,
-			Attachments: atts,
-		})
+		msgs = append(msgs, parseAnthropicMessage(m.Role, m.Content)...)
 	}
+	tools, toolChoice := parseAnthropicTools(req.Tools, req.ToolChoice)
 
 	sessionKey := headerFirst(r, "X-Apx-Session", "X-Acpx-Session")
 	sharedSession := false
@@ -89,6 +86,8 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		SharedSession:   sharedSession,
 		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
 		HasTools:        len(req.Tools) > 0,
+		Tools:           tools,
+		ToolChoice:      toolChoice,
 	}
 
 	principal := principalFromContext(r.Context())
@@ -141,9 +140,14 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 	acctName := acct.Backend + "/" + acct.Name
 	setRouteHeaders(w, acctName, res.UsedModel, res.FallbackFrom, project, resp.ToolsIgnored, resp.SessionID)
 
-	stopReason := "end_turn"
-	if resp.FinishReason == "length" {
-		stopReason = "max_tokens"
+	stopReason := anthropicStopReason(resp.FinishReason)
+	var content []map[string]any
+	if resp.Content != "" || len(resp.ToolCalls) == 0 {
+		content = append(content, map[string]any{"type": "text", "text": resp.Content})
+	}
+	for i, c := range resp.ToolCalls {
+		c.Arguments = privSess.RestoreJSON(c.Arguments)
+		content = append(content, map[string]any{"type": "tool_use", "id": toolCallID(c.ID, i), "name": c.Name, "input": c.ArgumentsObject()})
 	}
 
 	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
@@ -156,9 +160,7 @@ func (s *Server) handleAnthropicMessages(w http.ResponseWriter, r *http.Request)
 		"model":         req.Model,
 		"stop_reason":   stopReason,
 		"stop_sequence": nil,
-		"content": []map[string]any{
-			{"type": "text", "text": resp.Content},
-		},
+		"content":       content,
 		"usage": map[string]any{
 			"input_tokens":  resp.Usage.PromptTokens,
 			"output_tokens": resp.Usage.CompletionTokens,
@@ -242,8 +244,14 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 
 			var reported backend.Usage
 			deltaRestorer := privSess.NewStreamRestorer()
+			// Tool calls are sent whole after the text, since each content
+			// block must close before the next opens.
+			var calls []backend.ToolCall
 			cb := func(ch backend.StreamChunk) error {
-				if ch.Delta == "" && ch.FinishReason == "" {
+				for _, d := range ch.ToolCalls {
+					calls = backend.MergeToolCall(calls, d)
+				}
+				if ch.Delta == "" && ch.FinishReason == "" && len(ch.ToolCalls) == 0 {
 					if ch.Usage != nil && ch.Usage.CompletionTokens > 0 {
 						outputTokens = ch.Usage.CompletionTokens
 					}
@@ -262,8 +270,8 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 					})
 					flusher.Flush()
 				}
-				if ch.FinishReason == "length" {
-					stopReason = "max_tokens"
+				if ch.FinishReason != "" {
+					stopReason = anthropicStopReason(ch.FinishReason)
 				}
 				if ch.Usage != nil {
 					reported = *ch.Usage
@@ -305,6 +313,17 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 					"type":  "content_block_stop",
 					"index": 0,
 				})
+				for i, c := range calls {
+					writeAnthropicEvent(w, "content_block_start", map[string]any{
+						"type": "content_block_start", "index": i + 1,
+						"content_block": map[string]any{"type": "tool_use", "id": toolCallID(c.ID, i), "name": c.Name, "input": map[string]any{}},
+					})
+					writeAnthropicEvent(w, "content_block_delta", map[string]any{
+						"type": "content_block_delta", "index": i + 1,
+						"delta": map[string]any{"type": "input_json_delta", "partial_json": privSess.RestoreJSON(c.Arguments)},
+					})
+					writeAnthropicEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": i + 1})
+				}
 				writeAnthropicEvent(w, "message_delta", map[string]any{
 					"type":  "message_delta",
 					"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
@@ -351,6 +370,17 @@ func (s *Server) executeAnthropicStream(w http.ResponseWriter, r *http.Request, 
 	status, failure := finalFailure(lastErr)
 	s.logRequest(r, req.Model, lastAcct, status, start, failure)
 	writeAnthropicError(w, status, "api_error", failure.Error())
+}
+
+// anthropicStopReason maps a chat completion finish reason.
+func anthropicStopReason(finish string) string {
+	switch finish {
+	case "length":
+		return "max_tokens"
+	case "tool_calls":
+		return "tool_use"
+	}
+	return "end_turn"
 }
 
 func writeAnthropicEvent(w io.Writer, event string, payload any) {

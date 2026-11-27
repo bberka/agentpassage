@@ -1062,13 +1062,16 @@ type openAIChatRequest struct {
 	MaxCompTok      int               `json:"max_completion_tokens,omitempty"`
 	ReasoningEffort string            `json:"reasoning_effort,omitempty"`
 	User            string            `json:"user,omitempty"`
+	ToolChoice      json.RawMessage   `json:"tool_choice,omitempty"`
 	Tools           []json.RawMessage `json:"tools,omitempty"`
 	Functions       []json.RawMessage `json:"functions,omitempty"`
 }
 
 type openAIMessage struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string           `json:"role"`
+	Content    json.RawMessage  `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls"`
+	ToolCallID string           `json:"tool_call_id"`
 }
 
 func extractMessageContent(raw json.RawMessage) string {
@@ -1096,8 +1099,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			Role:        m.Role,
 			Content:     text,
 			Attachments: atts,
+			ToolCalls:   parseOpenAIToolCalls(m.ToolCalls),
+			ToolCallID:  m.ToolCallID,
 		})
 	}
+	tools, toolChoice := parseOpenAITools(req.Tools, req.ToolChoice)
 	maxTok := req.MaxTokens
 	if maxTok == 0 {
 		maxTok = req.MaxCompTok
@@ -1122,6 +1128,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		SharedSession:   sharedSession,
 		Cwd:             headerFirst(r, "X-Apx-Cwd", "X-Acpx-Cwd"),
 		HasTools:        len(req.Tools) > 0 || len(req.Functions) > 0,
+		Tools:           tools,
+		ToolChoice:      toolChoice,
 		RawOpenAIBody:   rawBody,
 	}
 
@@ -1214,6 +1222,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.recordUsageForRequest(r, res.UsedModel, acctName, acct.Backend, http.StatusOK, start, u, est)
 
+	message := map[string]any{"role": "assistant", "content": resp.Content}
+	if len(resp.ToolCalls) > 0 {
+		message["tool_calls"] = openAIToolCallsOut(resp.ToolCalls, privSess)
+		if resp.Content == "" {
+			message["content"] = nil
+		}
+	}
+
 	id := resp.ID
 	if id == "" {
 		id = fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
@@ -1225,11 +1241,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		"model":   req.Model,
 		"choices": []map[string]any{
 			{
-				"index": 0,
-				"message": map[string]any{
-					"role":    "assistant",
-					"content": resp.Content,
-				},
+				"index":         0,
+				"message":       message,
 				"finish_reason": resp.FinishReason,
 			},
 		},
@@ -1404,8 +1417,9 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 			var outTextLen int
 			deltaRestorer := privSess.NewStreamRestorer()
 			reasonRestorer := privSess.NewStreamRestorer()
+			toolCalls := &toolStream{priv: privSess}
 			cb := func(ch backend.StreamChunk) error {
-				if ch.Delta == "" && ch.Reasoning == "" && ch.FinishReason == "" && ch.Usage == nil {
+				if ch.Delta == "" && ch.Reasoning == "" && ch.FinishReason == "" && ch.Usage == nil && len(ch.ToolCalls) == 0 {
 					return nil
 				}
 				sendHeaders(ch.ToolsIgnored, ch.SessionID)
@@ -1416,6 +1430,13 @@ func (s *Server) executeOpenAIStream(w http.ResponseWriter, r *http.Request, pri
 					restoredReason += reasonRestorer.Flush()
 				}
 				delta := map[string]any{}
+				calls := toolCalls.push(ch.ToolCalls)
+				if ch.FinishReason != "" {
+					calls = append(calls, toolCalls.flush()...)
+				}
+				if len(calls) > 0 {
+					delta["tool_calls"] = calls
+				}
 				if restoredDelta != "" {
 					delta["content"] = restoredDelta
 					outTextLen += len(restoredDelta)
