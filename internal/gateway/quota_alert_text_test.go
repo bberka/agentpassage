@@ -9,7 +9,10 @@ import (
 
 func TestQuotaAlertTextIsShortAndNotRepeated(t *testing.T) {
 	reset := time.Date(2026, 12, 1, 9, 30, 0, 0, time.Local)
-	weekly := func() *quota.Window { r := reset; return &quota.Window{Label: "Weekly", UsedPercent: 100, ResetsAt: &r} }
+	weekly := func() *quota.Window {
+		r := reset
+		return &quota.Window{Label: "Weekly", UsedPercent: 100, ResetsAt: &r}
+	}
 	got := quotaAlertsFor(quota.Report{Accounts: []quota.AccountQuota{{
 		AccountID: "agy-bb", AccountName: "agy/bb", Secondary: weekly(),
 		Groups: []quota.QuotaGroup{{Name: "Gemini Models", Secondary: weekly()}},
