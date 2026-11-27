@@ -372,7 +372,14 @@ func TestFormatACPModelLabel(t *testing.T) {
 		"Claude Sonnet 5.5":        {Backend: "claude", DisplayName: "Sonnet 5.5"},
 		"Codex GPT-6 Luna":         {Backend: "codex", Upstream: "gpt-6-luna", DisplayName: "6 Luna"},
 		"Codex GPT-5.6 Terra (bx)": {Backend: "codex", Upstream: "gpt-5.6-terra", DisplayName: "5.6 Terra", AccountName: "bx"},
-		"Grok 4.7":                 {Backend: "grok", Upstream: "grok-4.7", DisplayName: "Grok 4.7"},
+		"xAI Grok 4.7":             {Backend: "grok", Upstream: "grok-4.7", DisplayName: "Grok 4.7"},
+		"DeepSeek Flash":           {Backend: "deepseek", Upstream: "deepseek-flash"},
+		"Z.AI GLM 4.6":             {Backend: "zai", Upstream: "glm-4.6"},
+		"OpenCode Big Pickle":      {Backend: "opencode", Upstream: "opencode/big-pickle", DisplayName: "opencode/Big Pickle"},
+		"OpenCode Ollama Qwen3 8B": {Backend: "opencode", Upstream: "ollama/qwen3:8b", DisplayName: "ollama/qwen3:8b"},
+		"OpenRouter Z.AI GLM 4.6":  {Backend: "openrouter", Upstream: "z-ai/glm-4.6"},
+		"OpenRouter DeepSeek V3":   {Backend: "openrouter", Upstream: "deepseek/deepseek-v3"},
+		"My Backend o3 Mini":       {Backend: "my-backend", Upstream: "o3-mini"},
 		"AGY Gemini 4 Neon (zdk)":  {Backend: "agy", Upstream: "gemini-4-neon", AccountName: "zdk"},
 	} {
 		if got := formatACPModelLabel(m); got != want {
