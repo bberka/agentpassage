@@ -194,7 +194,7 @@ func (m *Manager) Complete(ctx context.Context, acct config.AccountConfig, req b
 	}, nil
 }
 
-func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest, cb backend.StreamCallback) error {
+func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest, cb backend.StreamCallback) (err error) {
 	w, err := m.getOrStartWorker(ctx, acct)
 	if err != nil {
 		return err
@@ -208,10 +208,22 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		cwd, _ = os.Getwd()
 	}
 
+	if backend.AnsweredElsewhere(req.SessionKey, acct.ID) {
+		w.forgetSession(req.SessionKey, nil)
+	}
 	sess, reused, err := w.acquireSession(ctx, req.SessionKey, cwd, req.UpstreamModel, req.ReasoningEffort, req.PermissionMode, req.ACPMode, req.MCPServers, req.PermissionHandler)
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err != nil {
+			// The session may not hold this turn; drop it so a later request
+			// replays the full history into a fresh one.
+			w.forgetSession(req.SessionKey, sess)
+			return
+		}
+		backend.RecordAnswer(req.SessionKey, acct.ID)
+	}()
 
 	promptText := formatPrompt(req.Messages, reused)
 
@@ -275,9 +287,6 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	quotaMsg := quotaReply
 	cbMu.Unlock()
 	if quotaMsg != "" {
-		// This session never answered the turn; drop it so a later request
-		// replays the full history into a fresh one.
-		w.forgetSession(req.SessionKey, sess)
 		return classifyACPError(errors.New(quotaMsg))
 	}
 	if firstErr != nil {
@@ -427,11 +436,11 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 	}
 
 	w := &worker{
-		mgr:      mgr,
-		acct:     acct,
-		cmd:      cmd,
-		stdin:    stdin,
-		pending:  make(map[string]chan rpcMessage),
+		mgr:             mgr,
+		acct:            acct,
+		cmd:             cmd,
+		stdin:           stdin,
+		pending:         make(map[string]chan rpcMessage),
 		streams:         make(map[string]func(json.RawMessage)),
 		sessions:        make(map[string]*acpSession),
 		permByID:        make(map[string]string),
@@ -899,13 +908,18 @@ func applyEffortConfigOption(s *acpSession, opt configOption) {
 	collect(opt.Options)
 }
 
-// forgetSession drops a conversation's upstream session.
+// forgetSession drops a conversation's upstream session. A non-nil sess limits
+// the drop to that session, so a newer one is kept.
 func (w *worker) forgetSession(sessionKey string, sess *acpSession) {
 	w.sessMu.Lock()
 	defer w.sessMu.Unlock()
-	if w.sessions[sessionKey] == sess {
-		delete(w.sessions, sessionKey)
+	cached, ok := w.sessions[sessionKey]
+	if !ok || (sess != nil && cached != sess) {
+		return
 	}
+	delete(w.sessions, sessionKey)
+	delete(w.permByID, cached.id)
+	delete(w.permHandlerByID, cached.id)
 }
 
 func (w *worker) acquireSession(ctx context.Context, sessionKey, cwd, upstreamModel, reasoningEffort, permissionMode, acpMode string, mcpServers []any, permHandler PermissionHandler) (*acpSession, bool, error) {

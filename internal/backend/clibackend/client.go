@@ -161,7 +161,7 @@ func (m *Manager) Complete(ctx context.Context, acct config.AccountConfig, req b
 	}, nil
 }
 
-func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest, cb backend.StreamCallback) error {
+func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest, cb backend.StreamCallback) (err error) {
 	desc, ok := m.registry.GetCLI(acct.Backend)
 	if !ok {
 		return fmt.Errorf("unknown CLI backend %q", acct.Backend)
@@ -197,9 +197,29 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	if req.SessionKey != "" {
 		sessMapKey = acct.ID + ":" + req.SessionKey
 		m.mu.Lock()
+		if backend.AnsweredElsewhere(req.SessionKey, acct.ID) {
+			delete(m.sessions, sessMapKey)
+		}
 		existingSID = m.sessions[sessMapKey]
 		m.mu.Unlock()
 	}
+	var discoveredSID string
+	defer func() {
+		if sessMapKey == "" {
+			return
+		}
+		m.mu.Lock()
+		if err != nil {
+			// The session may not hold this turn; replay full history next time.
+			delete(m.sessions, sessMapKey)
+		} else if discoveredSID != "" {
+			m.sessions[sessMapKey] = discoveredSID
+		}
+		m.mu.Unlock()
+		if err == nil {
+			backend.RecordAnswer(req.SessionKey, acct.ID)
+		}
+	}()
 
 	promptText := formatPrompt(req.Messages, existingSID != "")
 	promptText += attachmentNotes(ctx, backend.PromptAttachments(req.Messages, existingSID != ""))
@@ -231,7 +251,6 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 		}
 	}
 
-	var discoveredSID string
 	emittedText := false
 	var streamErr error
 
@@ -268,12 +287,6 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	if streamErr != nil {
 		return streamErr
 	}
-	if discoveredSID != "" && sessMapKey != "" {
-		m.mu.Lock()
-		m.sessions[sessMapKey] = discoveredSID
-		m.mu.Unlock()
-	}
-
 	if waitErr != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			return ctx.Err()

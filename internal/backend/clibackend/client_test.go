@@ -22,6 +22,13 @@ func TestHelperCLIProcess(t *testing.T) {
 	prompt := args[len(args)-1]
 
 	switch mode {
+	case "resume":
+		if strings.HasSuffix(prompt, "FAIL") {
+			fmt.Println(`{"type":"system","session_id":"broken"}`)
+			os.Exit(1)
+		}
+		fmt.Println(`{"type":"system","session_id":"sid-1"}`)
+		fmt.Printf(`{"type":"result","result":%q}`+"\n", "resumed="+args[len(args)-2]+";"+prompt)
 	case "claude":
 		fmt.Println(`{"type":"system","session_id":"cl-sess-42"}`)
 		fmt.Printf(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello from Claude CLI: "}}}` + "\n")
@@ -130,4 +137,53 @@ func TestBuildCLIArgsAndModelsParsing(t *testing.T) {
 	if len(models) != 2 || models[0] != "gemini-4-neon" || models[1] != "gemini-3.1-pro" {
 		t.Fatalf("unexpected parsed models: %v", models)
 	}
+}
+
+func TestResumeIsDroppedAfterAnotherAccountOrFailure(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := descriptors.LoadRegistry(dir)
+	mgr := NewManager(dir, reg, nil)
+
+	send := func(id, text string) (string, error) {
+		resp, err := mgr.Complete(context.Background(), config.AccountConfig{
+			ID:             id,
+			Name:           id,
+			Kind:           config.KindCLI,
+			Backend:        "claude",
+			UseHostProfile: true,
+			CustomCommand:  []string{os.Args[0], "-test.run=TestHelperCLIProcess", "--", "{session}", "{prompt}"},
+			CustomEnv:      map[string]string{"APX_TEST_CLI_MODE": "resume"},
+		}, backend.ChatRequest{
+			SessionKey: "conv-switch",
+			Messages: []backend.Message{
+				{Role: "user", Content: "earlier"},
+				{Role: "assistant", Content: "ok"},
+				{Role: "user", Content: text},
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+		return resp.Content, nil
+	}
+	expect := func(id, text string, resumed bool) {
+		t.Helper()
+		got, err := send(id, text)
+		if err != nil {
+			t.Fatalf("%s: %v", text, err)
+		}
+		if strings.HasPrefix(got, "resumed=sid-1;") != resumed || strings.Contains(got, "earlier") == resumed {
+			t.Fatalf("%s: resumed want %v, got %q", text, resumed, got)
+		}
+	}
+
+	expect("cli-a", "one", false)
+	expect("cli-a", "two", true)
+	expect("cli-b", "three", false)
+	expect("cli-a", "four", false)
+	expect("cli-a", "five", true)
+	if _, err := send("cli-a", "FAIL"); err == nil {
+		t.Fatal("expected failure")
+	}
+	expect("cli-a", "six", false)
 }

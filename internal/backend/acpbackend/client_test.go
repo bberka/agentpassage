@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -397,4 +398,83 @@ func TestIsAgyQuotaReply(t *testing.T) {
 			t.Errorf("isAgyQuotaReply(%q) = %v, want %v", text, got, want)
 		}
 	}
+}
+
+func TestSessionReplaysHistoryAfterAnotherAccountAnswers(t *testing.T) {
+	dataDir := t.TempDir()
+	reg, _ := descriptors.LoadRegistry(dataDir)
+	mgr := NewManager(dataDir, reg, nil, config.ToolActivityDrop)
+	defer mgr.Close()
+
+	account := func(name string) config.AccountConfig {
+		return config.AccountConfig{
+			ID:            "switch-" + name,
+			Name:          name,
+			Kind:          config.KindACP,
+			Backend:       "agy",
+			Enabled:       true,
+			CustomCommand: []string{os.Args[0], "-test.run=TestHelperACPProcess"},
+			CustomEnv: map[string]string{
+				"APX_TEST_ACP_HELPER":    "1",
+				"APX_TEST_PROFILE":       name,
+				"APX_TEST_QUOTA_PROFILE": "b",
+			},
+		}
+	}
+	a, b := account("a"), account("b")
+
+	var history []backend.Message
+	send := func(acct config.AccountConfig, key, text string) (string, error) {
+		history = append(history, backend.Message{Role: "user", Content: text})
+		resp, err := mgr.Complete(context.Background(), acct, backend.ChatRequest{Messages: history, SessionKey: key})
+		if err != nil {
+			history = history[:len(history)-1]
+			return "", err
+		}
+		history = append(history, backend.Message{Role: "assistant", Content: "ok"})
+		return resp.Content, nil
+	}
+	expect := func(acct config.AccountConfig, text, session string, replayed ...string) {
+		t.Helper()
+		got, err := send(acct, "conv-switch", text)
+		if err != nil {
+			t.Fatalf("%s: %v", text, err)
+		}
+		if !strings.Contains(got, "|"+session+"|") {
+			t.Fatalf("%s: want %s, got %q", text, session, got)
+		}
+		for _, want := range replayed {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s: history lacks %q: %q", text, want, got)
+			}
+		}
+		if len(replayed) == 0 && strings.Contains(got, "[User]") {
+			t.Fatalf("%s: reused session was sent the history: %q", text, got)
+		}
+	}
+
+	expect(a, "one", "sess-1")
+	expect(a, "two", "sess-1")
+	expect(b, "three", "sess-1", "one", "two")
+	expect(a, "four", "sess-2", "one", "three")
+	expect(a, "five", "sess-2")
+
+	// A turn another account failed does not take the conversation from A.
+	if _, err := send(b, "conv-switch", "NEED_QUOTA"); err == nil {
+		t.Fatal("expected quota error")
+	}
+	expect(a, "six", "sess-2")
+
+	// A turn answered by a different backend type also invalidates A's session.
+	backend.RecordAnswer("conv-switch", "some-http-account")
+	expect(a, "seven", "sess-3", "six")
+
+	// A failed turn drops the session, even without an account switch.
+	failed := errors.New("client gone")
+	err := mgr.Stream(context.Background(), a, backend.ChatRequest{Messages: history, SessionKey: "conv-switch"},
+		func(backend.StreamChunk) error { return failed })
+	if !errors.Is(err, failed) {
+		t.Fatalf("want callback error, got %v", err)
+	}
+	expect(a, "eight", "sess-4", "seven")
 }

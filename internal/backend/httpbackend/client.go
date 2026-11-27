@@ -238,14 +238,24 @@ func (c *Client) TestAccount(ctx context.Context, acct config.AccountConfig, api
 	return nil, err
 }
 
-func (c *Client) Complete(ctx context.Context, acct config.AccountConfig, apiKey string, req backend.ChatRequest) (*backend.ChatResponse, error) {
+func (c *Client) Complete(ctx context.Context, acct config.AccountConfig, apiKey string, req backend.ChatRequest) (resp *backend.ChatResponse, err error) {
+	defer func() {
+		if err == nil {
+			backend.RecordAnswer(req.SessionKey, acct.ID)
+		}
+	}()
 	if acct.AuthStyle == config.AuthAnthropic {
 		return c.completeAnthropic(ctx, acct, apiKey, req)
 	}
 	return c.completeOpenAI(ctx, acct, apiKey, req)
 }
 
-func (c *Client) Stream(ctx context.Context, acct config.AccountConfig, apiKey string, req backend.ChatRequest, cb backend.StreamCallback) error {
+func (c *Client) Stream(ctx context.Context, acct config.AccountConfig, apiKey string, req backend.ChatRequest, cb backend.StreamCallback) (err error) {
+	defer func() {
+		if err == nil {
+			backend.RecordAnswer(req.SessionKey, acct.ID)
+		}
+	}()
 	if acct.AuthStyle == config.AuthAnthropic {
 		return c.streamAnthropic(ctx, acct, apiKey, req, cb)
 	}
