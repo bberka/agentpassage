@@ -6,7 +6,7 @@ Every enabled account contributes models to one merged namespace served at `GET 
 
 - **Pooled model:** `<backend>/<model>` (e.g. `agy/gemini-3.1-pro`, `deepseek/deepseek-chat`) — routed across matching accounts using the active routing rule.
 - **Manual account targeting:** `<backend>/<account>/<model>` (e.g. `agy/work/gemini-3.1-pro`, `agy/personal/gemini-3.1-pro`) — always routes to that exact account.
-- **Aliases & overrides:** On the **Models** screen (`3`), press `a` to assign short aliases (e.g. `pro` -> `agy/work/gemini-3.1-pro`), `r` to rename display names, or `h` to hide models from `/v1/models`.
+- **Aliases & overrides:** On the **Models** screen (`3`), press `a` to assign short aliases (e.g. `pro` -> `agy/work/gemini-3.1-pro`), `r` to rename a model (the NAME column shows what clients see; save a blank name to restore the automatic one), or `h` to hide models from `/v1/models`.
 
 ## Routing Strategies
 

@@ -295,3 +295,24 @@ func TestConnectMergesConfigsSafely(t *testing.T) {
 		}
 	}
 }
+
+func TestClientModelNames(t *testing.T) {
+	models := []router.ModelEntry{{ID: "claude/opus", Backend: "claude", Upstream: "opus", DisplayName: "Opus 5.5"}}
+	for _, id := range []string{"paseo", "vscode", "continue", "opencode", "pi", "crush", "droid", "openclaw", "qwen"} {
+		path := filepath.Join(t.TempDir(), "client-config")
+		target, ok := FindTarget(id)
+		if !ok {
+			t.Fatalf("unknown target %s", id)
+		}
+		if _, err := ApplyAtPath(target, path, &config.Config{}, models, true); err != nil {
+			t.Fatalf("apply %s: %v", id, err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", id, err)
+		}
+		if !strings.Contains(string(raw), "Claude Opus 5.5") || !strings.Contains(string(raw), "claude/opus") {
+			t.Errorf("%s config lacks the model name or ID:\n%s", id, raw)
+		}
+	}
+}

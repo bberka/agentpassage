@@ -690,6 +690,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 	apxBin := apxBinaryPath()
 
 	modelIDs := make([]string, 0, len(models))
+	labels := make(map[string]string, len(models))
 	excludedSelf := 0
 	for _, m := range models {
 		// Loop prevention: never register a client's own backend models back into that same client.
@@ -701,11 +702,13 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 			continue
 		}
 		modelIDs = append(modelIDs, m.ID)
+		labels[m.ID] = router.Label(m)
 	}
 	enabledCount := len(modelIDs)
 	effectiveModels := modelIDs
 	if len(effectiveModels) == 0 {
 		effectiveModels = []string{"default"}
+		labels["default"] = "default"
 	}
 	loopNote := ""
 	if excludedSelf > 0 {
@@ -818,7 +821,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 		for i, id := range effectiveModels {
 			mEntry := map[string]any{
 				"id":    id,
-				"label": id,
+				"label": labels[id],
 			}
 			if i == 0 {
 				mEntry["isDefault"] = true
@@ -928,7 +931,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 		for _, id := range effectiveModels {
 			vsModels = append(vsModels, map[string]any{
 				"id":     id,
-				"name":   id,
+				"name":   labels[id],
 				"url":    baseURL + "/chat/completions",
 				"tokens": 128000,
 				"capabilities": map[string]any{
@@ -975,7 +978,7 @@ func ApplyAtPath(t Target, path string, cfg *config.Config, models []router.Mode
 		sb.WriteString("# --- apx begin ---\n")
 		sb.WriteString("models:\n")
 		for _, id := range effectiveModels {
-			sb.WriteString(fmt.Sprintf("  - name: apx / %s\n", id))
+			sb.WriteString(fmt.Sprintf("  - name: %q\n", "apx / "+labels[id]))
 			sb.WriteString("    provider: openai\n")
 			sb.WriteString(fmt.Sprintf("    model: %s\n", id))
 			sb.WriteString(fmt.Sprintf("    apiBase: %s\n", baseURL))
@@ -1031,7 +1034,7 @@ return {
 	case "opencode":
 		modelMap := make(map[string]any, len(effectiveModels))
 		for _, id := range effectiveModels {
-			modelMap[id] = map[string]any{"name": id}
+			modelMap[id] = map[string]any{"name": labels[id]}
 		}
 		providerObj := map[string]any{
 			"npm":  "@ai-sdk/openai-compatible",
@@ -1130,7 +1133,7 @@ return {
 		for _, id := range effectiveModels {
 			piModels = append(piModels, map[string]any{
 				"id":   id,
-				"name": id,
+				"name": labels[id],
 			})
 		}
 		piProv := map[string]any{
@@ -1258,7 +1261,7 @@ return {
 		for _, id := range effectiveModels {
 			crushModels = append(crushModels, map[string]any{
 				"id":                 id,
-				"name":               id,
+				"name":               labels[id],
 				"context_window":     128000,
 				"default_max_tokens": 8192,
 				"supports_tools":     true,
@@ -1304,7 +1307,7 @@ return {
 		for _, id := range effectiveModels {
 			droidModels = append(droidModels, map[string]any{
 				"model":       id,
-				"displayName": "apx / " + id,
+				"displayName": "apx / " + labels[id],
 				"baseUrl":     baseURL,
 				"apiKey":      key,
 				"provider":    "generic-chat-completion-api",
@@ -1375,7 +1378,7 @@ return {
 		for _, id := range effectiveModels {
 			ocModels = append(ocModels, map[string]any{
 				"id":            id,
-				"name":          id,
+				"name":          labels[id],
 				"input":         []string{"text", "image"},
 				"contextWindow": 128000,
 				"maxTokens":     32000,
@@ -1457,7 +1460,7 @@ return {
 		for _, id := range effectiveModels {
 			qwenModels = append(qwenModels, map[string]any{
 				"id":      id,
-				"name":    "apx / " + id,
+				"name":    "apx / " + labels[id],
 				"baseUrl": baseURL,
 			})
 		}

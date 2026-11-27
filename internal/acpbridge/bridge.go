@@ -804,7 +804,7 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 			hasSelected = true
 			selectedEfforts = m.Efforts
 		}
-		label := formatACPModelLabel(m)
+		label := router.Label(m)
 		opts = append(opts, map[string]string{"value": m.ID, "name": label})
 		availModels = append(availModels, map[string]string{"modelId": m.ID, "name": label})
 	}

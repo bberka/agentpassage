@@ -13,6 +13,7 @@ import (
 type ModelEntry struct {
 	ID          string   `json:"id"`
 	DisplayName string   `json:"display_name,omitempty"`
+	CustomName  bool     `json:"custom_name,omitempty"` // DisplayName was set by the user
 	Alias       string   `json:"alias,omitempty"`
 	Backend     string   `json:"backend"`
 	AccountID   string   `json:"account_id,omitempty"` // non-empty for manual or prefixed entries
@@ -230,6 +231,7 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 		if ov, ok := overrides[e.ID]; ok {
 			if ov.DisplayName != "" {
 				e.DisplayName = ov.DisplayName
+				e.CustomName = true
 			}
 			e.Alias = ov.Alias
 			e.Hidden = ov.Hidden
@@ -242,9 +244,8 @@ func (r *Router) ListModels(includeHidden bool) []ModelEntry {
 			aliasEntry := e
 			aliasEntry.ID = e.Alias
 			aliasEntry.Alias = ""
-			if aliasEntry.DisplayName == "" {
-				aliasEntry.DisplayName = e.ID
-			}
+			// An alias is shown under the same name as the model it points to.
+			aliasEntry.DisplayName, aliasEntry.CustomName = Label(e), true
 			out = append(out, aliasEntry)
 		}
 	}

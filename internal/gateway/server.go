@@ -1047,9 +1047,7 @@ func (s *Server) handleListModels(w http.ResponseWriter, r *http.Request) {
 			"created":  now,
 			"owned_by": owner,
 		}
-		if m.DisplayName != "" {
-			entry["display_name"] = m.DisplayName
-		}
+		entry["display_name"] = router.Label(m)
 		if len(m.Efforts) > 0 {
 			entry["reasoning_efforts"] = m.Efforts
 		}

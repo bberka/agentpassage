@@ -12,6 +12,7 @@ import (
 
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/quota"
+	"github.com/bberka/agentpassage/internal/router"
 )
 
 // registerCLIProxyCompatRoutes mounts CLIProxyAPI-compatible Management & Usage endpoints
@@ -97,9 +98,11 @@ func (s *Server) handleCLIProxyAuthFileModels(w http.ResponseWriter, r *http.Req
 			if acct.IsLabelAlias(m) {
 				continue
 			}
-			disp := acct.ModelLabels[m]
-			if disp == "" {
-				disp = m
+			disp := router.Label(router.ModelEntry{ID: m, Backend: acct.Backend, Upstream: m, DisplayName: acct.ModelLabels[m]})
+			for _, ov := range cfg.Models {
+				if ov.ID == acct.Backend+"/"+m && ov.DisplayName != "" {
+					disp = ov.DisplayName
+				}
 			}
 			models = append(models, map[string]any{
 				"id":           m,

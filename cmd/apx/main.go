@@ -646,7 +646,7 @@ func cmdList(args []string) error {
 		fmt.Println("  (none)")
 	}
 	for _, m := range models {
-		fmt.Printf("  %-36s (%s)\n", m.ID, m.Kind)
+		fmt.Printf("  %-36s %-30s (%s)\n", m.ID, router.Label(m), m.Kind)
 	}
 	return nil
 }

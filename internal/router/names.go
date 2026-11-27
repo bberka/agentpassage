@@ -1,10 +1,8 @@
-package acpbridge
+package router
 
 import (
 	"fmt"
 	"strings"
-
-	"github.com/bberka/agentpassage/internal/router"
 )
 
 // brandNames spells backends, agents and model vendors the way their owners do,
@@ -48,10 +46,14 @@ var modelWords = map[string]string{
 	"oss": "OSS", "vl": "VL",
 }
 
-// formatACPModelLabel names a model as "Provider Model", so the same model
-// served by two providers is told apart in the host's picker. Nested IDs such
+// Label names a model for client pickers as "Provider Model", so the same model
+// served by two providers is told apart. Nested IDs such
 // as OpenCode's "ollama/qwen3:8b" keep their vendor: "OpenCode Ollama Qwen3 8B".
-func formatACPModelLabel(m router.ModelEntry) string {
+// A name the user set is used as written.
+func Label(m ModelEntry) string {
+	if m.CustomName {
+		return m.DisplayName
+	}
 	base := cleanModelDisplayName(m)
 	if base == "" {
 		return m.ID
@@ -87,7 +89,7 @@ func providerLabel(backendID string) string {
 }
 
 // cleanModelDisplayName is the model's own name, without the backend.
-func cleanModelDisplayName(m router.ModelEntry) string {
+func cleanModelDisplayName(m ModelEntry) string {
 	raw := strings.TrimSpace(m.Upstream)
 	if raw == "" {
 		raw = strings.TrimSpace(m.ID)

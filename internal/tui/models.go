@@ -22,7 +22,7 @@ func (a *App) filterModelList(all []router.ModelEntry) []router.ModelEntry {
 	var out []router.ModelEntry
 	for _, m := range all {
 		if strings.Contains(strings.ToLower(m.ID), q) ||
-			strings.Contains(strings.ToLower(m.DisplayName), q) ||
+			strings.Contains(strings.ToLower(router.Label(m)), q) ||
 			strings.Contains(strings.ToLower(m.Alias), q) ||
 			strings.Contains(strings.ToLower(m.Backend), q) {
 			out = append(out, m)
@@ -191,11 +191,16 @@ func (a *App) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "r":
-		return a, a.openEditModal("Rename Model", "Display name for "+sel.ID+" (blank to clear)", sel.DisplayName, func(val string) error {
+		current := router.Label(sel)
+		return a, a.openEditModal("Rename Model", "Name clients show for "+sel.ID+" (blank for the automatic name)", current, func(val string) error {
+			val = strings.TrimSpace(val)
+			if val == current && !sel.CustomName {
+				return nil // unchanged: keep following the automatic name
+			}
 			a.upsertModelOverride(sel.ID, func(ov *config.ModelOverride) {
 				ov.DisplayName = val
 			})
-			a.setStatus("Updated display name for "+sel.ID, false)
+			a.setStatus("Updated name for "+sel.ID, false)
 			return nil
 		})
 
@@ -246,7 +251,7 @@ func (a *App) viewModels(bodyHeight int) string {
 	lines = append(lines, "  "+a.styles.JoinRow(2,
 		a.styles.TableHeader.Render(fmt.Sprintf("%-10s", "STATUS")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-34s", "MODEL")),
-		a.styles.TableHeader.Render(fmt.Sprintf("%-22s", "NAME")),
+		a.styles.TableHeader.Render(fmt.Sprintf("%-30s", "NAME")),
 		a.styles.TableHeader.Render(fmt.Sprintf("%-11s", "ROUTING")),
 		a.styles.TableHeader.Render("NOTES"),
 	))
@@ -257,7 +262,7 @@ func (a *App) viewModels(bodyHeight int) string {
 		start = a.modelCursor - maxRows + 1
 	}
 
-	notesW := max(innerW-87, 10)
+	notesW := max(innerW-95, 10)
 	for i := start; i < len(models) && i < start+maxRows; i++ {
 		m := models[i]
 		status := a.styles.StateReady.Render("● enabled")
@@ -272,11 +277,11 @@ func (a *App) viewModels(bodyHeight int) string {
 		} else if m.AccountID != "" {
 			routing = "1 account"
 		}
-		dispName := m.DisplayName
-		if dispName == "" {
-			dispName = "—"
-		}
+		dispName := router.Label(m)
 		var flags []string
+		if m.CustomName {
+			flags = append(flags, "renamed")
+		}
 		if len(m.Efforts) > 0 {
 			flags = append(flags, "thinking:"+strings.Join(m.Efforts, "/"))
 		}
@@ -288,23 +293,19 @@ func (a *App) viewModels(bodyHeight int) string {
 		}
 		notes := truncate(strings.Join(flags, " "), notesW)
 		if i == a.modelCursor {
-			row := fmt.Sprintf("> %-10s  %-34s  %-22s  %-11s  %s",
+			row := fmt.Sprintf("> %-10s  %-34s  %-30s  %-11s  %s",
 				plainSt,
 				truncate(m.ID, 34),
-				truncate(dispName, 22),
+				truncate(dispName, 30),
 				routing,
 				notes,
 			)
 			lines = append(lines, a.styles.Selected.Width(innerW).MaxWidth(innerW).Render(truncate(row, innerW)))
 		} else {
-			nameStyle := a.styles.Highlight
-			if m.DisplayName == "" {
-				nameStyle = a.styles.Muted
-			}
 			row := a.styles.JoinRow(2,
 				a.styles.PadCell(status, 10),
 				a.styles.PadCell(a.surfaceText(truncate(m.ID, 34)), 34),
-				a.styles.PadCell(nameStyle.Render(truncate(dispName, 22)), 22),
+				a.styles.PadCell(a.styles.Highlight.Render(truncate(dispName, 30)), 30),
 				a.styles.PadCell(a.surfaceText(routing), 11),
 				a.styles.Muted.Render(notes),
 			)
