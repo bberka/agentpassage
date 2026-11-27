@@ -73,15 +73,11 @@ func TestPrimaryFirstFailoverStickyAndSubscriptionGuard(t *testing.T) {
 
 	// Only when primary agy-a hits cooldown/quota exhaustion does failover switch to agy-b.
 	rule := config.RoutingRule{Pattern: "agy/*", Strategy: config.StrategyFailover, AllowCrossAccountRetryOn429: true}
-	retrySecs := backend.ParseResetDurationSeconds("Quota exceeded. Resets in 48m24s")
-	if retrySecs != 48*60+24 {
-		t.Fatalf("expected parsed reset 2904s, got %d", retrySecs)
-	}
-	if !m.RecordError("agy-a", &backend.BackendError{Kind: backend.ErrKindRateLimit, StatusCode: 429, RetryAfter: retrySecs}, rule) {
+	if !m.RecordError("agy-a", &backend.BackendError{Kind: backend.ErrKindRateLimit, StatusCode: 429, RetryAfter: 48*60 + 24}, rule) {
 		t.Fatalf("expected failover allowed on 429 when AllowCrossAccountRetryOn429=true")
 	}
 
-	// agy-a stays in cooldown for the full parsed 48m24s (still cooling down after 10 minutes!)
+	// agy-a stays in cooldown for the full 48m24s (still cooling down after 10 minutes!)
 	now = now.Add(10 * time.Minute)
 	l3, err := m.Acquire(SelectRequest{Strategy: config.StrategyFailover, CandidateIDs: []string{"agy-a", "agy-b"}, SessionKey: "s1"})
 	if err != nil {

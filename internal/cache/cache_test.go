@@ -6,7 +6,7 @@ import (
 )
 
 func TestCacheGetSetEvictAndTTL(t *testing.T) {
-	c := New(2, 50*time.Millisecond)
+	c := New(2, time.Hour)
 	k1 := Key([]byte("m1"), []byte("hello"))
 	k2 := Key([]byte("m1"), []byte("world"))
 	k3 := Key([]byte("m1"), []byte("third"))
@@ -29,8 +29,17 @@ func TestCacheGetSetEvictAndTTL(t *testing.T) {
 		t.Fatal("expected k3 present")
 	}
 
-	time.Sleep(70 * time.Millisecond)
-	if _, ok := c.Get(k1); ok {
-		t.Fatal("expected k1 expired")
+	// A zero TTL on Set takes the store default, which must expire the entry.
+	short := New(2, time.Millisecond)
+	short.Set(k1, []byte("resp1"), 0)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := short.Get(k1); !ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("expected k1 expired")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

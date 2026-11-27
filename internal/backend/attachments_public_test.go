@@ -8,7 +8,7 @@ import (
 )
 
 func TestIsPublicIPRefusesInternalRanges(t *testing.T) {
-	for _, s := range []string{"127.0.0.1", "10.0.0.1", "100.64.0.1", "100.100.100.100", "::ffff:100.100.100.100", "64:ff9b::a00:1", "169.254.1.1", "::1"} {
+	for _, s := range []string{"127.0.0.1", "10.0.0.1", "100.64.0.1", "100.100.100.100", "192.168.1.1", "::ffff:100.100.100.100", "64:ff9b::a00:1", "169.254.1.1", "::1"} {
 		if isPublicIP(net.ParseIP(s)) {
 			t.Errorf("%s must be refused", s)
 		}

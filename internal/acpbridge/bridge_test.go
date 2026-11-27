@@ -89,7 +89,6 @@ func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
 
 	// Send initialize, session/new, set model to b-gemini-4-neon, and prompt over stdio
 	var allOut bytes.Buffer
-	foundSetConfigOpts := false
 	runBridgeInteractive(t, gw, func(send func(string), readLine func() map[string]any) {
 		send(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
 		_ = readLine()
@@ -119,7 +118,6 @@ func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
 		if first["currentValue"] != "b-gemini-4-neon" {
 			t.Fatalf("expected updated currentValue b-gemini-4-neon, got %v", first["currentValue"])
 		}
-		foundSetConfigOpts = true
 
 		send(fmt.Sprintf(`{"jsonrpc":"2.0","id":4,"method":"session/prompt","params":{"sessionId":%q,"prompt":[{"type":"text","text":"hello"}]}}`, sid))
 		for {
@@ -142,9 +140,6 @@ func TestACPBridgeStdioServerEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(got, "from-account-B") {
 		t.Fatalf("expected b-gemini-4-neon routed to account B, got:\n%s", got)
-	}
-	if !foundSetConfigOpts {
-		t.Fatalf("missing response for session/set_config_option (id=3)")
 	}
 }
 

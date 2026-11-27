@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,9 +59,11 @@ func TestHelperACPProcess(t *testing.T) {
 						"id":           "model",
 						"category":     "model",
 						"currentValue": "default",
-						"options": []map[string]string{
+						"options": []map[string]any{
 							{"value": "default", "name": "Default"},
-							{"value": "gemini-3.1-pro", "name": "Gemini 3.1 Pro"},
+							{"group": "gemini", "name": "Gemini", "options": []map[string]string{
+								{"value": "gemini-3.1-pro", "name": "Gemini 3.1 Pro"},
+							}},
 						},
 					},
 					{
@@ -224,46 +227,8 @@ func TestACPStreamingSessionReuseAndPermissions(t *testing.T) {
 	}
 }
 
-func TestGroupedConfigOptionsAndLoopEnvSanitization(t *testing.T) {
-	raw := []byte(`{
-		"sessionId": "s-grouped",
-		"configOptions": [{
-			"id": "model",
-			"category": "model",
-			"currentValue": "gemini-4-neon",
-			"options": [
-				{"group": "gemini", "name": "Gemini", "options": [
-					{"value": "gemini-4-neon", "name": "Gemini 4 Neon"},
-					{"value": "gemini-3.1-pro", "name": "Gemini 3.1 Pro"}
-				]},
-				{"value": "claude-sonnet-4", "name": "Claude Sonnet 4"}
-			]
-		}]
-	}`)
-	var res sessionNewResult
-	if err := json.Unmarshal(raw, &res); err != nil {
-		t.Fatal(err)
-	}
-	seen := map[string]bool{}
-	var collect func([]configOptionValue)
-	collect = func(opts []configOptionValue) {
-		for _, v := range opts {
-			if len(v.Options) > 0 {
-				collect(v.Options)
-			}
-			if v.Value != "" {
-				seen[v.Value] = true
-			}
-		}
-	}
-	collect(res.ConfigOptions[0].Options)
-	for _, want := range []string{"gemini-4-neon", "gemini-3.1-pro", "claude-sonnet-4"} {
-		if !seen[want] {
-			t.Fatalf("expected grouped model %q parsed, got %v", want, seen)
-		}
-	}
-
-	// Verify sanitizeChildEnv strips local apx loopback URLs & keys so pi-acp/opencode cannot loop
+func TestSanitizeChildEnvStripsLoopbackGatewayEnv(t *testing.T) {
+	// Local apx loopback URLs and keys must not reach pi-acp/opencode, or they loop.
 	env := sanitizeChildEnv(
 		[]string{
 			"PATH=/usr/bin",
@@ -314,7 +279,8 @@ func TestACPThoughtLevelDiscoveryAndForwarding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestAccountDiscovery failed: %v", err)
 	}
-	if len(models) == 0 || labels["gemini-3.1-pro"] != "Gemini 3.1 Pro" {
+	// The helper lists gemini-3.1-pro inside an option group.
+	if !slices.Contains(models, "gemini-3.1-pro") || labels["gemini-3.1-pro"] != "Gemini 3.1 Pro" {
 		t.Fatalf("unexpected models=%v labels=%v", models, labels)
 	}
 	wantEfforts := []string{"low", "high", "max"}

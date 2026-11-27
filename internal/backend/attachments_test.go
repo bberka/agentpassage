@@ -1,6 +1,12 @@
 package backend
 
-import "testing"
+import (
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+)
 
 func TestParseDataURL(t *testing.T) {
 	m, d, ok := ParseDataURL("data:image/png;base64,iVBO")
@@ -30,11 +36,29 @@ func TestPromptAttachments(t *testing.T) {
 	}
 }
 
+// Each address has a live server behind it, so only the address guard can make
+// the load fail.
 func TestLoadRefusesLocalAddresses(t *testing.T) {
-	for _, u := range []string{"http://127.0.0.1:8787/admin/state", "http://192.168.1.1/x.png", "http://[::1]/x.png"} {
-		a := Attachment{Kind: AttachImage, URI: u}
-		if err := a.Load(t.Context()); err == nil || a.Data != "" {
-			t.Errorf("Load(%s) = %v, data %q; want refusal", u, err, a.Data)
+	for _, addr := range []string{"127.0.0.1:0", "[::1]:0"} {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			t.Logf("cannot listen on %s: %v", addr, err)
+			continue
+		}
+		var hits atomic.Int32
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte("png"))
+		}))
+		_ = srv.Listener.Close()
+		srv.Listener = ln
+		srv.Start()
+		defer srv.Close()
+
+		a := Attachment{Kind: AttachImage, URI: srv.URL + "/x.png"}
+		if err := a.Load(t.Context()); err == nil || a.Data != "" || hits.Load() != 0 {
+			t.Errorf("Load(%s) = %v, data %q, %d requests; want refusal", a.URI, err, a.Data, hits.Load())
 		}
 	}
 }

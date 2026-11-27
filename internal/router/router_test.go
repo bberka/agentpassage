@@ -3,9 +3,7 @@ package router
 import (
 	"testing"
 
-	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
-	"github.com/bberka/agentpassage/internal/pool"
 )
 
 func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
@@ -121,7 +119,7 @@ func TestModelNamespaceAliasesAndManualRouting(t *testing.T) {
 	}
 }
 
-func TestPrefixedModelRegistrationAndPrimaryFirstFailover(t *testing.T) {
+func TestPrefixedModelRegistrationAndPoolDefaults(t *testing.T) {
 	// Case 1: Account prefix mode ("a-gemini-4-neon", "b-gemini-4-neon")
 	cfgPrefix := config.Default()
 	cfgPrefix.Accounts = []config.AccountConfig{
@@ -179,35 +177,6 @@ func TestPrefixedModelRegistrationAndPrimaryFirstFailover(t *testing.T) {
 		t.Fatalf("expected empty strategy normalized to failover, got %+v", cfgPool.Routing[2])
 	}
 
-	pm := pool.NewManager(cfgPool.Accounts)
-	l1, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	l1.Release()
-
-	l2, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-2"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	l2.Release()
-
-	if l1.Account.ID != "agy-a" || l2.Account.ID != "agy-a" {
-		t.Fatalf("expected both threads to stay on primary agy-a while healthy, got %s and %s", l1.Account.ID, l2.Account.ID)
-	}
-
-	// Exhaust primary agy-a with 429 -> seamlessly switches to agy-b.
-	if !pm.RecordError("agy-a", &backend.BackendError{Kind: backend.ErrKindRateLimit, StatusCode: 429, RetryAfter: 300}, plan.Rule) {
-		t.Fatalf("expected failover allowed on 429")
-	}
-	l3, err := pm.Acquire(pool.SelectRequest{RuleKey: plan.Rule.Pattern, Strategy: plan.Rule.Strategy, CandidateIDs: plan.CandidateIDs, SessionKey: "thread-2"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	l3.Release()
-	if l3.Account.ID != "agy-b" {
-		t.Fatalf("expected failover to agy-b after agy-a 429, got %s", l3.Account.ID)
-	}
 }
 
 func TestProjectBasedRoutingPriority(t *testing.T) {

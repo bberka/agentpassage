@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -372,7 +373,14 @@ func TestAttachToRunningDaemonAndHotReload(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.Default()
 	cfg.Server.Bind = "127.0.0.1"
-	cfg.Server.Port = 18789
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Server.Port = free.Addr().(*net.TCPAddr).Port
+	if err := free.Close(); err != nil {
+		t.Fatal(err)
+	}
 	cfg.Server.LocalKey = "apx_attach_test_key_1234"
 	if err := config.Save(dir, cfg); err != nil {
 		t.Fatal(err)
@@ -390,19 +398,11 @@ func TestAttachToRunningDaemonAndHotReload(t *testing.T) {
 	}
 	defer daemon.Stop(t.Context())
 
-	// Extract bound port and attach a second Server instance (simulating opening `apx` TUI while service runs)
-	var boundPort int
-	_, portStr, okCut := strings.Cut(daemon.Addr(), ":")
-	if !okCut {
-		t.Fatalf("unexpected addr %q", daemon.Addr())
-	}
-	_ = json.Unmarshal([]byte(portStr), &boundPort)
-
+	// A second Server instance attaches to it (simulating opening `apx` TUI while the service runs).
 	cfg2, _, err := config.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg2.Server.Port = boundPort
 
 	client := gateway.New(dir, cfg2, sec, reg, nil)
 	ok, err := client.AttachIfRunning()

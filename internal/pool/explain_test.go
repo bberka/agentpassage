@@ -29,11 +29,25 @@ func TestExplainMatchesAcquireWithoutChangingState(t *testing.T) {
 	if c := ex.Candidates[1]; c.Status != "eligible" || c.QuotaUsedPct == nil || *c.QuotaUsedPct != 40 {
 		t.Fatalf("agy-b should be eligible at 40%%, got %+v", c)
 	}
-	if len(m.rrCursor) != 0 || m.states["agy-b"].totalRequests != 0 {
-		t.Fatal("explain must not move the round-robin cursor or count a request")
-	}
 	if got := acquireID(t, m, req); got != ex.ChosenID {
 		t.Fatalf("acquire picked %s, explain said %s", got, ex.ChosenID)
+	}
+
+	// With both accounts eligible, explaining twice must not advance round-robin.
+	open := SelectRequest{Strategy: req.Strategy, RuleKey: "open", CandidateIDs: req.CandidateIDs, SubscriptionWarningAcked: true}
+	first := m.Explain(open).ChosenID
+	if again := m.Explain(open).ChosenID; again != first {
+		t.Fatalf("explain moved the round-robin cursor: %s then %s", first, again)
+	}
+	if got := acquireID(t, m, open); got != first {
+		t.Fatalf("acquire picked %s, explain said %s", got, first)
+	}
+	var requests int64
+	for _, s := range m.Snapshots() {
+		requests += s.TotalRequests
+	}
+	if requests != 2 {
+		t.Fatalf("only the 2 acquires count as requests, got %d", requests)
 	}
 }
 
