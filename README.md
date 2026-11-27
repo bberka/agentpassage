@@ -1,18 +1,18 @@
 # AgentPassage (`apx`)
 
-AgentPassage (`apx`) is a lightweight, single-binary, multi-platform (Linux, macOS, Windows) local gateway and credential bridge—built as a fast, TUI-first alternative to **CLIProxyAPI** and other heavy web-based AI proxies.
+AgentPassage (`apx`) is a lightweight, single-binary, multi-platform (Linux, macOS, Windows) local gateway and credential bridge. It is a TUI-first alternative to **CLIProxyAPI** and other web-based AI proxies.
 
-It unifies ACP subscription agents, CLI providers, and HTTP API-key providers behind OpenAI-compatible (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/models`), Anthropic-compatible (`/v1/messages`), CLIProxyAPI-compatible management/usage endpoints, and native ACP stdio (`apx acp`)—with a keyboard-driven terminal UI and a full non-interactive CLI.
+It unifies ACP subscription agents, CLI providers, and HTTP API-key providers behind OpenAI-compatible (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`, `/v1/models`), Anthropic-compatible (`/v1/messages`), CLIProxyAPI-compatible management/usage endpoints, and native ACP stdio (`apx acp`). It has a keyboard-driven terminal UI and a full non-interactive CLI.
 
-AgentPassage manages authentication, isolated profiles, protocol bridging, routing, health, quotas, and privacy filtering. It is intentionally **not** a chat client or coding harness.
+AgentPassage manages authentication, isolated profiles, protocol bridging, routing, health, quotas, and privacy filtering. It is intentionally not a chat client or coding harness.
 
 ## Why AgentPassage (vs CLIProxyAPI & web proxies)
 
-- **Single static binary (~12 MB), zero runtime:** No Node, Python, Docker, or separate web dashboard process required—runs natively on Linux, macOS, and Windows (x64 & arm64).
+- **Single static binary (~12 MB), zero runtime:** No Node, Python, Docker, or separate web dashboard process required. It runs natively on Linux, macOS, and Windows (x64 & arm64).
 - **Keyboard-driven TUI + headless CLI:** Manage accounts, models, thinking effort levels, routing, logs, and live quotas right in the terminal (`apx`), over SSH, or via `apx <cmd> --json` scripts.
-- **Native ACP stdio bridge (`apx acp`):** Connect directly as a custom ACP agent in T3 Code, Zed, Delta (Zed Agent IDE), JetBrains, and Neovim—not just HTTP.
+- **Native ACP stdio bridge (`apx acp`):** Connect directly as a custom ACP agent in T3 Code, Zed, Delta (Zed Agent IDE), JetBrains, and Neovim, not just HTTP.
 - **CLIProxyAPI-compatible endpoints:** Drop-in management and usage hub endpoints (`/v0/management/*`, `/usage`) for tools that already integrate with CLIProxyAPI.
-- **Real official CLIs, no spoofing:** Launches official binaries in isolated per-account profile directories without disguising client identity.
+- **Real official CLIs, no spoofing:** Each account runs its own official binary in an isolated profile directory, and client identity is never disguised.
 
 ## Core capabilities
 
@@ -72,11 +72,11 @@ apx agent-guide
 
 ## Documentation
 
-- [Installation](docs/installation.md) — Linux, macOS, Windows, and background service setup
-- [Quickstart](docs/quickstart.md) — First account, TUI keys, and client connection
-- [Routing & Security](docs/routing-and-security.md) — Primary-first failover, project routing, API-key vs subscription rules, key scoping
-- [Privacy Filter & Model Fallbacks](docs/privacy-and-fallbacks.md) — Reversible redaction and cross-model fallback chains
-- [API Reference](docs/api-reference.md) — Chat completions, Anthropic Messages, embeddings, reranking, admin endpoints
-- [CLI & Agent Automation](docs/cli-and-agents.md) — Full CLI command reference and `skills/agentpassage/SKILL.md`
-- [Remote Access](docs/remote-access.md) — Tailscale Serve and Cloudflare Tunnel setup
-- [ACP Backends](docs/acp-backends.md) — Embedded 45+ agent registry and custom descriptors
+- [Installation](docs/installation.md): Linux, macOS, Windows, and background service setup
+- [Quickstart](docs/quickstart.md): First account, TUI keys, and client connection
+- [Routing & Security](docs/routing-and-security.md): Primary-first failover, project routing, API-key vs subscription rules, key scoping
+- [Privacy Filter & Model Fallbacks](docs/privacy-and-fallbacks.md): Reversible redaction and cross-model fallback chains
+- [API Reference](docs/api-reference.md): Chat completions, Anthropic Messages, embeddings, reranking, admin endpoints
+- [CLI & Agent Automation](docs/cli-and-agents.md): Full CLI command reference and `skills/agentpassage/SKILL.md`
+- [Remote Access](docs/remote-access.md): Tailscale Serve and Cloudflare Tunnel setup
+- [ACP Backends](docs/acp-backends.md): Embedded 45+ agent registry and custom descriptors

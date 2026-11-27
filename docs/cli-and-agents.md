@@ -52,7 +52,7 @@ apx privacy config --api-keys true --emails true --phones true --add-pattern tic
 apx privacy test --json "Contact alice@example.com with sk-proj-1234567890abcdef"
 ```
 
-## Scoped API Keys (Client, Admin & Project)
+## Scoped API keys (client, admin & project)
 
 ```sh
 apx keys list --json
@@ -64,7 +64,7 @@ apx keys revoke work-ci
 
 Keys pinned with `--project <name>` automatically bind all requests made with that key to that project for both routing and usage reporting. Unpinned keys and the primary admin key can pass `X-Apx-Project: <name>` per request.
 
-## Usage, Costs & Quotas
+## Usage, costs & quotas
 
 ```sh
 apx usage --period 1h --json
@@ -82,7 +82,7 @@ apx embed --model text-embedding-3-small --project search "AgentPassage local ga
 apx rerank --model rerank-v3 --query "local proxy" --top-n 2 "unrelated text" "local OpenAI gateway"
 ```
 
-## IDE Connections & Background Service
+## IDE connections & background service
 
 ```sh
 apx connect t3code --yes

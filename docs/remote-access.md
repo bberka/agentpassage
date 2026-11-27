@@ -1,14 +1,14 @@
-# Remote Access Guide (Tailscale & Cloudflare Tunnel)
+# Remote access guide (Tailscale & Cloudflare Tunnel)
 
 By default, `apx` binds strictly to `127.0.0.1:8787` so it is never accidentally exposed on your LAN or public internet.
 
-To reach your `apx` gateway safely from a laptop, phone, VPS, or work machine, **keep `apx` bound to `127.0.0.1:8787`** and terminate HTTPS locally through **Tailscale Serve** or **Cloudflare Tunnel**.
+To reach your `apx` gateway safely from a laptop, phone, VPS, or work machine, keep `apx` bound to `127.0.0.1:8787` and serve it over HTTPS through Tailscale Serve or Cloudflare Tunnel.
 
----
+## Step 1: Create a dedicated client API key
 
-## Step 1 — Create a Dedicated Client API Key
+> **Warning:** a key that can call an ACP or CLI model (Claude, AGY, Codex, Grok) can run that agent on the host with the account's `permission_mode` (default `auto-approve`), and the caller can choose its working folder with `X-Apx-Cwd`. Treat such a key like shell access. The `client` role does not prevent this. To share access, limit the key to API-key models, for example `--models "deepseek/*"`.
 
-Always create a separate `client`-role key per remote device so you can revoke one device instantly without rotating your primary key. `client`-role keys can call `/v1/models`, `/v1/chat/completions`, and `/v1/messages`, and are **blocked (`403 Forbidden`)** from `/admin/*` and the Usage Hub.
+Always create a separate `client`-role key per remote device so you can revoke one device instantly without rotating your primary key. `client`-role keys can call `/v1/models`, `/v1/chat/completions`, and `/v1/messages`, but get `403 Forbidden` from `/admin/*`, which is where the Usage Hub gets its data.
 
 ```bash
 # Full model catalog, inference-only role:
@@ -23,15 +23,13 @@ apx keys disable work-ide
 apx keys revoke work-ide
 ```
 
-You can also manage keys inside the TUI: **`7 Settings` → `API Keys`**.
+You can also manage keys inside the TUI: `7 Settings`, then `API Keys`.
 
----
+## Option A: Tailscale Serve (recommended, private tailnet HTTPS)
 
-## Option A — Tailscale Serve (Recommended: Private Tailnet HTTPS)
+Tailscale gives you automatic HTTPS certificates on your private mesh network, with no public exposure and no open firewall ports.
 
-Tailscale gives you automatic HTTPS certificates on your private mesh network with **zero public exposure** and **zero open firewall ports**.
-
-1. Install and sign in to [Tailscale](https://tailscale.com/download) on both the `apx` host and your remote device, and enable **HTTPS Certificates** in the Tailscale Admin Console (`DNS` tab).
+1. Install and sign in to [Tailscale](https://tailscale.com/download) on both the `apx` host and your remote device, and enable HTTPS Certificates in the Tailscale Admin Console (`DNS` tab).
 2. Make sure `apx` is running (e.g. `apx service install` or `apx serve`).
 3. Proxy `127.0.0.1:8787` onto your tailnet over HTTPS:
 
@@ -64,13 +62,11 @@ apx serve --bind "$TS_IP" --port 8787 --allow-remote
 ```
 Then point clients on your tailnet to `http://<TS_IP>:8787/v1`.
 
----
-
-## Option B — Cloudflare Tunnel (`cloudflared`, Zero Open Ports)
+## Option B: Cloudflare Tunnel (`cloudflared`, no open ports)
 
 Cloudflare Tunnel exposes `http://127.0.0.1:8787` behind Cloudflare's edge TLS with no port forwarding on your router.
 
-### B1. Quick Temporary Tunnel (30-second test)
+### B1. Quick temporary tunnel (30-second test)
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:8787
@@ -78,7 +74,7 @@ cloudflared tunnel --url http://127.0.0.1:8787
 
 `cloudflared` prints a temporary `https://<random>.trycloudflare.com` URL. Point clients to `https://<random>.trycloudflare.com/v1` with your `client`-role `apx_...` key.
 
-### B2. Permanent Custom Domain (`https://ai.yourdomain.com/v1`)
+### B2. Permanent custom domain (`https://ai.yourdomain.com/v1`)
 
 1. Install `cloudflared` and authenticate with your Cloudflare account:
    ```bash
@@ -107,14 +103,12 @@ cloudflared tunnel --url http://127.0.0.1:8787
    sudo cloudflared service install
    ```
 
-### Recommended Cloudflare Hardening
-- **Use a `client`-role key** (`apx keys create cf-client --role client`) — `/admin/*` returns `403` even if someone guesses an admin path.
-- **Block `/usage` and `/admin/*` at Cloudflare WAF** (Custom Rule: if `URI Path starts with /admin` or `URI Path equals /usage` → Block), keeping the Usage Hub local-only or Tailscale-only.
-- **Add a Cloudflare Access Service Token or IP allowlist** if you want an extra authentication layer before traffic even reaches `apx`.
+### Recommended Cloudflare hardening
+- Use a `client`-role key (`apx keys create cf-client --role client`). `/admin/*` returns `403` even if someone guesses an admin path.
+- Block `/usage` and `/admin/*` at Cloudflare WAF (Custom Rule: if `URI Path starts with /admin` or `URI Path equals /usage`, then Block), keeping the Usage Hub local-only or Tailscale-only.
+- Add a Cloudflare Access Service Token or IP allowlist if you want an extra authentication layer before traffic even reaches `apx`.
 
----
-
-## Remote Client Examples
+## Remote client examples
 
 ### Environment variables (OpenAI / Anthropic SDKs & CLIs)
 ```bash
@@ -131,5 +125,5 @@ curl -s https://ai.yourdomain.com/v1/models \
   -H "Authorization: Bearer apx_<your_client_key>" | jq .
 ```
 
-### Quick Reference Command
-Run `apx remote` anytime (or open **`7 Settings` → `Remote Access`** in the TUI) to print and copy commands pre-filled with your active `apx` port.
+### Quick reference command
+Run `apx remote` anytime (or open `7 Settings`, then `Remote Access`, in the TUI) to print and copy commands pre-filled with your active `apx` port.
