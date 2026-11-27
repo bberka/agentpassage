@@ -43,3 +43,21 @@ func TestCORSAnswersPreflightWithoutAKeyOnAPIPathsOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestBaseURLWithoutV1ReachesTheAPI(t *testing.T) {
+	var path string
+	h := withBarePaths(withCORS(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { path = r.URL.Path })))
+	r := httptest.NewRequest(http.MethodOptions, "/models", nil)
+	r.Header.Set("Access-Control-Request-Method", "GET")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent || w.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("preflight /models: code %d, headers %v", w.Code, w.Header())
+	}
+	for sent, want := range map[string]string{"/chat/completions": "/v1/chat/completions", "/usage": "/usage", "/admin/state": "/admin/state"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, sent, nil))
+		if path != want {
+			t.Errorf("%s served as %s, want %s", sent, path, want)
+		}
+	}
+}

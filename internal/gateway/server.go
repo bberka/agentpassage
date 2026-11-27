@@ -653,7 +653,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/audio/speech", s.withAuth(s.handleOpenAIAudioSpeech))
 	mux.HandleFunc("POST /v1/audio/transcriptions", s.withAuth(s.handleOpenAIAudioTranscriptions))
 	s.registerCLIProxyCompatRoutes(mux)
-	return withCORS(mux)
+	return withBarePaths(withCORS(mux))
 }
 
 func (s *Server) Start() error {

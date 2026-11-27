@@ -3,8 +3,26 @@ package gateway
 import (
 	"cmp"
 	"net/http"
+	"slices"
 	"strings"
 )
+
+// barePaths are the API paths a client reaches when its base URL lacks /v1.
+var barePaths = []string{
+	"/models", "/chat/completions", "/responses", "/messages", "/embeddings",
+	"/rerank", "/images/generations", "/audio/speech", "/audio/transcriptions",
+}
+
+// withBarePaths serves each of barePaths as its /v1 path.
+func withBarePaths(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if slices.Contains(barePaths, r.URL.Path) {
+			r = r.Clone(r.Context())
+			r.URL.Path, r.URL.RawPath = "/v1"+r.URL.Path, ""
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 // withCORS lets web apps on any origin call the API under /v1/. Requests are
 // authorized only by a key the app sends itself, never by a cookie, so another

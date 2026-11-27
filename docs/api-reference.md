@@ -58,7 +58,7 @@ curl http://127.0.0.1:8787/v1/rerank \
 
 ## Browser apps (CORS)
 
-Web apps on any origin can call paths under `/v1/`. apx answers the browser's `OPTIONS` check without a key, and every real request still needs one. No cookie authorizes a request, so a site without your key gets only `401`. Admin, usage and management paths send no CORS headers. Use a base URL that ends in `/v1`.
+Web apps on any origin can call paths under `/v1/`. apx answers the browser's `OPTIONS` check without a key, and every real request still needs one. No cookie authorizes a request, so a site without your key gets only `401`. Admin, usage and management paths send no CORS headers. Use a base URL that ends in `/v1`. A base URL without it works too: `/models`, `/chat/completions`, `/responses`, `/messages`, `/embeddings`, `/rerank`, `/images/generations` and `/audio/*` are served as their `/v1` paths.
 
 ## Request & response headers
 
