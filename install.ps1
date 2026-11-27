@@ -6,7 +6,7 @@ $Branch = if ($env:APX_BRANCH) { $env:APX_BRANCH } else { "main" }
 $InstallDir = if ($env:APX_INSTALL_DIR) { $env:APX_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "apx\bin" }
 
 if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
-    Write-Error "Go (1.22+) is required to build AgentPassage (apx) from source. Install via 'winget install GoLang.Go' or https://go.dev/dl/"
+    Write-Error "Go (1.24+) is required to build AgentPassage (apx) from source. Install via 'winget install GoLang.Go' or https://go.dev/dl/"
     exit 1
 }
 

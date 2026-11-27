@@ -16,7 +16,7 @@ curl -fsSL https://raw.githubusercontent.com/bberka/agentpassage/main/install.sh
 irm https://raw.githubusercontent.com/bberka/agentpassage/main/install.ps1 | iex
 ```
 
-Both scripts require Go 1.22+, build a static binary, install it into your user bin directory (`~/.local/bin/apx` on Linux/macOS, `%LOCALAPPDATA%\apx\bin\apx.exe` on Windows), and restart the `apx` background service automatically if already installed.
+Both scripts require Go 1.24+, build a static binary, install it into your user bin directory (`~/.local/bin/apx` on Linux/macOS, `%LOCALAPPDATA%\apx\bin\apx.exe` on Windows), and restart the `apx` background service automatically if already installed.
 
 ## Build from a local clone
 

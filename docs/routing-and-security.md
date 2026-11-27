@@ -17,6 +17,8 @@ Configured per model pattern (`agy/*`, `deepseek/deepseek-chat`, or `*`) on the 
 | `failover` **(default)** | Uses the primary account fully and switches to the next account only when the active one hits quota/429, cooldown, concurrency cap, or outage. | Recommended default |
 | `sticky` | Keeps a session (`X-Apx-Session` or `user`) pinned to one account; new sessions start on the primary account (never alternating/rotating). | Enabled by default |
 | `manual` | Routes to the exact account named in `<backend>/<account>/<model>` or `<prefix><model>`. | Enabled by default |
+| `most-quota` | Picks the eligible account with the lowest quota use for the requested model. Ties keep account order. | No opt-in required |
+| `fastest` | Picks the eligible account with the lowest recent average latency. An account with no measurement yet goes first. | No opt-in required |
 | `round-robin` | Rotates new threads/requests across eligible accounts. Intended for API-key pools. | **Blocked unless explicitly opted in** (ban-risk confirmation required) |
 | `least-busy` | Picks the eligible account with the fewest in-flight requests. Intended for API-key pools. | **Blocked unless explicitly opted in** (ban-risk confirmation required) |
 

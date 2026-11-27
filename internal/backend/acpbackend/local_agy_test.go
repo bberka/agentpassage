@@ -15,8 +15,12 @@ import (
 )
 
 // TestLocalAgyACPHandsakeOnHost runs a live integration check against the real `agy` CLI
-// on this machine in a completely isolated temporary profile directory.
+// on this machine in a completely isolated temporary profile directory. It runs
+// only with APX_LIVE_AGY=1, so `go test` doesn't depend on the host.
 func TestLocalAgyACPHandsakeOnHost(t *testing.T) {
+	if os.Getenv("APX_LIVE_AGY") != "1" {
+		t.Skip("set APX_LIVE_AGY=1 to run against the installed agy CLI")
+	}
 	if _, err := exec.LookPath("agy"); err != nil {
 		t.Skip("agy CLI not installed on host; skipping live local test")
 	}

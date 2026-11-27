@@ -20,7 +20,7 @@ case "$OS" in
 esac
 
 if ! command -v go >/dev/null 2>&1; then
-  echo "Go (1.22+) is required to build AgentPassage (apx) from source." >&2
+  echo "Go (1.24+) is required to build AgentPassage (apx) from source." >&2
   if [ "$OS" = "darwin" ]; then
     echo "Install Go with:  brew install go" >&2
   else
