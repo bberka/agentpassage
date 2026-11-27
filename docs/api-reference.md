@@ -56,6 +56,10 @@ curl http://127.0.0.1:8787/v1/rerank \
   -d '{"model":"rerank-v3","query":"local gateway","documents":["cats","agentpassage proxy"],"top_n":2}'
 ```
 
+## Browser apps (CORS)
+
+Web apps on any origin can call paths under `/v1/`. apx answers the browser's `OPTIONS` check without a key, and every real request still needs one. No cookie authorizes a request, so a site without your key gets only `401`. Admin, usage and management paths send no CORS headers. Use a base URL that ends in `/v1`.
+
 ## Request & response headers
 
 - **Request headers:**
