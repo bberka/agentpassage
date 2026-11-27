@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/zalando/go-keyring"
 )
 
 func TestFileFallbackPermissionsAndRedaction(t *testing.T) {
@@ -45,5 +46,41 @@ func TestFileFallbackPermissionsAndRedaction(t *testing.T) {
 	entries := logs.Entries()
 	if len(entries) != 1 || strings.Contains(entries[0].Message, "sk-secret-value-123456") {
 		t.Fatalf("logbuf leaked secret: %+v", entries)
+	}
+}
+
+func TestKeychainSecretsStayOutOfTheFile(t *testing.T) {
+	keyring.MockInit()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secrets.json")
+	if err := os.WriteFile(path, []byte(`{"old":"file-old-value","stale":"file-stale-value"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := NewFileOnly(dir)
+	st.useKeyring = true
+	if err := st.Set("kept", "keychain-secret-value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Set("stale", "keychain-new-value"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Delete("old"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "{}" {
+		t.Fatalf("secrets file should be empty, got %s", got)
+	}
+
+	st.useKeyring = false
+	if err := st.Set("plain", "file-only-value"); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if strings.Contains(string(data), "keychain-") || !strings.Contains(string(data), "file-only-value") {
+		t.Fatalf("file holds the wrong secrets: %s", data)
 	}
 }

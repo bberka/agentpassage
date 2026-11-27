@@ -89,13 +89,14 @@ func (s *Store) Set(accountID, secret string) error {
 	s.cache[accountID] = secret
 	if s.useKeyring {
 		if err := keyring.Set(keyringService, accountID, secret); err == nil {
-			return nil
+			// An older file entry would win over the keychain on the next start.
+			return s.updateFileLocked(accountID, "")
 		} else {
 			s.useKeyring = false
 			s.fallbackNote = err.Error()
 		}
 	}
-	return s.saveFileLocked()
+	return s.updateFileLocked(accountID, secret)
 }
 
 func (s *Store) Get(accountID string) (string, error) {
@@ -147,10 +148,7 @@ func (s *Store) Delete(accountID string) error {
 	if s.useKeyring {
 		_ = keyring.Delete(keyringService, accountID)
 	}
-	if _, err := os.Stat(s.filePath); err == nil {
-		return s.saveFileLocked()
-	}
-	return nil
+	return s.updateFileLocked(accountID, "")
 }
 
 // KnownSecrets returns all cached non-empty secrets for log redaction.
@@ -190,11 +188,32 @@ func (s *Store) loadFileLocked() error {
 	return nil
 }
 
-func (s *Store) saveFileLocked() error {
+// updateFileLocked writes one entry of the secrets file, or removes it when
+// secret is empty. Other entries stay as they are on disk, so keys read from
+// the keychain never reach the file.
+func (s *Store) updateFileLocked(accountID, secret string) error {
+	m := make(map[string]string)
+	data, err := os.ReadFile(s.filePath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return err
+	default:
+		if err := json.Unmarshal(data, &m); err != nil {
+			return fmt.Errorf("read %s: %w", s.filePath, err)
+		}
+	}
+	if secret != "" {
+		m[accountID] = secret
+	} else if _, ok := m[accountID]; !ok {
+		return nil
+	} else {
+		delete(m, accountID)
+	}
 	if err := os.MkdirAll(filepath.Dir(s.filePath), 0o700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s.cache, "", "  ")
+	data, err = json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
