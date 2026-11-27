@@ -43,7 +43,7 @@ func quotaAlertsFor(rep quota.Report, thresholdPct int) []quotaAlert {
 		var resets time.Time
 		if w.ResetsAt != nil {
 			resets = *w.ResetsAt
-			reset = "Resets " + w.ResetsAt.Local().Format("Jan 2 15:04")
+			reset = "Resets in " + quota.FormatResetIn(w.ResetsAt, time.Now())
 			resetKey = w.ResetsAt.UTC().Truncate(time.Hour).Format(time.RFC3339)
 		}
 		out = append(out, quotaAlert{

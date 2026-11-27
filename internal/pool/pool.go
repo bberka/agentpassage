@@ -9,6 +9,7 @@ import (
 
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
+	"github.com/bberka/agentpassage/internal/quota"
 )
 
 type AccountState string
@@ -196,10 +197,10 @@ func (m *Manager) isEligibleLocked(a *config.AccountConfig, st *runtimeState, qu
 		return false, "login needed"
 	}
 	if !st.cooldownUntil.IsZero() && now.Before(st.cooldownUntil) {
-		return false, fmt.Sprintf("cooling down until %s", st.cooldownUntil.Format(time.Kitchen))
+		return false, "cooling down for " + quota.FormatResetIn(&st.cooldownUntil, now)
 	}
 	if until := st.groupCooldowns[quotaGroup]; quotaGroup != "" && now.Before(until) {
-		return false, fmt.Sprintf("%s cooling down until %s", quotaGroup, until.Format(time.Kitchen))
+		return false, fmt.Sprintf("%s cooling down for %s", quotaGroup, quota.FormatResetIn(&until, now))
 	}
 	if st.inFlight >= a.MaxConcurrency {
 		return false, "at concurrency cap"
@@ -325,7 +326,7 @@ func sessionWaitError(name string, until, now time.Time) error {
 	}
 	when := "its quota resets"
 	if !until.IsZero() {
-		when = "it resets at " + until.Local().Format("Jan 2 15:04")
+		when = "it resets in " + quota.FormatResetIn(&until, now)
 		be.RetryAfter = max(int(until.Sub(now).Seconds()), 1)
 	}
 	be.Message = fmt.Sprintf("%s has no quota left for this model; this conversation stays on that account until %s (unset [sessions] wait_for_reset_when_exhausted to switch accounts instead)", name, when)
@@ -472,7 +473,7 @@ func (m *Manager) eligibleLocked(req SelectRequest, pinnedID string, now time.Ti
 				exhausted = append(exhausted, a)
 				r := "no quota left for this model"
 				if !until.IsZero() {
-					r += ", resets " + until.Local().Format("Jan 2 15:04")
+					r += ", resets in " + quota.FormatResetIn(&until, now)
 				}
 				note(id, "quota used up", r)
 				continue

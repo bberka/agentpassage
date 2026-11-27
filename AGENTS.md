@@ -17,6 +17,7 @@ AgentPassage (`apx`) is a Go gateway that serves several AI accounts through HTT
 - TUI: one line per list row, every screen's keys in the footer only, plain words, and no free-text model editing where a picker works.
 - Preview and confirm before changing another tool's config.
 - Notifications are one short title and at most one short line.
+- Show resets and cooldowns as time left (`3d 4h`), not as dates or clock times.
 
 ## Workflow
 
