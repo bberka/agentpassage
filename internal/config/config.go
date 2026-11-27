@@ -617,12 +617,18 @@ func Save(dataDir string, cfg *Config) error {
 		return fmt.Errorf("encode config: %w", err)
 	}
 	path := ConfigPath(dataDir)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(buf.String()), 0o600); err != nil {
+	// Several apx processes save the same config, so each needs its own temp
+	// file: a shared one can be renamed into place half overwritten.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create config temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	_, err = tmp.WriteString(buf.String())
+	if err := errors.Join(err, tmp.Close()); err != nil {
 		return fmt.Errorf("write config temp file: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return fmt.Errorf("commit config file: %w", err)
 	}
 	return nil
