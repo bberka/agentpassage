@@ -74,6 +74,7 @@ type runtimeState struct {
 	group429           map[string]int       // quota group -> consecutive 429s
 	ewmaLatencyMs      float64              // 0 until measured
 	consecutive429     int
+	consecutive5xx     int
 	consecutiveAuthErr int
 	loginNeeded        bool
 	autoDisabled       bool
@@ -603,6 +604,7 @@ func (m *Manager) RecordSuccess(accountID string) {
 	defer m.mu.Unlock()
 	if st, ok := m.states[accountID]; ok {
 		st.consecutive429 = 0
+		st.consecutive5xx = 0
 		st.group429 = nil
 		st.consecutiveAuthErr = 0
 		st.loginNeeded = false
@@ -702,6 +704,12 @@ func (m *Manager) RecordErrorForGroup(accountID, quotaGroup string, err error, r
 	switch be.Kind {
 	case backend.ErrKindTransient:
 		allowFailover = rule.Strategy == config.StrategyFailover
+		st.consecutive5xx++
+		// A provider that keeps failing is skipped briefly instead of being
+		// tried first by every request.
+		if a.Kind == config.KindAPIKey && st.consecutive5xx >= 3 {
+			st.cooldownUntil = later(st.cooldownUntil, now.Add(30*time.Second))
+		}
 
 	case backend.ErrKindRateLimit:
 		var count int
@@ -792,6 +800,7 @@ func (m *Manager) ClearHealth(accountID string) {
 		st.groupCooldowns = nil
 		st.group429 = nil
 		st.consecutive429 = 0
+		st.consecutive5xx = 0
 		st.consecutiveAuthErr = 0
 		st.loginNeeded = false
 		st.autoDisabled = false

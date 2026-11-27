@@ -30,6 +30,9 @@ var scanBufPool = sync.Pool{
 
 type Client struct {
 	httpClient *http.Client
+	// How long a provider may stay silent, before or during its answer.
+	streamIdle time.Duration
+	replyIdle  time.Duration
 	hookMu     sync.RWMutex
 	onHeaders  func(config.AccountConfig, http.Header)
 }
@@ -49,6 +52,8 @@ func New() *Client {
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	return &Client{
+		streamIdle: 5 * time.Minute,
+		replyIdle:  10 * time.Minute, // a whole non-streaming answer is silent until done
 		httpClient: &http.Client{
 			Transport: tr,
 			Timeout:   0, // per-request context controls deadline; streaming can be long-lived
@@ -59,8 +64,14 @@ func New() *Client {
 // post sends a JSON request to path under the account's base URL and reports
 // the response headers to the header hook. The caller closes the body.
 func (c *Client) post(ctx context.Context, acct config.AccountConfig, apiKey, path string, body []byte, accept string) (*http.Response, error) {
+	limit := c.replyIdle
+	if accept == "text/event-stream" {
+		limit = c.streamIdle
+	}
+	ctx, watch := watchStall(ctx, limit)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, trimBaseURL(acct.BaseURL)+path, bytes.NewReader(body))
 	if err != nil {
+		watch.stop()
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -70,8 +81,12 @@ func (c *Client) post(ctx context.Context, acct config.AccountConfig, apiKey, pa
 	applyAuth(req, acct, apiKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		err = watch.explain(err)
+		watch.stop()
 		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
 	}
+	watch.body = resp.Body
+	resp.Body = watch
 	c.emitHeaders(acct, resp.Header)
 	return resp, nil
 }

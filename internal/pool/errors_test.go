@@ -90,3 +90,28 @@ func TestRestrictedAgyAccountPausesTheOthers(t *testing.T) {
 		}
 	}
 }
+
+func TestRepeatedServerErrorsPauseAnAPIKeyAccount(t *testing.T) {
+	for kind, pauses := range map[string]bool{config.KindAPIKey: true, config.KindACP: false} {
+		m, now := oneAccount(kind)
+		fail := func() {
+			m.RecordError("a", &backend.BackendError{Kind: backend.ErrKindTransient, StatusCode: 502}, config.RoutingRule{})
+		}
+		fail()
+		fail()
+		m.RecordSuccess("a")
+		fail()
+		fail()
+		if !usable(m) {
+			t.Fatalf("%s: paused before three failures in a row", kind)
+		}
+		fail()
+		if usable(m) == pauses {
+			t.Errorf("%s: paused=%v, want %v", kind, !usable(m), pauses)
+		}
+		*now = now.Add(31 * time.Second)
+		if !usable(m) {
+			t.Errorf("%s: should be back after 30s", kind)
+		}
+	}
+}

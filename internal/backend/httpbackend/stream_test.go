@@ -2,14 +2,40 @@ package httpbackend
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 )
+
+func TestSilentProviderTimesOut(t *testing.T) {
+	for _, sendFirst := range []bool{false, true} {
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			if sendFirst {
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+				w.(http.Flusher).Flush()
+			}
+			<-release
+		}))
+		c := New()
+		c.streamIdle = 100 * time.Millisecond
+		err := c.Stream(context.Background(), config.AccountConfig{BaseURL: srv.URL}, "", backend.ChatRequest{},
+			func(backend.StreamChunk) error { return nil })
+		close(release)
+		srv.Close()
+		be, ok := backend.AsBackendError(err)
+		if !ok || be.Kind != backend.ErrKindTransient || !errors.Is(err, errStalled) || errors.Is(err, context.Canceled) {
+			t.Errorf("sendFirst=%v: got %v", sendFirst, err)
+		}
+	}
+}
 
 func TestStreamEndings(t *testing.T) {
 	const delta = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"
