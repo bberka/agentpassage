@@ -69,6 +69,8 @@ Applied automatically across all strategies:
     balance_threshold = 5.0
     reminder_hours = 24
   ```
+  Alerts are on by default: desktop notifications with `quota_threshold_pct = 90`, `balance_threshold = 2` and `reminder_hours = 24`. The thresholds apply to all accounts. Set a threshold to `0` to turn that alert off, or `enabled = false` to turn all alerts off. A config that already has an `[alerts]` section keeps the values written there.
+
   Balances are checked every 5 minutes, and config changes apply at the next check. Sent alerts are remembered only while apx runs, so a restart can repeat one. Failed desktop or webhook deliveries are logged as warnings.
 
 ## Security Model

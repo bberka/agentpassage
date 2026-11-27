@@ -92,17 +92,19 @@ type DecisionConfig struct {
 	VisionModel    string `toml:"vision_model,omitempty" json:"vision_model,omitempty"`       // image/multimodal queries
 }
 
+// AlertsConfig sets where alerts go and when they fire. The thresholds are
+// always written to config.toml: an omitted 0 would load back as the default.
 type AlertsConfig struct {
 	Enabled           bool   `toml:"enabled" json:"enabled"`
 	Desktop           bool   `toml:"desktop" json:"desktop"`
 	WebhookURL        string `toml:"webhook_url,omitempty" json:"webhook_url,omitempty"`
-	QuotaThresholdPct int    `toml:"quota_threshold_pct,omitempty" json:"quota_threshold_pct,omitempty"`
+	QuotaThresholdPct int    `toml:"quota_threshold_pct" json:"quota_threshold_pct,omitempty"`
 	// BalanceThreshold alerts when a prepaid balance (DeepSeek, OpenRouter)
 	// drops below this amount, in the balance's own currency. 0 = off.
-	BalanceThreshold float64 `toml:"balance_threshold,omitempty" json:"balance_threshold,omitempty"`
+	BalanceThreshold float64 `toml:"balance_threshold" json:"balance_threshold,omitempty"`
 	// ReminderHours repeats the low-balance alert while the balance stays low.
 	// 0 = alert once.
-	ReminderHours int `toml:"reminder_hours,omitempty" json:"reminder_hours,omitempty"`
+	ReminderHours int `toml:"reminder_hours" json:"reminder_hours,omitempty"`
 }
 
 type PrivacyPattern struct {
@@ -553,6 +555,13 @@ func Default() *Config {
 		Health: HealthConfig{
 			Enabled:         true,
 			IntervalSeconds: 300,
+		},
+		Alerts: AlertsConfig{
+			Enabled:           true,
+			Desktop:           true,
+			QuotaThresholdPct: 90,
+			BalanceThreshold:  2,
+			ReminderHours:     24,
 		},
 		Privacy: PrivacyConfig{
 			Enabled:       false,
