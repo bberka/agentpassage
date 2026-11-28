@@ -13,7 +13,7 @@ import (
 	"github.com/bberka/agentpassage/internal/service"
 )
 
-const settingsCount = 20
+const settingsCount = 21
 
 func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cfg := a.srv.Config()
@@ -221,6 +221,8 @@ func (a *App) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			_ = a.srv.ReloadConfig(cfg)
 			a.setStatus(fmt.Sprintf("Decision model (%s) = %v", cfg.Decision.ModelID, cfg.Decision.Enabled), false)
+		case 20:
+			return a, a.openLimitsModal(nil)
 		case 19: // Toggle Session Wait-for-Reset on Quota Exhaustion
 			cfg.Sessions.WaitForResetWhenExhausted = !cfg.Sessions.WaitForResetWhenExhausted
 			_ = a.srv.ReloadConfig(cfg)
@@ -348,6 +350,7 @@ func (a *App) viewSettings(bodyHeight int) string {
 		{"Response Cache", cacheVal},
 		{"Decision Model", decVal},
 		{"Wait on Quota", waitVal},
+		{"Usage Limits", limitsSummary(cfg.Limits)},
 	}
 
 	var lines []string

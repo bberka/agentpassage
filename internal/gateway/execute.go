@@ -82,6 +82,7 @@ func (s *Server) buildPoolSelectRequest(ctx context.Context, plan *router.Plan, 
 		}
 		req.QuotaUsedPct = used
 		req.QuotaExhausted = out
+		req.LimitReached = s.limitBlocks(cfg, plan, now)
 	}
 
 	if s.usage != nil {

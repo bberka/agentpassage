@@ -25,6 +25,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/health"
+	"github.com/bberka/agentpassage/internal/limits"
 	"github.com/bberka/agentpassage/internal/logbuf"
 	"github.com/bberka/agentpassage/internal/pool"
 	"github.com/bberka/agentpassage/internal/privacy"
@@ -66,6 +67,7 @@ type Server struct {
 	health   *health.Checker
 	quota    *quota.Fetcher
 	privacy  *privacy.Filter
+	limits   *limits.Tracker
 	alerts   *alerts.Notifier
 	// quotaAlerts tracks which limit windows already sent a low-quota alert.
 	quotaAlerts quotaAlertState
@@ -157,7 +159,11 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 			return k
 		},
 	)
-	s.quota.SetOnRefresh(s.checkQuotaAlerts)
+	s.limits = limits.New(dataDir)
+	s.quota.SetOnRefresh(func(rep quota.Report) {
+		s.checkQuotaAlerts(rep)
+		s.observeLimits(rep)
+	})
 	if logs != nil {
 		s.alerts.SetErrorHook(func(err error) { logs.Warn("system", err.Error()) })
 	}
@@ -1664,6 +1670,9 @@ func finalFailure(lastErr error) (int, error) {
 }
 
 func httpStatusFromPoolError(err error) int {
+	if errors.Is(err, pool.ErrUsageLimit) {
+		return http.StatusTooManyRequests
+	}
 	if errors.Is(err, pool.ErrStrategyOptInNeeded) {
 		return http.StatusForbidden
 	}

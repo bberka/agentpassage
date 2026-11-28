@@ -55,6 +55,10 @@ apx privacy test --json "Contact alice@example.com with sk-proj-1234567890abcdef
 ## Scoped API keys (client, admin & project)
 
 ```sh
+apx limits list --json
+apx limits set --every 1d --weekly 20    # default for every account
+apx limits set claude/work --every 3d --weekly 40
+apx limits allow claude/work            # one more allowance for this period
 apx tools list --json
 apx tools off pr --skill        # skills are on by default
 apx tools on browse             # new MCP servers are off by default

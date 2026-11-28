@@ -61,6 +61,7 @@ type Config struct {
 	Cache    CacheConfig     `toml:"cache"`
 	Decision DecisionConfig  `toml:"decision"`
 	Sessions SessionsConfig  `toml:"sessions"`
+	Limits   LimitsConfig    `toml:"limits"`
 	Accounts []AccountConfig `toml:"accounts"`
 	Models   []ModelOverride `toml:"models"`
 	Routing  []RoutingRule   `toml:"routing"`
@@ -237,6 +238,15 @@ type ACPConfig struct {
 	DisableHostMCP bool `toml:"disable_host_mcp,omitempty"`
 }
 
+// LimitsConfig rations weekly, monthly and balance limits per period. In an
+// account, zero keeps the default and a negative value removes the limit.
+type LimitsConfig struct {
+	Every   string  `toml:"every,omitempty" json:"every,omitempty"`     // "1d" (default) to "30d"
+	Weekly  float64 `toml:"weekly,omitempty" json:"weekly,omitempty"`   // percentage points of the window
+	Monthly float64 `toml:"monthly,omitempty" json:"monthly,omitempty"` // percentage points of the window
+	Balance float64 `toml:"balance,omitempty" json:"balance,omitempty"` // in the balance's currency
+}
+
 type AccountConfig struct {
 	ID               string              `toml:"id"`
 	Name             string              `toml:"name"`
@@ -265,6 +275,7 @@ type AccountConfig struct {
 	WeeklyLimit      int                 `toml:"weekly_limit,omitempty"`
 	DailyBudgetUSD   float64             `toml:"daily_budget_usd,omitempty"`
 	MonthlyBudgetUSD float64             `toml:"monthly_budget_usd,omitempty"`
+	Limits           *LimitsConfig       `toml:"limits,omitempty"`
 }
 
 // EffectivePrefix returns the model prefix used when ExposeMode is "prefix" or "both".

@@ -42,6 +42,7 @@ apx health --json
   - `apx privacy test --json "sample text with alice@example.com"`
 - **Scoped API keys:**
   - `apx keys create work-bot --role client --project work --models "deepseek/*" --json`
+  - `apx limits list --json`, `apx limits set [account] --every 1d --weekly 20` and `apx limits allow <account>` (ration weekly, monthly and balance limits; ask the user before raising one)
   - `apx keys list --json`
   - `apx tools list --json` and `apx tools on|off <name> [--skill]` (MCP servers and skills accounts get; ask the user before turning one on)
   - `apx keys disable|enable|revoke work-bot`

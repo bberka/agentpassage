@@ -79,6 +79,8 @@ func run(args []string) error {
 			return cmdDisconnect(args[1:])
 		case "uninstall":
 			return cmdUninstall(args[1:])
+		case "limits":
+			return cmdLimits(args[1:])
 		case "tools":
 			return cmdTools(args[1:])
 		case "keys":
@@ -145,6 +147,7 @@ Usage:
   apx routing <cmd>               Manage routing, project rules & model fallbacks (list|add|edit|remove|explain)
   apx privacy <cmd>               Configure & test reversible privacy filter (status|enable|disable|config|test)
   apx tools [list|on|off]         Choose the MCP servers and skills accounts get
+  apx limits [list|set|allow]     Ration weekly, monthly and balance limits per day
   apx keys <cmd>                  Manage scoped client/admin/project API keys (list|create|enable|disable|revoke)
   apx usage [--period 1h|24h|7d|30d|all] [--refresh] [--json]
                                   Print usage, estimated costs, and live subscription limits

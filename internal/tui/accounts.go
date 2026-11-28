@@ -64,6 +64,9 @@ func (a *App) updateAccounts(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		a.openAccountTools(selected)
 
+	case "L":
+		return a, a.openLimitsModal(&selected)
+
 	case "M", "enter": // open interactive Model Picker (auto-fetches live models for API-key accounts)
 		return a, a.openAccountModelsModal(selected)
 

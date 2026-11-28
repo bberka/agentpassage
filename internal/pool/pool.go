@@ -231,10 +231,32 @@ type SelectRequest struct {
 	// QuotaExhausted lists accounts whose quota for the requested model is used
 	// up, with the reset time (zero when unknown). New conversations skip them.
 	QuotaExhausted map[string]time.Time
+	// LimitReached lists accounts that used up the user's own usage limit. They
+	// are never used until it ends.
+	LimitReached map[string]LimitBlock
 	// WaitForResetWhenExhausted keeps a conversation on its pinned account and
 	// fails with ErrSessionWaitForReset until the quota resets instead of
 	// switching to another eligible account. Off by default.
 	WaitForResetWhenExhausted bool
+}
+
+// LimitBlock is why and until when a usage limit keeps an account unused.
+type LimitBlock struct {
+	Reason string
+	Until  time.Time
+}
+
+// ErrUsageLimit marks a request that only usage limits kept from running.
+var ErrUsageLimit = errors.New("usage limit reached")
+
+func usageLimitError(b LimitBlock, now time.Time) error {
+	return &backend.BackendError{
+		Kind:       backend.ErrKindRateLimit,
+		StatusCode: 429,
+		RetryAfter: max(int(b.Until.Sub(now).Seconds()), 1),
+		Message:    fmt.Sprintf("%s, %s left (raise it with `apx limits`)", b.Reason, quota.FormatResetIn(&b.Until, now)),
+		Cause:      ErrUsageLimit,
+	}
 }
 
 // sessionPin records the account a conversation last succeeded on.
@@ -454,6 +476,7 @@ func (m *Manager) eligibleLocked(req SelectRequest, pinnedID string, now time.Ti
 	eligible := make([]*config.AccountConfig, 0, len(req.CandidateIDs))
 	var exhausted []*config.AccountConfig
 	var reasons []string
+	var limited *LimitBlock // the usage limit that ends soonest
 	for _, id := range req.CandidateIDs {
 		if req.ExcludeIDs != nil && req.ExcludeIDs[id] {
 			note(id, "skipped", "already tried")
@@ -467,6 +490,14 @@ func (m *Manager) eligibleLocked(req SelectRequest, pinnedID string, now time.Ti
 		if req.BudgetExceededIDs != nil && req.BudgetExceededIDs[id] {
 			reasons = append(reasons, fmt.Sprintf("%s (USD budget exceeded)", a.Name))
 			note(id, "skipped", "USD budget exceeded")
+			continue
+		}
+		if b, ok := req.LimitReached[id]; ok {
+			if limited == nil || b.Until.Before(limited.Until) {
+				limited = &b
+			}
+			reasons = append(reasons, fmt.Sprintf("%s (%s)", a.Name, b.Reason))
+			note(id, "skipped", b.Reason)
 			continue
 		}
 		st := m.states[id]
@@ -494,6 +525,9 @@ func (m *Manager) eligibleLocked(req SelectRequest, pinnedID string, now time.Ti
 		eligible = exhausted
 	}
 	if len(eligible) == 0 {
+		if limited != nil {
+			return nil, usageLimitError(*limited, now)
+		}
 		if len(reasons) > 0 {
 			return nil, fmt.Errorf("%w: %v", ErrNoAvailableAccount, reasons)
 		}

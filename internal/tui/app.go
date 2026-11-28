@@ -67,6 +67,7 @@ const (
 	modalEditText
 	modalPermission
 	modalTools
+	modalLimits
 )
 
 type tickMsg time.Time
@@ -111,6 +112,8 @@ type App struct {
 
 	screen Screen
 	modal  modalKind
+
+	limitsEditor *limitsEditorState
 
 	toolChoices sharing.Choices
 	toolItems   []sharing.Item
@@ -652,6 +655,9 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case modalTools:
 		return a.updateToolsModal(msg)
 
+	case modalLimits:
+		return a.updateLimitsModal(msg)
+
 	case modalConnect:
 		return a.updateConnectModal(msg)
 
@@ -841,6 +847,14 @@ func (a *App) renderFooter() string {
 	var hints []string
 	if a.modal != modalNone {
 		switch a.modal {
+		case modalLimits:
+			hints = []string{
+				a.styles.KeyHint("tab", "next"),
+				a.styles.KeyHint("←/→", "period"),
+				a.styles.KeyHint("enter", "save"),
+				a.styles.KeyHint("ctrl+a", "allow more"),
+				a.styles.KeyHint("esc", "cancel"),
+			}
 		case modalTools:
 			hints = []string{
 				a.styles.KeyHint("j/k", "move"),
@@ -894,6 +908,7 @@ func (a *App) renderFooter() string {
 				a.styles.KeyHint("e", "edit"),
 				a.styles.KeyHint("M", "models"),
 				a.styles.KeyHint("s", "tools"),
+				a.styles.KeyHint("L", "limits"),
 				a.styles.KeyHint("d", "toggle"),
 				a.styles.KeyHint("m", "expose"),
 				a.styles.KeyHint("P", "prefix"),
@@ -1059,7 +1074,7 @@ func (a *App) viewModal() string {
 			"  a Add account   i Browse & install 45+ ACP tools   T Health check   S Service   c/k Copy",
 			"",
 			a.styles.Subtitle.Render("Accounts"),
-			"  s Shared MCP servers and skills",
+			"  s Shared MCP servers and skills   L Usage limits",
 			"  a Add   i Install ACP   m Cycle pool/prefix/both   P Edit prefix (e.g. a-, b-)",
 			"  l Login/Key   t Test   T Health all   p Perm   d Toggle   r Rename   e Edit   x Delete",
 			"",
@@ -1093,6 +1108,9 @@ func (a *App) viewModal() string {
 
 	case modalTools:
 		return a.viewToolsModal()
+
+	case modalLimits:
+		return a.viewLimitsModal()
 
 	case modalConnect:
 		return a.viewConnectModal()

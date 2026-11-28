@@ -705,6 +705,9 @@ Use --json for structured output and --yes to skip interactive prompts.
   apx routing list --json
   apx tools list --json
   apx tools on|off <name> [--skill]
+  apx limits [list --json]
+  apx limits set [account] --every 1d --weekly 20 [--monthly 5] [--balance 1.50]
+  apx limits allow <account>
   apx keys list --json
   apx privacy status --json
   apx usage --period 24h --refresh --json

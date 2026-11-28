@@ -81,6 +81,30 @@ Applied automatically across all strategies:
 
   Balances are checked every 5 minutes, and config changes apply at the next check. Sent alerts are remembered only while apx runs, so a restart can repeat one. Failed desktop or webhook deliveries are logged as warnings.
 
+## Usage limits
+
+Ration a weekly or monthly limit, or a prepaid balance, over days. For example, at most 20 percentage points of each account's weekly limit per day:
+
+```toml
+# default for every account
+[limits]
+every = "1d"    # "1d" to "30d", counted from local midnight
+weekly = 20     # percentage points of the whole window
+monthly = 5
+balance = 1.50  # in the balance's currency
+```
+
+An account's `[accounts.limits]` replaces the values it sets, and `-1` removes one. Edit them with `L` on the TUI Accounts screen, the Usage Limits row in Settings, or `apx limits`.
+
+An account at its limit is skipped, so a conversation moves to the next account. When no account is left, the request fails with 429 and the time left. `apx limits allow <account>` (or `ctrl+a` on the limits screen) frees one more allowance for the current period. Each window has its own allowance and blocks only the models it meters. 5-hour windows are ignored.
+
+The count is approximate:
+
+- Providers report rounded percentages, apx refreshes them every few minutes, and the check happens before a turn, so a long turn can go over.
+- Use outside apx counts too, but apx can only block its own requests.
+- If apx isn't running when a period starts, counting begins at the first reading.
+- An account without live quota data can't be limited; `apx limits` says so.
+
 ## Security Model
 
 - **Localhost only by default:** Binds to `127.0.0.1:8787`. Binding to a non-loopback address is refused unless `--allow-remote` is passed, which logs an explicit warning.
