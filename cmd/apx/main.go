@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path"
 	"strings"
 	"syscall"
 	"time"
@@ -1510,6 +1511,30 @@ func cmdKeys(args []string) error {
 		}
 		return nil
 
+	case "models":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: apx keys models <name> <a,b|all>")
+		}
+		ck := cfg.FindAPIKey(args[0])
+		if ck == nil {
+			return fmt.Errorf("API key %q not found", args[0])
+		}
+		models, err := parseKeyModels(args[1])
+		if err != nil {
+			return err
+		}
+		ck.Models = models
+		if err := config.Save(dataDir, cfg); err != nil {
+			return err
+		}
+		gateway.NotifyRunningDaemon(cfg)
+		if len(models) == 0 {
+			fmt.Printf("API key %q can use every model its role allows.\n", ck.Name)
+		} else {
+			fmt.Printf("API key %q is limited to: %s\n", ck.Name, strings.Join(models, ", "))
+		}
+		return nil
+
 	case "enable", "disable":
 		if len(args) == 0 {
 			return fmt.Errorf("usage: apx keys %s <name>", sub)
@@ -1541,8 +1566,30 @@ func cmdKeys(args []string) error {
 		return nil
 
 	default:
-		return fmt.Errorf("usage: apx keys [list [--reveal|--json] | create <name> [--role client|admin] [--agents] [--models a,b] | agents <name> on|off | enable <name> | disable <name> | revoke <name>]")
+		return fmt.Errorf("usage: apx keys [list [--reveal|--json] | create <name> [--role client|admin] [--agents] [--models a,b] | agents <name> on|off | models <name> <a,b|all> | enable <name> | disable <name> | revoke <name>]")
 	}
+}
+
+// parseKeyModels reads a comma-separated model allowlist. "all" lifts the limit;
+// an empty list is rejected so a typo can't lift it.
+func parseKeyModels(arg string) ([]string, error) {
+	if strings.TrimSpace(arg) == "all" {
+		return nil, nil
+	}
+	var models []string
+	for _, m := range strings.Split(arg, ",") {
+		if m = strings.TrimSpace(m); m == "" {
+			continue
+		}
+		if _, err := path.Match(m, ""); err != nil {
+			return nil, fmt.Errorf("bad model pattern %q", m)
+		}
+		models = append(models, m)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf(`no models given; use "all" to lift the limit`)
+	}
+	return models, nil
 }
 
 func cmdRemote(args []string) error {

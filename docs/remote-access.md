@@ -21,6 +21,7 @@ apx keys create work-ide --role client --models "deepseek/*"
 
 # Optional: let a trusted device run your agent accounts:
 apx keys agents work-ide on
+apx keys models work-ide "deepseek/*"   # change a key's allowed models, or "all"
 
 # View, disable, or revoke anytime (hot-reloads the running service):
 apx keys list

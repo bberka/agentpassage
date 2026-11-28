@@ -65,6 +65,7 @@ apx tools on browse             # new MCP servers are off by default
 apx keys list --json
 apx keys create work-ci --role client --project work --models "deepseek/*,openai/*" --json
 apx keys agents work-ci on      # let it run ACP and CLI accounts, which act on this machine
+apx keys models work-ci "deepseek/*" # change the allowed models ("all" lifts the limit)
 apx keys disable work-ci
 apx keys enable work-ci
 apx keys revoke work-ci
