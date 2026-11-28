@@ -703,6 +703,8 @@ Use --json for structured output and --yes to skip interactive prompts.
   apx accounts list --json
   apx models list --json
   apx routing list --json
+  apx tools list --json
+  apx tools on|off <name> [--skill]
   apx keys list --json
   apx privacy status --json
   apx usage --period 24h --refresh --json

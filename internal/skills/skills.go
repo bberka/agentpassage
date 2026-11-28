@@ -145,7 +145,7 @@ var agentDirs = map[string]struct {
 // Skills added to the agent itself win over same-named ones in
 // ~/.agents/skills. Any other agent gets the skills under ~/.config that its
 // profile hides: its own and the shared ~/.config/agents/skills.
-func ShareWithProfile(agent, home, profileDir string) error {
+func ShareWithProfile(agent, home, profileDir string, off []string) error {
 	d, ok := agentDirs[agent]
 	if !ok {
 		for _, name := range []string{strings.TrimSuffix(agent, "-acp"), "agents"} {
@@ -153,7 +153,7 @@ func ShareWithProfile(agent, home, profileDir string) error {
 			if !validName.MatchString(name) {
 				continue
 			}
-			if err := Share(filepath.Join(profileDir, dir), filepath.Join(home, dir)); err != nil {
+			if err := Share(filepath.Join(profileDir, dir), off, filepath.Join(home, dir)); err != nil {
 				return err
 			}
 		}
@@ -166,14 +166,15 @@ func ShareWithProfile(agent, home, profileDir string) error {
 	if d.agents {
 		sources = append(sources, filepath.Join(home, ".agents", "skills"))
 	}
-	return Share(filepath.Join(profileDir, d.dest), sources...)
+	return Share(filepath.Join(profileDir, d.dest), off, sources...)
 }
 
-// Share links each skill found in the source folders into dir. The first
-// source with a name wins. Entries already in dir are never replaced, and the
-// only ones removed are links into a source whose skill is gone.
-func Share(dir string, sources ...string) error {
-	if err := prune(dir, sources); err != nil {
+// Share links each skill found in the source folders into dir, except the ones
+// named in off. The first source with a name wins. Entries already in dir are
+// never replaced, and the only ones removed are links into a source whose skill
+// is gone or switched off.
+func Share(dir string, off []string, sources ...string) error {
+	if err := prune(dir, off, sources); err != nil {
 		return err
 	}
 	for _, source := range sources {
@@ -186,7 +187,8 @@ func Share(dir string, sources ...string) error {
 		}
 		for _, e := range entries {
 			target := filepath.Join(source, e.Name())
-			if _, err := os.Stat(filepath.Join(target, "SKILL.md")); err != nil {
+			sk, ok := read(filepath.Join(target, "SKILL.md"), e.Name())
+			if sk.Path == "" || (ok && slices.Contains(off, sk.Name)) {
 				continue
 			}
 			link := filepath.Join(dir, e.Name())
@@ -204,7 +206,7 @@ func Share(dir string, sources ...string) error {
 	return nil
 }
 
-func prune(dir string, sources []string) error {
+func prune(dir string, off, sources []string) error {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil
@@ -218,7 +220,8 @@ func prune(dir string, sources []string) error {
 		if err != nil || !slices.Contains(sources, filepath.Dir(target)) {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(target, "SKILL.md")); !os.IsNotExist(err) {
+		sk, ok := read(filepath.Join(target, "SKILL.md"), filepath.Base(target))
+		if _, err := os.Stat(filepath.Join(target, "SKILL.md")); !os.IsNotExist(err) && !(ok && slices.Contains(off, sk.Name)) {
 			continue
 		}
 		if err := os.Remove(link); err != nil && !os.IsNotExist(err) {

@@ -15,6 +15,7 @@ import (
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/sharing"
 )
 
 // TestHelperACPProcess acts as a realistic ACP JSON-RPC stdio server subprocess during tests.
@@ -258,6 +259,13 @@ func TestHostMCPServersOnlyForHostRequests(t *testing.T) {
 		CustomCommand: []string{os.Args[0], "-test.run=TestHelperACPProcess"},
 		CustomEnv:     map[string]string{"APX_TEST_ACP_HELPER": "1"},
 	}
+	if _, err := sharing.Open(dataDir, home, []config.AccountConfig{acct}); err != nil {
+		t.Fatal(err)
+	}
+	// A server added afterwards waits for approval.
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(`{"mcpServers":{"browse":{"command":"/bin/browse"},"added":{"command":"/bin/added"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, host := range []bool{false, true} {
 		resp, err := mgr.Complete(t.Context(), acct, backend.ChatRequest{
 			Messages:  []backend.Message{{Role: "user", Content: "SHOW_MCP"}},
@@ -268,6 +276,9 @@ func TestHostMCPServersOnlyForHostRequests(t *testing.T) {
 		}
 		if got := strings.Contains(resp.Content, "mcp=browse;"); got != host {
 			t.Fatalf("HostTools=%v reply %q", host, resp.Content)
+		}
+		if strings.Contains(resp.Content, "added") {
+			t.Fatalf("a server that wasn't approved was shared: %q", resp.Content)
 		}
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"github.com/bberka/agentpassage/internal/logbuf"
 	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/service"
+	"github.com/bberka/agentpassage/internal/sharing"
 )
 
 type Screen int
@@ -65,6 +66,7 @@ const (
 	modalSubStrategyWarn
 	modalEditText
 	modalPermission
+	modalTools
 )
 
 type tickMsg time.Time
@@ -109,6 +111,12 @@ type App struct {
 
 	screen Screen
 	modal  modalKind
+
+	toolChoices sharing.Choices
+	toolItems   []sharing.Item
+	toolOn      []bool
+	toolTitle   string
+	toolCursor  int
 
 	statusMsg string
 	statusErr bool
@@ -273,6 +281,7 @@ func New(srv *gateway.Server) *App {
 		a.openStartupHostAuthIfNeeded("")
 	}
 
+	a.reviewNewTools()
 	return a
 }
 
@@ -491,7 +500,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if a.modal != modalNone {
-			return a.updateModal(msg)
+			// Setup screens end by asking which of the found tools to share.
+			prev := a.modal
+			model, cmd := a.updateModal(msg)
+			if prev == modalWelcome || prev == modalHostAuth || prev == modalAddAccount || prev == modalLoginPrompt {
+				a.reviewNewTools()
+			}
+			return model, cmd
 		}
 
 		if a.filtering {
@@ -633,6 +648,9 @@ func (a *App) updateModal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case modalLoginPrompt:
 		return a.updateLoginPromptModal(msg)
+
+	case modalTools:
+		return a.updateToolsModal(msg)
 
 	case modalConnect:
 		return a.updateConnectModal(msg)
@@ -823,6 +841,13 @@ func (a *App) renderFooter() string {
 	var hints []string
 	if a.modal != modalNone {
 		switch a.modal {
+		case modalTools:
+			hints = []string{
+				a.styles.KeyHint("j/k", "move"),
+				a.styles.KeyHint("space", "on/off"),
+				a.styles.KeyHint("enter", "save"),
+				a.styles.KeyHint("esc", "cancel"),
+			}
 		case modalConnect:
 			if a.connectConfirmAction != "" {
 				hints = []string{
@@ -868,6 +893,7 @@ func (a *App) renderFooter() string {
 				a.styles.KeyHint("c", "logins"),
 				a.styles.KeyHint("e", "edit"),
 				a.styles.KeyHint("M", "models"),
+				a.styles.KeyHint("s", "tools"),
 				a.styles.KeyHint("d", "toggle"),
 				a.styles.KeyHint("m", "expose"),
 				a.styles.KeyHint("P", "prefix"),
@@ -1033,6 +1059,7 @@ func (a *App) viewModal() string {
 			"  a Add account   i Browse & install 45+ ACP tools   T Health check   S Service   c/k Copy",
 			"",
 			a.styles.Subtitle.Render("Accounts"),
+			"  s Shared MCP servers and skills",
 			"  a Add   i Install ACP   m Cycle pool/prefix/both   P Edit prefix (e.g. a-, b-)",
 			"  l Login/Key   t Test   T Health all   p Perm   d Toggle   r Rename   e Edit   x Delete",
 			"",
@@ -1063,6 +1090,9 @@ func (a *App) viewModal() string {
 
 	case modalLoginPrompt:
 		return a.viewLoginPromptModal()
+
+	case modalTools:
+		return a.viewToolsModal()
 
 	case modalConnect:
 		return a.viewConnectModal()

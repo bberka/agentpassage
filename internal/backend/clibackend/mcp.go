@@ -1,13 +1,16 @@
 package clibackend
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/hostmcp"
+	"github.com/bberka/agentpassage/internal/sharing"
 )
 
 // hostMCP gives one CLI run the MCP servers from the user's own agent config. It
@@ -32,7 +35,12 @@ func (m *Manager) hostMCP(acct config.AccountConfig, profileDir, cwd string) (ar
 		warn(err)
 		return
 	}
-	data, err := hostmcp.CLIConfig(acct.Backend, servers)
+	// Unreadable choices allow nothing.
+	choices, err := sharing.Load(m.dataDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		warn(err)
+	}
+	data, err := hostmcp.CLIConfig(acct.Backend, hostmcp.Keep(servers, choices.Allows))
 	if err != nil {
 		warn(err)
 		return

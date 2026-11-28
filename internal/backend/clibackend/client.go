@@ -20,6 +20,7 @@ import (
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/sharing"
 	"github.com/bberka/agentpassage/internal/skills"
 )
 
@@ -149,7 +150,8 @@ func (m *Manager) TestAccount(ctx context.Context, acct config.AccountConfig) ([
 func (m *Manager) shareSkills(acct config.AccountConfig, profileDir string) {
 	home, err := os.UserHomeDir()
 	if err == nil {
-		err = skills.ShareWithProfile(acct.Backend, home, profileDir)
+		choices, _ := sharing.Load(m.dataDir)
+		err = skills.ShareWithProfile(acct.Backend, home, profileDir, choices.SkillsOff)
 	}
 	if err != nil && m.logs != nil {
 		m.logs.Warn("cli", fmt.Sprintf("share skills with %s/%s: %v", acct.Backend, acct.Name, err))

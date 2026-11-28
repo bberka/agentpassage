@@ -378,6 +378,7 @@ func TestHostAuthDetectionAndCopyModal(t *testing.T) {
 	logs := logbuf.New(20, dir, sec.KnownSecrets)
 	defer logs.Close()
 	srv := gateway.New(dir, cfg, sec, reg, logs)
+	t.Setenv("HOME", home)
 	app := New(srv)
 	defer app.Close()
 	app.Update(tea.WindowSizeMsg{Width: 110, Height: 34})

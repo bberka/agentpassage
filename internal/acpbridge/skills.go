@@ -1,16 +1,10 @@
 package acpbridge
 
-import (
-	"os"
-
-	"github.com/bberka/agentpassage/internal/skills"
-)
+import "github.com/bberka/agentpassage/internal/skills"
 
 // sendSkills lists the user's and project's skills to the host. Hosts such as
 // T3 Code read a command whose name starts with "$" as a skill.
-func sendSkills(notify func(string, any), sessionID, cwd string) {
-	home, _ := os.UserHomeDir()
-	found := skills.Discover(home, cwd)
+func sendSkills(notify func(string, any), sessionID string, found []skills.Skill) {
 	if len(found) == 0 {
 		return
 	}

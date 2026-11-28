@@ -11,6 +11,7 @@ import (
 	"github.com/bberka/agentpassage/internal/backend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/descriptors"
+	"github.com/bberka/agentpassage/internal/sharing"
 )
 
 func TestOnlyHostRunsGetTheUsersMCPServers(t *testing.T) {
@@ -46,6 +47,13 @@ printf '%s %s' "$out" "$OPENCODE_CONFIG_CONTENT" | tr '\n' ' ' > "` + bin + `/se
 	for _, agent := range []string{"claude", "codex", "opencode"} {
 		write(filepath.Join(bin, agent), fake, 0o700)
 	}
+	// Only the approved servers are shared.
+	if _, err := sharing.Open(data, home, []config.AccountConfig{
+		{Kind: config.KindCLI, Backend: "claude"}, {Kind: config.KindCLI, Backend: "codex"}, {Kind: config.KindCLI, Backend: "opencode"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(home, ".claude.json"), `{"mcpServers": {"mine": {"command": "/bin/claude-mcp", "env": {"TOKEN": "s3cret"}}, "added": {"command": "/bin/added-mcp"}}}`, 0o600)
 	reg, _ := descriptors.LoadRegistry(data)
 	m := NewManager(data, reg, nil)
 	for _, agent := range []string{"claude", "codex", "opencode"} {
@@ -61,6 +69,9 @@ printf '%s %s' "$out" "$OPENCODE_CONFIG_CONTENT" | tr '\n' ' ' > "` + bin + `/se
 			}
 			if got := strings.Contains(string(seen), "/bin/"+agent+"-mcp"); got != host {
 				t.Errorf("%s host=%v: MCP server given = %v: %s", agent, host, got, seen)
+			}
+			if strings.Contains(string(seen), "/bin/added-mcp") {
+				t.Errorf("%s got a server that wasn't approved", agent)
 			}
 			if args, _, _ := strings.Cut(string(seen), "{"); strings.Contains(args, "s3cret") {
 				t.Errorf("%s put a secret in its arguments", agent)

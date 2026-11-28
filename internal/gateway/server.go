@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	neturl "net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/router"
 	"github.com/bberka/agentpassage/internal/secrets"
+	"github.com/bberka/agentpassage/internal/sharing"
 	"github.com/bberka/agentpassage/internal/usage"
 )
 
@@ -105,6 +107,12 @@ func New(dataDir string, cfg *config.Config, sec *secrets.Store, reg *descriptor
 		privacy:  privacy.NewFilter(cfg.Privacy),
 		alerts:   alerts.New(cfg.Alerts),
 		cache:    cache.New(cfg.Cache.MaxEntries, time.Duration(cfg.Cache.TTLSeconds)*time.Second),
+	}
+	// Records the tools an existing setup already shares, once.
+	if home, err := os.UserHomeDir(); err == nil {
+		if _, err := sharing.Open(dataDir, home, cfg.Accounts); err != nil && logs != nil {
+			logs.Warn("tools", err.Error())
+		}
 	}
 	s.health = health.New(
 		func() []config.AccountConfig {

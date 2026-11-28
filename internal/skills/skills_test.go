@@ -39,7 +39,7 @@ func TestDiscoverInstructionsAndShare(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "skills")
 	write(t, filepath.Join(dir, "pr/SKILL.md"), "mine")
 	for range 2 {
-		if err := Share(dir, filepath.Join(home, ".agents", "skills")); err != nil {
+		if err := Share(dir, nil, filepath.Join(home, ".agents", "skills")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -62,7 +62,7 @@ func TestShareSourcesAndRemovedSkills(t *testing.T) {
 	if err := os.Symlink(filepath.Join(home, "missing"), elsewhere); err != nil {
 		t.Skip("symlinks unavailable")
 	}
-	if err := Share(dir, own, common); err != nil {
+	if err := Share(dir, nil, own, common); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(filepath.Join(dir, "both/SKILL.md")); string(b) != "own" {
@@ -71,11 +71,24 @@ func TestShareSourcesAndRemovedSkills(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(own, "mine")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Share(dir, own, common); err != nil {
+	if err := Share(dir, nil, own, common); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "mine")); !os.IsNotExist(err) {
 		t.Fatalf("link to a removed skill remains: %v", err)
+	}
+	// Switching a skill off removes its link; switching it on brings it back.
+	if err := Share(dir, []string{"both"}, own, common); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "both")); !os.IsNotExist(err) {
+		t.Fatalf("a switched off skill is still linked: %v", err)
+	}
+	if err := Share(dir, nil, own, common); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "both/SKILL.md")); err != nil {
+		t.Fatalf("a skill switched back on is missing: %v", err)
 	}
 	if _, err := os.Lstat(elsewhere); err != nil {
 		t.Fatalf("a link apx did not make was removed: %v", err)
@@ -97,7 +110,7 @@ func TestOtherAgentsGetTheSkillsTheirProfileHides(t *testing.T) {
 		"goose":     {".config/goose/skills/own", ".config/agents/skills/common"},
 		"muse-code": {".config/muse/skills/meta"},
 	} {
-		if err := ShareWithProfile(agent, home, filepath.Join(profile, agent)); err != nil {
+		if err := ShareWithProfile(agent, home, filepath.Join(profile, agent), nil); err != nil {
 			t.Fatal(err)
 		}
 		for _, w := range want {

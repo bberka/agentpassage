@@ -250,7 +250,10 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.saveSession(bs)
 
 			replyOK(msg.ID, s.sessionReply(sid, defaultModel, configOpts, availModels, defaultMode))
-			sendSkills(notify, sid, p.Cwd)
+			sendSkills(notify, sid, s.gw.UserSkills(p.Cwd))
+			if s.hostTools() {
+				s.gw.AnnounceNewTools(p.Cwd)
+			}
 
 		case "session/load", "session/resume":
 			var p struct {
@@ -305,7 +308,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			}
 
 			replyOK(msg.ID, s.sessionReply(bs.id, resolvedModel, configOpts, availModels, normalizeBridgeMode(curMode)))
-			sendSkills(notify, bs.id, bs.cwd)
+			sendSkills(notify, bs.id, s.gw.UserSkills(bs.cwd))
 
 		case "session/list":
 			list := s.listPersistedSessions()
@@ -362,7 +365,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.saveSession(forked)
 
 			replyOK(msg.ID, s.sessionReply(newSID, resolvedModel, configOpts, availModels, forked.mode))
-			sendSkills(notify, newSID, forkCwd)
+			sendSkills(notify, newSID, s.gw.UserSkills(forkCwd))
 
 		case "session/set_config_option":
 			var p struct {
@@ -492,8 +495,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				}
 			}
 			userText := promptSB.String()
-			home, _ := os.UserHomeDir()
-			if note := skills.Instructions(userText, skills.Discover(home, bs.cwd)); note != "" {
+			if note := skills.Instructions(userText, s.gw.UserSkills(bs.cwd)); note != "" {
 				userText += "\n\n" + note
 			}
 

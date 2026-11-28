@@ -43,6 +43,7 @@ apx health --json
 - **Scoped API keys:**
   - `apx keys create work-bot --role client --project work --models "deepseek/*" --json`
   - `apx keys list --json`
+  - `apx tools list --json` and `apx tools on|off <name> [--skill]` (MCP servers and skills accounts get; ask the user before turning one on)
   - `apx keys disable|enable|revoke work-bot`
 - **Embeddings & reranking:**
   - `apx embed --model text-embedding-3-small --project search "text"`

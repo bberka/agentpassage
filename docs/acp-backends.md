@@ -104,6 +104,20 @@ CLI-backend accounts get the same skills.
 
 The agent's own folder wins over `~/.agents/skills` for a shared name. apx never replaces an entry already in a profile, and removes only its own links to skills you deleted. It doesn't install or update skills; use your skill manager for that.
 
+## Choosing what is shared
+
+One choice covers every account. A new MCP server, or one whose command or address changed, stays off until you approve it. A new skill is on. Servers that your accounts already got before you upgraded stay on.
+
+Review them on the TUI Accounts screen (`s`), which also opens after setup and at start when a server waits, or with the CLI:
+
+```bash
+apx tools list
+apx tools on browse
+apx tools off pr --skill
+```
+
+apx stores names and a fingerprint of each server's command or address in `tools.json` in its data directory, never env values or headers. A change applies to new sessions. Accounts that use your own agent setup aren't affected. Project skills are always on, and agents that read `~/.agents/skills` themselves (see the table above) still see a skill you switched off.
+
 ## MCP servers
 
 `apx acp` sessions also get the MCP servers from your own agent config, read when the session starts:

@@ -2,36 +2,27 @@ package acpbackend
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/bberka/agentpassage/internal/hostmcp"
 )
 
-// piMCPEnv gives Pi the user's MCP servers. Pi's adapter drops the ones sent
-// over ACP, so the user's mcp.json is linked into the profile. The profile also
+// piMCPEnv gives Pi the user's approved MCP servers. Pi's adapter drops the
+// ones sent over ACP, so they go into the profile's mcp.json. The profile also
 // serves API requests, whose Pi is therefore started with --no-mcp through a
 // small launcher.
-func piMCPEnv(profileDir, command string, hostTools bool) ([]string, error) {
+func piMCPEnv(profileDir, command string, hostTools bool, allow func(name, fingerprint string) bool) ([]string, error) {
 	if hostTools {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return nil, err
 		}
-		source := filepath.Join(home, ".pi", "agent", "mcp.json")
-		link := filepath.Join(profileDir, "mcp.json")
-		if _, err := os.Stat(source); err != nil {
-			return nil, nil
-		}
-		// A file the account already has is never replaced.
-		if _, err := os.Lstat(link); err == nil {
-			return nil, nil
-		}
-		if err := os.Symlink(source, link); err != nil && !os.IsExist(err) {
-			return nil, fmt.Errorf("share MCP servers with pi: %w", err)
-		}
-		return nil, nil
+		return nil, writePiMCP(home, profileDir, allow)
 	}
 	command = cmp.Or(command, "pi")
 	name, script := "pi-no-mcp", "#!/bin/sh\nexec '"+strings.ReplaceAll(command, "'", `'\''`)+"' --no-mcp \"$@\"\n"
@@ -70,4 +61,51 @@ func (m *Manager) dropWorkerUnless(accountID string, hostTools bool) {
 		w.close()
 		delete(m.workers, accountID)
 	}
+}
+
+// writePiMCP gives the profile a copy of the user's mcp.json holding only the
+// approved servers. A file the account made itself is never replaced: apx
+// replaces only its own copy, marked by a second file, or an earlier link.
+func writePiMCP(home, profileDir string, allow func(name, fingerprint string) bool) error {
+	source := filepath.Join(home, ".pi", "agent", "mcp.json")
+	dest := filepath.Join(profileDir, "mcp.json")
+	marker := dest + ".apx"
+	if info, err := os.Lstat(dest); err == nil {
+		target, _ := os.Readlink(dest)
+		_, marked := os.Stat(marker)
+		if !(info.Mode()&os.ModeSymlink != 0 && target == source) && marked != nil {
+			return nil
+		}
+		if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("share MCP servers with pi: %w", err)
+		}
+	}
+	data, err := os.ReadFile(source)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	servers, loadErr := hostmcp.Load(home, "pi", "")
+	if err = cmp.Or(err, loadErr); err != nil {
+		return fmt.Errorf("share MCP servers with pi: %w", err)
+	}
+	approved := hostmcp.Keep(servers, allow)
+	var file, all map[string]json.RawMessage
+	if json.Unmarshal(data, &file) != nil || (file["mcpServers"] != nil && json.Unmarshal(file["mcpServers"], &all) != nil) {
+		return fmt.Errorf("share MCP servers with pi: %s is not valid", source)
+	}
+	for name := range all {
+		if _, ok := approved[name]; !ok {
+			delete(all, name)
+		}
+	}
+	if file["mcpServers"], err = json.Marshal(all); err != nil {
+		return err
+	}
+	if data, err = json.Marshal(file); err != nil {
+		return err
+	}
+	if err := os.WriteFile(marker, nil, 0o600); err != nil {
+		return fmt.Errorf("share MCP servers with pi: %w", err)
+	}
+	return os.WriteFile(dest, data, 0o600)
 }

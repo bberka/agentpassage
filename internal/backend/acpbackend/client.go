@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/bberka/agentpassage/internal/descriptors"
 	"github.com/bberka/agentpassage/internal/hostmcp"
 	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/sharing"
 	"github.com/bberka/agentpassage/internal/skills"
 )
 
@@ -346,7 +348,17 @@ func (m *Manager) withHostMCP(sent []any, agent, cwd string, caps hostmcp.Capabi
 	if err != nil && m.logs != nil {
 		m.logs.Warn("acp", err.Error())
 	}
-	return hostmcp.Merge(sent, servers, caps)
+	return hostmcp.Merge(sent, hostmcp.Keep(servers, m.choices().Allows), caps)
+}
+
+// choices reads which tools the user shares. When that can't be read, no MCP
+// server is allowed.
+func (m *Manager) choices() sharing.Choices {
+	c, err := sharing.Load(m.dataDir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) && m.logs != nil {
+		m.logs.Warn("acp", err.Error())
+	}
+	return c
 }
 
 // shareSkills links the user's skills for this agent into its profile, which
@@ -354,7 +366,7 @@ func (m *Manager) withHostMCP(sent []any, agent, cwd string, caps hostmcp.Capabi
 func (m *Manager) shareSkills(acct config.AccountConfig, profileDir string) {
 	home, err := os.UserHomeDir()
 	if err == nil {
-		err = skills.ShareWithProfile(acct.Backend, home, profileDir)
+		err = skills.ShareWithProfile(acct.Backend, home, profileDir, m.choices().SkillsOff)
 	}
 	if err != nil && m.logs != nil {
 		m.logs.Warn("acp", fmt.Sprintf("share skills with %s/%s: %v", acct.Backend, acct.Name, err))
@@ -401,7 +413,7 @@ func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfi
 		argv = desc.ExpandCommand(profileDir, acct.CustomCommand)
 		extraEnv = desc.ExpandEnv(profileDir, acct.CustomEnv)
 		if acct.Backend == "pi" {
-			env, err := piMCPEnv(profileDir, acct.CustomEnv["PI_ACP_PI_COMMAND"], hostTools)
+			env, err := piMCPEnv(profileDir, acct.CustomEnv["PI_ACP_PI_COMMAND"], hostTools, m.choices().Allows)
 			if err != nil {
 				return nil, err
 			}

@@ -38,7 +38,7 @@ type server struct {
 
 // Load returns the MCP servers the user configured for agent ("claude",
 // "codex", "agy", "grok", "cursor", "gemini", "opencode", "cline",
-// "muse-code", "kilo", "goose" or "amp-acp"), keyed by name. cwd adds Claude's
+// "muse-code", "pi", "kilo", "goose" or "amp-acp"), keyed by name. cwd adds Claude's
 // servers for that project. Errors name only the file, because its content can
 // hold secrets.
 func Load(home, agent, cwd string) (map[string]server, error) {
@@ -60,6 +60,8 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 		path = filepath.Join(home, ".cline", "data", "settings", "cline_mcp_settings.json")
 	case "muse-code":
 		path = filepath.Join(home, ".config", "muse", "settings.json")
+	case "pi":
+		path = filepath.Join(home, ".pi", "agent", "mcp.json")
 	case "opencode":
 		return loadOpenCode(filepath.Join(home, ".config", "opencode"), "opencode")
 	case "kilo":
@@ -118,6 +120,12 @@ func Load(home, agent, cwd string) (map[string]server, error) {
 		}
 	}
 	return out, nil
+}
+
+// Keep drops the servers allow rejects.
+func Keep(servers map[string]server, allow func(name, fingerprint string) bool) map[string]server {
+	maps.DeleteFunc(servers, func(name string, s server) bool { return !allow(name, s.Fingerprint()) })
+	return servers
 }
 
 // Merge appends servers to the ACP mcpServers list the host sent, skipping
