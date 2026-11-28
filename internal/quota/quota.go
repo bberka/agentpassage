@@ -414,7 +414,7 @@ func (f *Fetcher) RefreshOne(ctx context.Context, acct config.AccountConfig) Acc
 				q.Local7d = cl.Msgs7d
 				q.Tokens5h = cl.Tokens5h
 				q.Tokens7d = cl.Tokens7d
-				q.Credits = fmt.Sprintf("5h: %s tok · 7d: %s tok", FormatCompactTokens(cl.Tokens5h), FormatCompactTokens(cl.Tokens7d))
+				q.Credits = fmt.Sprintf("5h: %s tok · 7d: %s tok", usage.FormatCount(cl.Tokens5h), usage.FormatCount(cl.Tokens7d))
 				q.Error = err.Error()
 			} else {
 				q.Source = "local-tracked"

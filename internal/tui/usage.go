@@ -344,13 +344,13 @@ func (a *App) viewUsage(bodyHeight int) string {
 			a.styles.Muted.Render("["+period+" · p:period]") + a.styles.ColGap(3) +
 			a.styles.Highlight.Render(hubURL),
 		a.styles.Divider.Render(strings.Repeat("─", innerW)),
-		a.surfaceText("  Requests: ") + a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalRequests)) +
-			a.surfaceText(fmt.Sprintf(" (24h:%d · 7d:%d)   Success: ", u.Requests24h, u.Requests7d)) +
+		a.surfaceText("  Requests: ") + a.styles.Highlight.Render(usage.FormatCount(u.TotalRequests)) +
+			a.surfaceText(fmt.Sprintf(" (24h:%s · 7d:%s)   Success: ", usage.FormatCount(u.Requests24h), usage.FormatCount(u.Requests7d))) +
 			rateStyle.Render(fmt.Sprintf("%.1f%%", rate)) +
-			a.surfaceText(fmt.Sprintf(" (%d err)   Tokens: ", u.ErrorRequests)) +
-			a.styles.Highlight.Render(fmt.Sprintf("%d", u.TotalTokens)) +
+			a.surfaceText(fmt.Sprintf(" (%s err)   Tokens: ", usage.FormatCount(u.ErrorRequests))) +
+			a.styles.Highlight.Render(usage.FormatCount(u.TotalTokens)) +
 			a.surfaceText("   Cost: ") + a.styles.Highlight.Render(costStr) +
-			a.surfaceText(fmt.Sprintf("   Avg: %dms", u.AvgLatencyMs)),
+			a.surfaceText("   Avg: "+usage.FormatLatency(u.AvgLatencyMs)),
 		a.surfaceText("  ") + a.styles.Muted.Render(chartTitle) + a.surfaceText(":  ") + a.styles.Highlight.Render(renderSparkline(buckets)),
 	}
 	topCard := a.styles.Card.Width(fullW).Render(strings.Join(topLines, "\n"))
@@ -438,9 +438,9 @@ func (a *App) viewUsage(bodyHeight int) string {
 				prim = st.Render(truncate(q.Credits, 34))
 			}
 			sec := a.renderQuotaWindowInline(q.Secondary, now)
-			localCol := fmt.Sprintf("%d / %d reqs", q.Local5h, q.Local7d)
+			localCol := fmt.Sprintf("%s / %s reqs", usage.FormatCount(q.Local5h), usage.FormatCount(q.Local7d))
 			if q.Tokens5h > 0 || q.Tokens7d > 0 {
-				localCol = fmt.Sprintf("%d/%d req · %s/%s", q.Local5h, q.Local7d, quota.FormatCompactTokens(q.Tokens5h), quota.FormatCompactTokens(q.Tokens7d))
+				localCol = fmt.Sprintf("%s/%s req · %s/%s", usage.FormatCount(q.Local5h), usage.FormatCount(q.Local7d), usage.FormatCount(q.Tokens5h), usage.FormatCount(q.Tokens7d))
 			}
 			if !q.showLocal {
 				localCol = ""
@@ -474,7 +474,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 		maxRows := max(h-4, 2)
 		var lines []string
 		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("By Account (%d)", len(u.ByAccount))))
-		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-18s %-6s %-5s %-8s %-6s %s", "ACCOUNT", "REQS", "ERR", "TOKENS", "AVG", "SHARE")))
+		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-18s %-6s %-5s %-8s %-7s %s", "ACCOUNT", "REQS", "ERR", "TOKENS", "AVG", "SHARE")))
 		if len(u.ByAccount) == 0 {
 			lines = append(lines, a.styles.Muted.Render("No traffic recorded yet."))
 		} else {
@@ -482,13 +482,13 @@ func (a *App) viewUsage(bodyHeight int) string {
 				if i >= maxRows {
 					break
 				}
-				barW := clamp(inW-48, 6, 14)
-				lines = append(lines, fmt.Sprintf("%-18s %-6d %-5d %-8d %-6s %s",
+				barW := clamp(inW-49, 6, 14)
+				lines = append(lines, fmt.Sprintf("%-18s %-6s %-5s %-8s %-7s %s",
 					truncate(ac.Account, 18),
-					ac.Requests,
-					ac.Errors,
-					ac.TotalTokens,
-					fmt.Sprintf("%dms", ac.AvgLatencyMs),
+					usage.FormatCount(ac.Requests),
+					usage.FormatCount(ac.Errors),
+					usage.FormatCount(ac.TotalTokens),
+					usage.FormatLatency(ac.AvgLatencyMs),
 					a.styles.Highlight.Render(renderShareBar(ac.Requests, totalReq, barW)),
 				))
 			}
@@ -501,7 +501,7 @@ func (a *App) viewUsage(bodyHeight int) string {
 		maxRows := max(h-4, 2)
 		var lines []string
 		lines = append(lines, a.styles.Subtitle.Render(fmt.Sprintf("By Model (%d)", len(u.ByModel))))
-		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-24s %-6s %-8s %-6s %s", "MODEL", "REQS", "TOKENS", "AVG", "SHARE")))
+		lines = append(lines, a.styles.TableHeader.Render(fmt.Sprintf("%-24s %-6s %-8s %-7s %s", "MODEL", "REQS", "TOKENS", "AVG", "SHARE")))
 		if len(u.ByModel) == 0 {
 			lines = append(lines, a.styles.Muted.Render("No model traffic recorded yet."))
 		} else {
@@ -509,12 +509,12 @@ func (a *App) viewUsage(bodyHeight int) string {
 				if i >= maxRows {
 					break
 				}
-				barW := clamp(inW-48, 6, 14)
-				lines = append(lines, fmt.Sprintf("%-24s %-6d %-8d %-6s %s",
+				barW := clamp(inW-49, 6, 14)
+				lines = append(lines, fmt.Sprintf("%-24s %-6s %-8s %-7s %s",
 					truncate(m.Model, 24),
-					m.Requests,
-					m.TotalTokens,
-					fmt.Sprintf("%dms", m.AvgLatencyMs),
+					usage.FormatCount(m.Requests),
+					usage.FormatCount(m.TotalTokens),
+					usage.FormatLatency(m.AvgLatencyMs),
 					a.styles.Highlight.Render(renderShareBar(m.Requests, totalReq, barW)),
 				))
 			}

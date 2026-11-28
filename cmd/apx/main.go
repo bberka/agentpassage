@@ -818,14 +818,14 @@ func cmdUsage(args []string) error {
 		return fmt.Sprintf("~$%.2f", c)
 	}
 	fmt.Printf("AgentPassage (apx) Usage Report [period=%s] — %s\n", sum.Period, hubURL)
-	fmt.Printf("Requests: %d total (24h: %d, 7d: %d) | Success: %.1f%% (%d errors)\n",
-		sum.TotalRequests, sum.Requests24h, sum.Requests7d, sum.SuccessRate, sum.ErrorRequests)
+	fmt.Printf("Requests: %s total (24h: %s, 7d: %s) | Success: %.1f%% (%s errors)\n",
+		usage.FormatCount(sum.TotalRequests), usage.FormatCount(sum.Requests24h), usage.FormatCount(sum.Requests7d), sum.SuccessRate, usage.FormatCount(sum.ErrorRequests))
 	unpriced := ""
 	if sum.UnpricedRequests > 0 {
 		unpriced = fmt.Sprintf(", %d requests unpriced", sum.UnpricedRequests)
 	}
-	fmt.Printf("Tokens:   %d total (in: %d, out: %d, 24h: %d) | Est. Cost: %s (list prices %s%s) | Avg latency: %dms\n\n",
-		sum.TotalTokens, sum.PromptTokens, sum.CompletionTokens, sum.Tokens24h, fmtCost(sum.EstimatedCostUSD), usage.PricesChecked, unpriced, sum.AvgLatencyMs)
+	fmt.Printf("Tokens:   %s total (in: %s, out: %s, 24h: %s) | Est. Cost: %s (list prices %s%s) | Avg latency: %s\n\n",
+		usage.FormatCount(sum.TotalTokens), usage.FormatCount(sum.PromptTokens), usage.FormatCount(sum.CompletionTokens), usage.FormatCount(sum.Tokens24h), fmtCost(sum.EstimatedCostUSD), usage.PricesChecked, unpriced, usage.FormatLatency(sum.AvgLatencyMs))
 
 	fmt.Println("Subscription Limits (Hourly / Weekly):")
 	if len(qrep.Accounts) == 0 {
@@ -852,9 +852,9 @@ func cmdUsage(args []string) error {
 			if q.Primary == nil && q.Credits != "" {
 				prim = q.Credits
 			}
-			localCol := fmt.Sprintf("%d / %d reqs", q.Local5h, q.Local7d)
+			localCol := fmt.Sprintf("%s / %s reqs", usage.FormatCount(q.Local5h), usage.FormatCount(q.Local7d))
 			if q.Tokens5h > 0 || q.Tokens7d > 0 {
-				localCol = fmt.Sprintf("%d/%d reqs (%s/%s tok)", q.Local5h, q.Local7d, quota.FormatCompactTokens(q.Tokens5h), quota.FormatCompactTokens(q.Tokens7d))
+				localCol = fmt.Sprintf("%s/%s reqs (%s/%s tok)", usage.FormatCount(q.Local5h), usage.FormatCount(q.Local7d), usage.FormatCount(q.Tokens5h), usage.FormatCount(q.Tokens7d))
 			}
 			fmt.Printf("  %-18s %-8s %-28s %-26s %s\n",
 				q.AccountName, plan, prim, fmtWin(q.Secondary), localCol)
@@ -866,25 +866,25 @@ func cmdUsage(args []string) error {
 		fmt.Println("  (no traffic recorded yet)")
 	}
 	for _, a := range sum.ByAccount {
-		fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", a.Account, a.Requests, a.Errors, a.TotalTokens, fmtCost(a.EstimatedCostUSD), a.AvgLatencyMs)
+		fmt.Printf("  %-22s req=%-6s err=%-6s tokens=%-8s cost=%-9s avg=%s\n", a.Account, usage.FormatCount(a.Requests), usage.FormatCount(a.Errors), usage.FormatCount(a.TotalTokens), fmtCost(a.EstimatedCostUSD), usage.FormatLatency(a.AvgLatencyMs))
 	}
 	fmt.Println("\nBy Model:")
 	if len(sum.ByModel) == 0 {
 		fmt.Println("  (no traffic recorded yet)")
 	}
 	for _, m := range sum.ByModel {
-		fmt.Printf("  %-28s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", m.Model, m.Requests, m.Errors, m.TotalTokens, fmtCost(m.EstimatedCostUSD), m.AvgLatencyMs)
+		fmt.Printf("  %-28s req=%-6s err=%-6s tokens=%-8s cost=%-9s avg=%s\n", m.Model, usage.FormatCount(m.Requests), usage.FormatCount(m.Errors), usage.FormatCount(m.TotalTokens), fmtCost(m.EstimatedCostUSD), usage.FormatLatency(m.AvgLatencyMs))
 	}
 	if len(sum.ByKey) > 0 {
 		fmt.Println("\nBy API Key:")
 		for _, k := range sum.ByKey {
-			fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", k.Key, k.Requests, k.Errors, k.TotalTokens, fmtCost(k.EstimatedCostUSD), k.AvgLatencyMs)
+			fmt.Printf("  %-22s req=%-6s err=%-6s tokens=%-8s cost=%-9s avg=%s\n", k.Key, usage.FormatCount(k.Requests), usage.FormatCount(k.Errors), usage.FormatCount(k.TotalTokens), fmtCost(k.EstimatedCostUSD), usage.FormatLatency(k.AvgLatencyMs))
 		}
 	}
 	if len(sum.ByProject) > 0 {
 		fmt.Println("\nBy Project:")
 		for _, p := range sum.ByProject {
-			fmt.Printf("  %-22s req=%-5d err=%-4d tokens=%-8d cost=%-9s avg=%dms\n", p.Project, p.Requests, p.Errors, p.TotalTokens, fmtCost(p.EstimatedCostUSD), p.AvgLatencyMs)
+			fmt.Printf("  %-22s req=%-6s err=%-6s tokens=%-8s cost=%-9s avg=%s\n", p.Project, usage.FormatCount(p.Requests), usage.FormatCount(p.Errors), usage.FormatCount(p.TotalTokens), fmtCost(p.EstimatedCostUSD), usage.FormatLatency(p.AvgLatencyMs))
 		}
 	}
 	return nil
@@ -967,7 +967,7 @@ func cmdHealth(args []string) error {
 		}
 		lat := "—"
 		if !r.CheckedAt.IsZero() {
-			lat = fmt.Sprintf("%dms", r.LatencyMs)
+			lat = usage.FormatLatency(r.LatencyMs)
 		}
 		errMsg := r.Error
 		if errMsg == "" && r.Status == health.StatusUnknown {

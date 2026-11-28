@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/bberka/agentpassage/internal/logbuf"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 func (a *App) filteredLogs() []logbuf.Entry {
@@ -102,7 +103,7 @@ func (a *App) viewLogs(bodyHeight int) string {
 		ts := e.Time.Format("15:04:05")
 		var msg string
 		if e.Kind == "request" {
-			msg = fmt.Sprintf("%s %s model=%s acct=%s status=%d %dms", e.Method, e.Path, e.Model, e.Account, e.Status, e.DurationMs)
+			msg = fmt.Sprintf("%s %s model=%s acct=%s status=%d %s", e.Method, e.Path, e.Model, e.Account, e.Status, usage.FormatLatency(e.DurationMs))
 		} else {
 			msg = fmt.Sprintf("[%s] %s", e.Kind, e.Message)
 		}
@@ -145,7 +146,7 @@ func (a *App) viewLogs(bodyHeight int) string {
 				proj = "—"
 			}
 			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Route:   %s %s  model=%s -> upstream=%s  effort=%s  project=%s", e.Method, e.Path, e.Model, up, eff, proj)))
-			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Account: %s  status=%d  latency=%dms  failover_hops=%d  tokens=%d in / %d out", e.Account, e.Status, e.DurationMs, e.FailoverHops, e.TokensIn, e.TokensOut)))
+			lines = append(lines, a.styles.Muted.Render(fmt.Sprintf("Account: %s  status=%d  latency=%s  failover_hops=%d  tokens=%s in / %s out", e.Account, e.Status, usage.FormatLatency(e.DurationMs), e.FailoverHops, usage.FormatCount(e.TokensIn), usage.FormatCount(e.TokensOut))))
 		} else if e.Message != "" {
 			lines = append(lines, a.styles.Muted.Render("Message: "+truncate(e.Message, max(innerW-10, 20))))
 		}

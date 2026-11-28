@@ -179,7 +179,21 @@ let lastHealth = null;
 let lastQuota = null;
 
 const $ = id => document.getElementById(id);
-const fmt = n => Number(n || 0).toLocaleString();
+const fmtNum = n => {
+  n = Number(n || 0);
+  if (n >= 999950000) return (n / 1e9).toFixed(1) + 'B';
+  if (n >= 999950) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+};
+const fmtDur = ms => {
+  ms = Number(ms || 0);
+  if (ms < 1000) return ms + 'ms';
+  if (ms < 59950) return (ms / 1000).toFixed(1) + 's';
+  const sec = Math.round(ms / 1000);
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+  return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+};
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function showAuth(msg) {
@@ -246,7 +260,7 @@ function renderQuotaWindow(w) {
   const used = Math.max(0, Math.min(100, Number(w.used_percent || 0)));
   const left = Math.max(0, Math.min(100, Number(w.left_percent != null ? w.left_percent : (100 - used))));
   const cls = used >= 90 ? 'q-err' : (used >= 70 ? 'q-warn' : 'q-ok');
-  const countTxt = w.limit_count ? (' (' + fmt(w.used_count) + '/' + fmt(w.limit_count) + ')') : '';
+  const countTxt = w.limit_count ? (' (' + fmtNum(w.used_count) + '/' + fmtNum(w.limit_count) + ')') : '';
   const resetTxt = fmtReset(w.resets_at);
   return '<div class="q-row">' +
     '<div class="q-meta"><span>' + esc(w.label) + countTxt + '</span><span><strong>' + left.toFixed(0) + '% left</strong>' + (resetTxt ? ' · <span class="muted">' + esc(resetTxt) + '</span>' : '') + '</span></div>' +
@@ -263,12 +277,6 @@ function render() {
   if (lastQuota && lastQuota.updated_at && !String(lastQuota.updated_at).startsWith('0001-')) {
     $('quotaMeta').textContent = 'updated ' + new Date(lastQuota.updated_at).toLocaleTimeString();
   }
-  const fmtTok = n => {
-    n = Number(n || 0);
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k';
-    return String(n);
-  };
   $('quotaGrid').innerHTML = qList.map(q => {
     const isLive = q.source && (q.source.endsWith('-live') || q.source === 'claude-logs');
     const srcBadge = isLive
@@ -276,18 +284,18 @@ function render() {
       : (q.source === 'local-budget'
         ? '<span class="badge b-warn">budget</span>'
         : '<span class="badge" style="background:rgba(139,148,158,.15);color:var(--muted);">local</span>');
-    const tokNote = (q.tokens_5h || q.tokens_7d) ? (' · tok 5h=' + fmtTok(q.tokens_5h) + ' 7d=' + fmtTok(q.tokens_7d)) : '';
+    const tokNote = (q.tokens_5h || q.tokens_7d) ? (' · tok 5h=' + fmtNum(q.tokens_5h) + ' 7d=' + fmtNum(q.tokens_7d)) : '';
     let body = renderQuotaWindow(q.primary) + renderQuotaWindow(q.secondary);
     if (!body && q.credits) {
       body = '<div style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--ok);">' + esc(q.credits) + '</div>' +
-        '<div class="muted" style="font-size:11px;font-family:var(--mono);">5h: ' + fmt(q.local_5h_reqs) + ' reqs · 7d: ' + fmt(q.local_7d_reqs) + ' reqs' + tokNote + '</div>';
+        '<div class="muted" style="font-size:11px;font-family:var(--mono);">5h: ' + fmtNum(q.local_5h_reqs) + ' reqs · 7d: ' + fmtNum(q.local_7d_reqs) + ' reqs' + tokNote + '</div>';
     } else if (!body) {
       body = '<div class="muted" style="font-size:12px;">' +
-        'Local traffic: <strong>' + fmt(q.local_5h_reqs) + '</strong> reqs (5h) · <strong>' + fmt(q.local_7d_reqs) + '</strong> reqs (7d)' + tokNote +
+        'Local traffic: <strong>' + fmtNum(q.local_5h_reqs) + '</strong> reqs (5h) · <strong>' + fmtNum(q.local_7d_reqs) + '</strong> reqs (7d)' + tokNote +
         (q.error ? '<br><span style="color:var(--warn);">' + esc(q.error) + '</span>' : '<br>Provider has no live quota API — set hourly/weekly budgets in Accounts.') +
         '</div>';
     } else {
-      body += '<div class="muted" style="font-size:11px;font-family:var(--mono);">apx traffic: 1h=' + fmt(q.local_1h_reqs) + ' · 5h=' + fmt(q.local_5h_reqs) + ' · 7d=' + fmt(q.local_7d_reqs) + tokNote + (q.credits ? ' · ' + esc(q.credits) : '') + '</div>';
+      body += '<div class="muted" style="font-size:11px;font-family:var(--mono);">apx traffic: 1h=' + fmtNum(q.local_1h_reqs) + ' · 5h=' + fmtNum(q.local_5h_reqs) + ' · 7d=' + fmtNum(q.local_7d_reqs) + tokNote + (q.credits ? ' · ' + esc(q.credits) : '') + '</div>';
     }
     return '<div class="q-card"><div class="q-head"><span class="q-name">' + esc(q.account_name) + '</span>' + srcBadge + '</div>' + body + '</div>';
   }).join('') || '<div class="muted">No accounts configured yet.</div>';
@@ -296,31 +304,31 @@ function render() {
     '<div class="err-banner">! ' + esc(b.account_name) + ': ' + esc(b.message) + '</div>'
   ).join('');
 
-  $('kReq').textContent = fmt(u.total_requests);
-  $('kReqSub').textContent = '24h: ' + fmt(u.requests_24h) + ' · 7d: ' + fmt(u.requests_7d);
+  $('kReq').textContent = fmtNum(u.total_requests);
+  $('kReqSub').textContent = '24h: ' + fmtNum(u.requests_24h) + ' · 7d: ' + fmtNum(u.requests_7d);
   $('kRate').textContent = (u.total_requests ? u.success_rate.toFixed(1) : '100.0') + '%';
-  $('kErrSub').textContent = fmt(u.error_requests) + ' errors';
-  $('kTok').textContent = fmt(u.total_tokens);
-  $('kTokSub').textContent = 'in: ' + fmt(u.prompt_tokens) + ' · out: ' + fmt(u.completion_tokens) + ' · 24h: ' + fmt(u.tokens_24h);
+  $('kErrSub').textContent = fmtNum(u.error_requests) + ' errors';
+  $('kTok').textContent = fmtNum(u.total_tokens);
+  $('kTokSub').textContent = 'in: ' + fmtNum(u.prompt_tokens) + ' · out: ' + fmtNum(u.completion_tokens) + ' · 24h: ' + fmtNum(u.tokens_24h);
   const fmtCost = c => {
     const n = Number(c || 0);
     if (n <= 0) return '$0.00';
     if (n < 0.01) return '~$' + n.toFixed(4);
     return '~$' + n.toFixed(2);
   };
-  $('kLat').textContent = fmt(u.avg_latency_ms) + ' ms';
-  $('kModels').textContent = fmt(s.models_count) + ' exposed models · ' + esc(s.secrets_backend || '');
+  $('kLat').textContent = fmtDur(u.avg_latency_ms);
+  $('kModels').textContent = fmtNum(s.models_count) + ' exposed models · ' + esc(s.secrets_backend || '');
   $('kCost').textContent = fmtCost(u.estimated_cost_usd);
-  $('kCostSub').textContent = 'estimate at list prices' + (u.unpriced_requests ? ' · ' + fmt(u.unpriced_requests) + ' requests unpriced' : '');
+  $('kCostSub').textContent = 'estimate at list prices' + (u.unpriced_requests ? ' · ' + fmtNum(u.unpriced_requests) + ' requests unpriced' : '');
 
   const buckets = chartMode === '24h' ? (u.hourly_24h || []) : (u.daily_14d || []);
   $('chartTitle').textContent = chartMode === '24h' ? 'Requests — Last 24 Hours' : 'Requests — Last 14 Days';
   const maxReq = Math.max(1, ...buckets.map(b => b.requests));
-  $('chartMeta').textContent = 'peak: ' + fmt(maxReq) + ' reqs';
+  $('chartMeta').textContent = 'peak: ' + fmtNum(maxReq) + ' reqs';
   $('chart').innerHTML = buckets.map((b, i) => {
     const pct = Math.round((b.requests / maxReq) * 100);
     const showLbl = chartMode === '14d' || i % 3 === 0 || i === buckets.length - 1;
-    const tip = b.label + ': ' + b.requests + ' reqs, ' + b.errors + ' errs, ' + fmt(b.tokens) + ' tokens';
+    const tip = b.label + ': ' + b.requests + ' reqs, ' + b.errors + ' errs, ' + fmtNum(b.tokens) + ' tokens';
     return '<div class="bar-wrap" title="' + esc(tip) + '">' +
       '<div class="bar' + (b.errors > 0 && b.errors === b.requests ? ' err' : '') + '" style="height:' + Math.max(pct, b.requests ? 4 : 1) + '%"></div>' +
       '<div class="bar-lbl">' + (showLbl ? esc(b.label) : '&nbsp;') + '</div></div>';
@@ -347,31 +355,31 @@ function render() {
   }
   const probeBadge = p => {
     if (!p || p.status === 'unknown') return '<span class="muted">—</span>';
-    if (p.status === 'healthy') return '<span class="badge b-ok">' + fmt(p.latency_ms) + 'ms</span>';
+    if (p.status === 'healthy') return '<span class="badge b-ok">' + fmtDur(p.latency_ms) + '</span>';
     return '<span class="badge b-err" title="' + esc(p.error || '') + '">' + esc(p.status) + '</span>';
   };
   $('acctBody').innerHTML = Array.from(mergedAccts.values()).map(a =>
-    '<tr><td>' + esc(a.account) + '</td><td>' + stateBadge(a.state) + '</td><td>' + probeBadge(probeByKey[a.account]) + '</td><td>' + fmt(a.requests) + '</td><td>' + fmt(a.errors) + '</td><td>' + fmt(a.total_tokens) + '</td></tr>'
+    '<tr><td>' + esc(a.account) + '</td><td>' + stateBadge(a.state) + '</td><td>' + probeBadge(probeByKey[a.account]) + '</td><td>' + fmtNum(a.requests) + '</td><td>' + fmtNum(a.errors) + '</td><td>' + fmtNum(a.total_tokens) + '</td></tr>'
   ).join('') || '<tr><td colspan="6" class="muted">No accounts yet</td></tr>';
 
   const totalReq = Math.max(1, u.total_requests || 1);
   $('modelBody').innerHTML = (u.by_model || []).map(m => {
     const share = Math.round((m.requests / totalReq) * 100);
-    return '<tr><td>' + esc(m.model) + '</td><td>' + fmt(m.requests) + '</td><td>' + fmt(m.total_tokens) + '</td><td>' + esc(fmtCost(m.estimated_cost_usd)) + '</td><td><span class="share-bg"><span class="share-fg" style="width:' + share + '%"></span></span> ' + share + '%</td></tr>';
+    return '<tr><td>' + esc(m.model) + '</td><td>' + fmtNum(m.requests) + '</td><td>' + fmtNum(m.total_tokens) + '</td><td>' + esc(fmtCost(m.estimated_cost_usd)) + '</td><td><span class="share-bg"><span class="share-fg" style="width:' + share + '%"></span></span> ' + share + '%</td></tr>';
   }).join('') || '<tr><td colspan="5" class="muted">No requests recorded yet</td></tr>';
 
   $('keyBody').innerHTML = (u.by_key || []).map(k =>
-    '<tr><td>' + esc(k.key) + '</td><td>' + fmt(k.requests) + '</td><td>' + fmt(k.errors) + '</td><td>' + fmt(k.total_tokens) + '</td><td>' + esc(fmtCost(k.estimated_cost_usd)) + '</td></tr>'
+    '<tr><td>' + esc(k.key) + '</td><td>' + fmtNum(k.requests) + '</td><td>' + fmtNum(k.errors) + '</td><td>' + fmtNum(k.total_tokens) + '</td><td>' + esc(fmtCost(k.estimated_cost_usd)) + '</td></tr>'
   ).join('') || '<tr><td colspan="5" class="muted">No API-key traffic yet</td></tr>';
 
   $('projBody').innerHTML = (u.by_project || []).map(p =>
-    '<tr><td>' + esc(p.project) + '</td><td>' + fmt(p.requests) + '</td><td>' + fmt(p.errors) + '</td><td>' + fmt(p.total_tokens) + '</td><td>' + esc(fmtCost(p.estimated_cost_usd)) + '</td></tr>'
+    '<tr><td>' + esc(p.project) + '</td><td>' + fmtNum(p.requests) + '</td><td>' + fmtNum(p.errors) + '</td><td>' + fmtNum(p.total_tokens) + '</td><td>' + esc(fmtCost(p.estimated_cost_usd)) + '</td></tr>'
   ).join('') || '<tr><td colspan="5" class="muted">No project traffic yet</td></tr>';
 
   $('recentBody').innerHTML = (u.recent || []).map(r => {
     const ok = r.status >= 200 && r.status < 400;
     const t = new Date(r.time).toLocaleTimeString();
-    return '<tr><td>' + esc(t) + '</td><td>' + esc(r.endpoint) + '</td><td>' + esc(r.model) + '</td><td>' + esc(r.account) + '</td><td><span class="badge ' + (ok ? 'b-ok' : 'b-err') + '">' + r.status + '</span></td><td>' + fmt(r.total_tokens) + (r.estimated ? '~' : '') + '</td><td>' + fmt(r.duration_ms) + ' ms</td></tr>';
+    return '<tr><td>' + esc(t) + '</td><td>' + esc(r.endpoint) + '</td><td>' + esc(r.model) + '</td><td>' + esc(r.account) + '</td><td><span class="badge ' + (ok ? 'b-ok' : 'b-err') + '">' + r.status + '</span></td><td>' + fmtNum(r.total_tokens) + (r.estimated ? '~' : '') + '</td><td>' + fmtDur(r.duration_ms) + '</td></tr>';
   }).join('') || '<tr><td colspan="7" class="muted">Waiting for traffic...</td></tr>';
 }
 

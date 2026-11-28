@@ -11,6 +11,7 @@ import (
 	"github.com/bberka/agentpassage/internal/health"
 	"github.com/bberka/agentpassage/internal/pool"
 	"github.com/bberka/agentpassage/internal/router"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 func (a *App) filteredAccounts() []config.AccountConfig {
@@ -307,7 +308,7 @@ func (a *App) viewAccounts(bodyHeight int) string {
 		healthSummary := "not probed yet (press 't' to test or 'T' to health-check all)"
 		if !hr.CheckedAt.IsZero() {
 			ago := time.Since(hr.CheckedAt).Round(time.Second)
-			healthSummary = fmt.Sprintf("%s · %dms · %d models · checked %s ago", hr.Status, hr.LatencyMs, hr.ModelsFound, ago)
+			healthSummary = fmt.Sprintf("%s · %s · %d models · checked %s ago", hr.Status, usage.FormatLatency(hr.LatencyMs), hr.ModelsFound, ago)
 			if hr.Error != "" {
 				healthSummary += " · " + hr.Error
 			}
@@ -341,7 +342,7 @@ func plainStateText(s pool.AccountSnapshot) string {
 func plainProbeText(r health.Result) string {
 	switch r.Status {
 	case health.StatusHealthy:
-		return fmt.Sprintf("%dms", r.LatencyMs)
+		return usage.FormatLatency(r.LatencyMs)
 	case health.StatusDegraded:
 		return "degraded"
 	case health.StatusUnhealthy:

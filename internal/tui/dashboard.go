@@ -10,7 +10,9 @@ import (
 
 	"github.com/bberka/agentpassage/internal/health"
 	"github.com/bberka/agentpassage/internal/pool"
+	"github.com/bberka/agentpassage/internal/quota"
 	"github.com/bberka/agentpassage/internal/secrets"
+	"github.com/bberka/agentpassage/internal/usage"
 )
 
 func (a *App) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -132,7 +134,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 				break
 			}
 			probe := a.renderProbeShort(healthByID[s.ID])
-			usage := fmt.Sprintf("req:%d err:%d (%d/%d)", s.TotalRequests, s.TotalErrors, s.InFlight, s.MaxConcurrency)
+			usage := fmt.Sprintf("req:%s err:%s (%d/%d)", usage.FormatCount(int(s.TotalRequests)), usage.FormatCount(int(s.TotalErrors)), s.InFlight, s.MaxConcurrency)
 			row := a.styles.JoinRow(2,
 				a.styles.PadCell(truncate(s.Backend+"/"+s.Name, acctW), acctW),
 				a.styles.PadCell(a.styles.Muted.Render(truncate(s.Kind, kindW)), kindW),
@@ -164,7 +166,7 @@ func (a *App) viewDashboard(bodyHeight int) string {
 				ts := e.Time.Format("15:04:05")
 				var detail string
 				if e.Kind == "request" {
-					detail = fmt.Sprintf("%s %s %s → %s (%d, %dms)", e.Method, e.Path, e.Model, e.Account, e.Status, e.DurationMs)
+					detail = fmt.Sprintf("%s %s %s → %s (%d, %s)", e.Method, e.Path, e.Model, e.Account, e.Status, usage.FormatLatency(e.DurationMs))
 				} else {
 					detail = fmt.Sprintf("[%s] %s", e.Kind, e.Message)
 				}
@@ -212,14 +214,12 @@ func (a *App) renderState(s pool.AccountSnapshot) string {
 	case pool.StateBusy:
 		return a.styles.StateBusy.Render("◐ busy")
 	case pool.StateCoolingDown:
-		rem := ""
-		if s.CooldownUntil != nil {
-			secs := int(time.Until(*s.CooldownUntil).Seconds())
-			if secs > 0 {
-				rem = fmt.Sprintf("(%ds)", secs)
-			}
+		// Time left replaces the word so the label fits the state column.
+		label := "cool"
+		if now := time.Now(); s.CooldownUntil != nil && s.CooldownUntil.After(now) {
+			label = quota.FormatResetIn(s.CooldownUntil, now)
 		}
-		return a.styles.StateCool.Render("◷ cool" + rem)
+		return a.styles.StateCool.Render("◷ " + label)
 	case pool.StateLoginNeeded:
 		return a.styles.StateWarn.Render("▲ login")
 	default:
@@ -230,7 +230,7 @@ func (a *App) renderState(s pool.AccountSnapshot) string {
 func (a *App) renderProbeShort(r health.Result) string {
 	switch r.Status {
 	case health.StatusHealthy:
-		return a.styles.StateReady.Render(fmt.Sprintf("%dms", r.LatencyMs))
+		return a.styles.StateReady.Render(usage.FormatLatency(r.LatencyMs))
 	case health.StatusDegraded:
 		return a.styles.StateWarn.Render("degraded")
 	case health.StatusUnhealthy:

@@ -825,18 +825,6 @@ func parseHeaderTime(raw string, now time.Time) *time.Time {
 	return nil
 }
 
-// FormatCompactTokens abbreviates token counts (e.g. 5800 -> "5.8k", 1250000 -> "1.2M").
-func FormatCompactTokens(n int) string {
-	switch {
-	case n >= 1_000_000:
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000.0)
-	case n >= 1_000:
-		return fmt.Sprintf("%.1fk", float64(n)/1_000.0)
-	default:
-		return strconv.Itoa(n)
-	}
-}
-
 // --- Official Antigravity CLI `agy --print /usage --output-format json` ---
 
 func fetchAgyQuota(ctx context.Context, acct config.AccountConfig, dataDir string) (AccountQuota, error) {
