@@ -808,6 +808,11 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 	hasSelected := false
 	var selectedEfforts []string
 	for _, m := range models {
+		// ComfyUI accounts expose image generation checkpoints through the same
+		// catalog as chat models, but ACP's model selector is for text generation.
+		if strings.EqualFold(m.Backend, "comfyui") {
+			continue
+		}
 		if defaultModel == "" {
 			defaultModel = m.ID
 		}
@@ -828,9 +833,11 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 				break
 			}
 		}
-	} else if !hasSelected {
+	} else if !hasSelected && !isImageGenerationModel(models, cur) {
 		opts = append(opts, map[string]string{"value": cur, "name": cur})
 		availModels = append(availModels, map[string]string{"modelId": cur, "name": cur})
+	} else if !hasSelected {
+		cur = defaultModel
 	}
 
 	configOpts := []map[string]any{
@@ -887,6 +894,15 @@ func (s *Server) buildModelOptions(selectedModel, selectedEffort, selectedMode s
 	}
 
 	return configOpts, availModels, cur, resolvedEffort
+}
+
+func isImageGenerationModel(models []router.ModelEntry, id string) bool {
+	for _, m := range models {
+		if m.ID == id && strings.EqualFold(m.Backend, "comfyui") {
+			return true
+		}
+	}
+	return false
 }
 
 // refreshOptions rebuilds a session's config options and stores the effort they

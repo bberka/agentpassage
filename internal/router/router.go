@@ -320,6 +320,9 @@ func (r *Router) ResolveForProject(requested, project string) (*Plan, error) {
 	// 2. Check prefixed account model form: <prefix><model> (e.g. "a-gemini-4-neon")
 	for i := range r.cfg.Accounts {
 		a := &r.cfg.Accounts[i]
+		if !a.Enabled {
+			continue
+		}
 		if a.ExposeMode != config.ExposePrefix && a.ExposeMode != config.ExposeBoth {
 			continue
 		}
@@ -349,7 +352,7 @@ func (r *Router) ResolveForProject(requested, project string) (*Plan, error) {
 	if len(parts) == 3 {
 		backendID, acctName, upstream := parts[0], parts[1], parts[2]
 		for _, a := range r.cfg.Accounts {
-			if a.Backend == backendID && (a.Name == acctName || a.ID == acctName) {
+			if a.Enabled && a.Backend == backendID && (a.Name == acctName || a.ID == acctName) {
 				return &Plan{
 					RequestedModel: requested,
 					CanonicalModel: canonical,
@@ -432,7 +435,7 @@ func (r *Router) accountsForBackendLocked(backendID, upstream string) []*config.
 	var anyInBackend []*config.AccountConfig
 	for i := range r.cfg.Accounts {
 		a := &r.cfg.Accounts[i]
-		if a.Backend != backendID {
+		if !a.Enabled || a.Backend != backendID {
 			continue
 		}
 		anyInBackend = append(anyInBackend, a)
