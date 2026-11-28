@@ -239,6 +239,7 @@ func (r *Registry) ListPresets() []ProviderPreset {
 		"lmstudio":   11,
 		"llamacpp":   12,
 		"vllm":       13,
+		"comfyui":    14,
 		"custom":     99,
 	}
 	out := make([]ProviderPreset, 0, len(r.presets))

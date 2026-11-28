@@ -44,6 +44,15 @@ func (s *Server) handleOpenAIAudioTranscriptions(w http.ResponseWriter, r *http.
 	s.proxyMediaRaw(w, r, "/audio/transcriptions", model, body, r.Header.Get("Content-Type"), start)
 }
 
+// mediaTimeout allows images far longer: a local model has to load first and
+// may be working through a queue.
+func mediaTimeout(upstreamSuffix string) time.Duration {
+	if upstreamSuffix == "/images/generations" {
+		return 15 * time.Minute
+	}
+	return 2 * time.Minute
+}
+
 func (s *Server) proxyMediaJSON(w http.ResponseWriter, r *http.Request, upstreamSuffix string) {
 	start := time.Now()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
@@ -101,7 +110,7 @@ func (s *Server) proxyMediaRaw(w http.ResponseWriter, r *http.Request, upstreamS
 	tried := make(map[string]bool)
 	var lastErr error
 	var lastAcct string
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: mediaTimeout(upstreamSuffix)}
 
 	for attempt := 0; attempt < max(len(plan.CandidateIDs), 1); attempt++ {
 		lease, err := s.pool.Acquire(s.buildPoolSelectRequest(r.Context(), plan, "", tried))

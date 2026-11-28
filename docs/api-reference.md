@@ -32,7 +32,13 @@ Where it goes depends on the account:
 
 Provider `file_id` references cannot be resolved and are passed on as references only. Request bodies may be up to 64 MB.
 
-For image generation and voice, use `POST /v1/images/generations`, `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`. These pass through to API-key or local accounts (OpenAI, OpenRouter, a local server).
+For image generation and voice, use `POST /v1/images/generations`, `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`. These pass through to API-key or local accounts (OpenAI, OpenRouter, a local server). apx waits up to 15 minutes for an image and 2 minutes for audio; a proxy in front of apx may give up sooner.
+
+ComfyUI has no OpenAI API of its own. With an add-on that serves `/v1/models` and `/v1/images/generations` on it, add it as a local account:
+
+```
+apx accounts add -kind api_key -backend comfyui -name local
+```
 
 ### Tool calls
 

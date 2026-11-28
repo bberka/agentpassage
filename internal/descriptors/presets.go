@@ -108,6 +108,14 @@ func BuiltInPresets() []ProviderPreset {
 			},
 		},
 		{
+			ID:            "comfyui",
+			Name:          "ComfyUI (local, needs an OpenAI images add-on)",
+			BaseURL:       "http://127.0.0.1:8188/v1",
+			AuthStyle:     config.AuthNone,
+			KeyOptional:   true,
+			DefaultModels: []string{},
+		},
+		{
 			ID:          "ollama",
 			Name:        "Ollama (local)",
 			BaseURL:     "http://127.0.0.1:11434/v1",
