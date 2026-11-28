@@ -53,6 +53,11 @@ type bridgeSession struct {
 
 	promptMu sync.Mutex
 	cancel   context.CancelFunc
+
+	cmdMu    sync.Mutex
+	commands []map[string]any // the agent's own slash commands
+	cmdModel int              // counts model switches, to drop a left model's list
+	prepared chan struct{}    // closed when the upstream session is ready; guarded by sessMu
 }
 
 type persistedSession struct {
@@ -171,7 +176,10 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 		go s.watchConfig(serveCtx, dataDir, notify)
 	}
 
-	var promptWG sync.WaitGroup
+	var promptWG, prepareWG sync.WaitGroup
+	prepare := func(bs *bridgeSession) {
+		s.prepareSession(serveCtx, &prepareWG, bs, notify)
+	}
 
 	for scanner.Scan() {
 		if serveCtx.Err() != nil {
@@ -251,6 +259,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 			replyOK(msg.ID, s.sessionReply(sid, defaultModel, configOpts, availModels, defaultMode))
 			sendSkills(notify, sid, s.gw.UserSkills(p.Cwd))
+			prepare(bs)
 			if s.hostTools() {
 				s.gw.AnnounceNewTools(p.Cwd)
 			}
@@ -309,6 +318,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 			replyOK(msg.ID, s.sessionReply(bs.id, resolvedModel, configOpts, availModels, normalizeBridgeMode(curMode)))
 			sendSkills(notify, bs.id, s.gw.UserSkills(bs.cwd))
+			prepare(bs)
 
 		case "session/list":
 			list := s.listPersistedSessions()
@@ -366,6 +376,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 			replyOK(msg.ID, s.sessionReply(newSID, resolvedModel, configOpts, availModels, forked.mode))
 			sendSkills(notify, newSID, s.gw.UserSkills(forkCwd))
+			prepare(forked)
 
 		case "session/set_config_option":
 			var p struct {
@@ -377,8 +388,10 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			curModel := ""
 			curEffort := ""
 			curMode := s.defaultMode()
+			var switched *bridgeSession
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
+				before := bs.model
 				switch strings.ToLower(p.ConfigID) {
 				case "thought_level", "reasoning_effort", "effort", "thinking":
 					bs.effort = router.NormalizeEffort(p.Value)
@@ -391,6 +404,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 				curModel = bs.model
 				curEffort = bs.effort
 				curMode = bs.mode
+				if bs.model != before {
+					switched = bs
+				}
 			} else if p.ConfigID == "model" || p.ConfigID == "" {
 				curModel = p.Value
 			} else if strings.EqualFold(p.ConfigID, "mode") {
@@ -401,6 +417,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			replyOK(msg.ID, map[string]any{
 				"configOptions": configOpts,
 			})
+			if switched != nil {
+				prepare(switched)
+			}
 
 		case "session/set_mode":
 			var p struct {
@@ -432,8 +451,12 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			curModel := p.ModelID
 			curEffort := ""
 			curMode := s.defaultMode()
+			var switched *bridgeSession
 			s.sessMu.Lock()
 			if bs, ok := s.sess[p.SessionID]; ok {
+				if bs.model != p.ModelID {
+					switched = bs
+				}
 				bs.model = p.ModelID
 				curModel = bs.model
 				curEffort = bs.effort
@@ -443,6 +466,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			configOpts := s.refreshOptions(p.SessionID, curModel, curEffort, curMode)
 			notifyOptions(p.SessionID, configOpts)
 			replyOK(msg.ID, map[string]any{})
+			if switched != nil {
+				prepare(switched)
+			}
 
 		case "session/prompt":
 			var p struct {
@@ -513,7 +539,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			reqHostMode := bs.hostMode
 			reqCwd := bs.cwd
 			reqMCP := bs.mcpServers
+			prepared := bs.prepared
 			s.sessMu.Unlock()
+			onCommands := s.commandReceiver(bs, notify)
 
 			msgID := append(json.RawMessage(nil), msg.ID...)
 			promptCtx, promptCancel := context.WithCancel(serveCtx)
@@ -607,6 +635,13 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					bs.promptMu.Unlock()
 				}()
 
+				if prepared != nil {
+					select {
+					case <-prepared:
+					case <-promptCtx.Done():
+					}
+				}
+
 				var replySB strings.Builder
 				_, err := s.gw.StreamDirect(promptCtx, backend.ChatRequest{
 					Model:             reqModel,
@@ -616,6 +651,7 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 					PermissionHandler: permHandler,
 					MCPServers:        reqMCP,
 					HostTools:         s.hostTools(),
+					OnCommands:        onCommands,
 					Messages:          histSnap,
 					Stream:            true,
 					SessionKey:        bs.id,
@@ -704,6 +740,8 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 
 	// Wait for any in-flight prompts to complete before closing stdout.
 	promptWG.Wait()
+	serveCancel()
+	prepareWG.Wait()
 	return scanner.Err()
 }
 

@@ -28,7 +28,10 @@ type ChatRequest struct {
 	MCPServers        []any
 	// HostTools adds the MCP servers from the user's own agent config. Only
 	// local ACP hosts set it, so API callers can't use those servers.
-	HostTools   bool
+	HostTools bool
+	// OnCommands receives the slash commands an agent offers in this
+	// conversation's session, as the JSON list it sent. Only local ACP hosts set it.
+	OnCommands  func(commands json.RawMessage)
 	Messages    []Message
 	Stream      bool
 	Temperature *float64

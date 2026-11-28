@@ -441,6 +441,31 @@ func (m *Manager) Acquire(req SelectRequest) (*Lease, error) {
 	}, nil
 }
 
+// Preview returns the account Acquire would pick for req, without counting a
+// request or moving any routing state.
+func (m *Manager) Preview(req SelectRequest) (config.AccountConfig, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.now()
+	strategy := normalizeStrategy(req.Strategy)
+	if m.optInCheckLocked(strategy, req) != nil {
+		return config.AccountConfig{}, false
+	}
+	pinnedID := m.pinnedLocked(req.SessionKey, req.CandidateIDs, now)
+	eligible, err := m.eligibleLocked(req, pinnedID, now, nil)
+	if err != nil {
+		return config.AccountConfig{}, false
+	}
+	if strategy != config.StrategyManual {
+		for _, a := range eligible {
+			if a.ID == pinnedID {
+				return *a, true
+			}
+		}
+	}
+	return *m.pickLocked(strategy, req, eligible, false), true
+}
+
 // optInCheckLocked enforces the explicit ban-risk opt-in for round-robin and
 // least-busy when subscription (ACP / CLI) accounts are candidates.
 func (m *Manager) optInCheckLocked(strategy string, req SelectRequest) error {

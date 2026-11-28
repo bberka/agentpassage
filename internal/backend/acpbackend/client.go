@@ -36,6 +36,7 @@ type Manager struct {
 	toolActivity string
 	permHandler  PermissionHandler
 	workers      map[string]*worker
+	starting     sync.Map // account ID -> *sync.Mutex held while its process starts
 }
 
 func NewManager(dataDir string, reg *descriptors.Registry, logs *logbuf.Buffer, toolActivity string) *Manager {
@@ -199,36 +200,7 @@ func (m *Manager) Complete(ctx context.Context, acct config.AccountConfig, req b
 }
 
 func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest, cb backend.StreamCallback) (err error) {
-	if acct.Backend == "pi" && !acct.UseHostProfile {
-		m.dropWorkerUnless(acct.ID, req.HostTools)
-	}
-	w, err := m.getOrStartWorker(ctx, acct, req.HostTools)
-	if err != nil {
-		return err
-	}
-
-	cwd := strings.TrimSpace(req.Cwd)
-	if cwd == "" {
-		cwd = strings.TrimSpace(acct.DefaultCwd)
-	}
-	if cwd == "" {
-		cwd, _ = os.Getwd()
-	}
-
-	if backend.AnsweredElsewhere(req.SessionKey, acct.ID) {
-		w.forgetSession(req.SessionKey)
-	}
-	mcpServers := req.MCPServers
-	if !acct.UseHostProfile {
-		// Each request, so skills and MCP servers added later are picked up.
-		if dir, err := config.ProfileDir(m.dataDir, acct.Backend, acct.Name); err == nil {
-			m.shareSkills(acct, dir)
-		}
-		if req.HostTools {
-			mcpServers = m.withHostMCP(mcpServers, acct.Backend, cwd, w.mcpCaps)
-		}
-	}
-	sess, reused, err := w.acquireSession(ctx, req, cwd, mcpServers)
+	w, sess, reused, err := m.openSession(ctx, acct, req)
 	if err != nil {
 		return err
 	}
@@ -337,6 +309,46 @@ func (m *Manager) Stream(ctx context.Context, acct config.AccountConfig, req bac
 	})
 }
 
+// openSession returns the account's agent process and the session req runs in.
+// reused says the session already holds the earlier turns.
+func (m *Manager) openSession(ctx context.Context, acct config.AccountConfig, req backend.ChatRequest) (*worker, *acpSession, bool, error) {
+	if acct.Backend == "pi" && !acct.UseHostProfile {
+		m.dropWorkerUnless(acct.ID, req.HostTools)
+	}
+	w, err := m.getOrStartWorker(ctx, acct, req.HostTools)
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	cwd := strings.TrimSpace(req.Cwd)
+	if cwd == "" {
+		cwd = strings.TrimSpace(acct.DefaultCwd)
+	}
+	if cwd == "" {
+		cwd, _ = os.Getwd()
+	}
+
+	if backend.AnsweredElsewhere(req.SessionKey, acct.ID) {
+		w.forgetSession(req.SessionKey)
+	}
+	mcpServers := req.MCPServers
+	if !acct.UseHostProfile {
+		// Each request, so skills and MCP servers added later are picked up.
+		if dir, err := config.ProfileDir(m.dataDir, acct.Backend, acct.Name); err == nil {
+			m.shareSkills(acct, dir)
+		}
+		if req.HostTools {
+			mcpServers = m.withHostMCP(mcpServers, acct.Backend, cwd, w.mcpCaps)
+		}
+	}
+	sess, reused, err := w.acquireSession(ctx, req, cwd, mcpServers)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	w.listenCommands(sess.id, req.OnCommands)
+	return w, sess, reused, nil
+}
+
 // withHostMCP adds the MCP servers configured in the user's own copy of the
 // agent. A server the host sent wins over one with the same name.
 func (m *Manager) withHostMCP(sent []any, agent, cwd string, caps hostmcp.Capabilities) []any {
@@ -376,6 +388,12 @@ func (m *Manager) shareSkills(acct config.AccountConfig, profileDir string) {
 // getOrStartWorker returns the account's running agent process, starting one if
 // needed. hostTools says whether a new process may use the user's MCP servers.
 func (m *Manager) getOrStartWorker(ctx context.Context, acct config.AccountConfig, hostTools bool) (*worker, error) {
+	// One start at a time per account: a second process would replace the first
+	// and end its sessions.
+	startLock, _ := m.starting.LoadOrStore(acct.ID, &sync.Mutex{})
+	startLock.(*sync.Mutex).Lock()
+	defer startLock.(*sync.Mutex).Unlock()
+
 	m.mu.Lock()
 	if existing, ok := m.workers[acct.ID]; ok && existing.alive() {
 		existing.setAccount(acct)
@@ -460,6 +478,7 @@ type acpSession struct {
 	history  string // sum of the user turns sent, see backend.ContinueSession
 	busy     bool   // a turn is running
 	host     bool   // belongs to a local ACP host, which keeps it open
+	fresh    bool   // no turn has run in it yet
 	lastUsed time.Time
 }
 
@@ -488,6 +507,10 @@ type worker struct {
 	promptCaps promptCapabilities   // set once at initialize
 	mcpCaps    hostmcp.Capabilities // set once at initialize
 	canClose   bool                 // set once at initialize
+
+	cmdMu     sync.Mutex
+	commands  map[string]json.RawMessage       // upstream sessionId -> latest command list
+	listeners map[string]func(json.RawMessage) // upstream sessionId -> command receiver
 
 	closed atomic.Bool
 	doneCh chan struct{}
@@ -528,6 +551,8 @@ func startWorker(ctx context.Context, acct config.AccountConfig, argv []string, 
 		sessions:        make(map[string]*acpSession),
 		permByID:        make(map[string]string),
 		permHandlerByID: make(map[string]PermissionHandler),
+		commands:        make(map[string]json.RawMessage),
+		listeners:       make(map[string]func(json.RawMessage)),
 		doneCh:          make(chan struct{}),
 	}
 
@@ -724,6 +749,7 @@ func (w *worker) readStdout(r io.Reader) {
 		case "session/update":
 			var p sessionUpdateParams
 			if err := json.Unmarshal(msg.Params, &p); err == nil {
+				w.noteCommands(p.SessionID, p.Update)
 				w.streamMu.RLock()
 				fn := w.streams[p.SessionID]
 				w.streamMu.RUnlock()
@@ -988,7 +1014,11 @@ const sessionIdleLimit = time.Hour
 func (w *worker) forgetSession(sessionKey string) {
 	w.sessMu.Lock()
 	sess := w.sessions[sessionKey]
-	delete(w.sessions, sessionKey)
+	if sess != nil && sess.fresh {
+		sess = nil // it has missed nothing
+	} else {
+		delete(w.sessions, sessionKey)
+	}
 	idle := sess != nil && !sess.busy
 	w.sessMu.Unlock()
 	if idle {
@@ -1003,6 +1033,7 @@ func (w *worker) releaseSession(req backend.ChatRequest, sess *acpSession, ok bo
 	sess.busy = false
 	kept := req.SessionKey != "" && w.sessions[req.SessionKey] == sess
 	if kept && ok {
+		sess.fresh = false
 		sess.history, _ = backend.ContinueSession(sess.history, req)
 		sess.lastUsed = time.Now()
 	} else if kept {
@@ -1020,6 +1051,7 @@ func (w *worker) closeSession(sess *acpSession) {
 	delete(w.permByID, sess.id)
 	delete(w.permHandlerByID, sess.id)
 	w.sessMu.Unlock()
+	w.forgetCommands(sess.id)
 	if w.canClose && w.alive() {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1064,7 +1096,7 @@ func (w *worker) takeSession(req backend.ChatRequest, cwd string) (sess *acpSess
 func (w *worker) acquireSession(ctx context.Context, req backend.ChatRequest, cwd string, mcpServers []any) (*acpSession, bool, error) {
 	upstreamModel, reasoningEffort, acpMode := req.UpstreamModel, req.ReasoningEffort, req.ACPMode
 	sess, keep := w.takeSession(req, cwd)
-	reused := sess != nil
+	reused := sess != nil && !sess.fresh
 
 	if sess == nil {
 		var err error
@@ -1073,7 +1105,7 @@ func (w *worker) acquireSession(ctx context.Context, req backend.ChatRequest, cw
 			return nil, false, err
 		}
 		w.sessMu.Lock()
-		sess.busy, sess.host, sess.lastUsed = true, req.HostTools, time.Now()
+		sess.busy, sess.fresh, sess.host, sess.lastUsed = true, true, req.HostTools, time.Now()
 		if keep {
 			w.sessions[req.SessionKey] = sess
 		}
