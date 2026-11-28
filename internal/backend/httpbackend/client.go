@@ -5,10 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -83,12 +85,52 @@ func (c *Client) post(ctx context.Context, acct config.AccountConfig, apiKey, pa
 	if err != nil {
 		err = watch.explain(err)
 		watch.stop()
-		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
+		return nil, sendError(acct, err)
 	}
 	watch.body = resp.Body
 	resp.Body = watch
 	c.emitHeaders(acct, resp.Header)
 	return resp, nil
+}
+
+// sendError describes a request that got no response.
+func sendError(acct config.AccountConfig, err error) *backend.BackendError {
+	if down := Unreachable(acct, err); down != nil {
+		return down
+	}
+	return &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
+}
+
+// Unreachable explains a failure to connect to the account's server, which for
+// a local one usually means it isn't started. It returns nil for other errors.
+func Unreachable(acct config.AccountConfig, err error) *backend.BackendError {
+	var op *net.OpError
+	if !errors.As(err, &op) || op.Op != "dial" || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	host := acct.BaseURL
+	if u, parseErr := url.Parse(acct.BaseURL); parseErr == nil && u.Host != "" {
+		host = u.Host
+	}
+	return &backend.BackendError{
+		Kind:    backend.ErrKindTransient,
+		Message: fmt.Sprintf("Can't reach %s/%s at %s. Check that its server is running.", acct.Backend, acct.Name, host),
+		Cause:   err,
+		Plain:   true,
+	}
+}
+
+// checkChat rejects a chat with an account that only makes images.
+func checkChat(acct config.AccountConfig, model string) error {
+	if acct.Backend != "comfyui" {
+		return nil
+	}
+	return &backend.BackendError{
+		Kind:       backend.ErrKindClient,
+		StatusCode: http.StatusBadRequest,
+		Message:    fmt.Sprintf("%s is an image model and can't chat. Send the prompt to /v1/images/generations, or pick a text model.", model),
+		Plain:      true,
+	}
 }
 
 // readBody reads up to limit bytes of a response, turning a read failure or a
@@ -205,7 +247,7 @@ func (c *Client) FetchModels(ctx context.Context, acct config.AccountConfig, api
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, &backend.BackendError{Kind: backend.ErrKindTransient, Message: err.Error(), Cause: err}
+		return nil, sendError(acct, err)
 	}
 	defer resp.Body.Close()
 
@@ -285,6 +327,9 @@ func (c *Client) Complete(ctx context.Context, acct config.AccountConfig, apiKey
 			backend.RecordAnswer(req.SessionKey, acct.ID)
 		}
 	}()
+	if err := checkChat(acct, req.Model); err != nil {
+		return nil, err
+	}
 	if acct.AuthStyle == config.AuthAnthropic {
 		return c.completeAnthropic(ctx, acct, apiKey, req)
 	}
@@ -297,6 +342,9 @@ func (c *Client) Stream(ctx context.Context, acct config.AccountConfig, apiKey s
 			backend.RecordAnswer(req.SessionKey, acct.ID)
 		}
 	}()
+	if err := checkChat(acct, req.Model); err != nil {
+		return err
+	}
 	if acct.AuthStyle == config.AuthAnthropic {
 		return c.streamAnthropic(ctx, acct, apiKey, req, cb)
 	}

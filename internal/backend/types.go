@@ -143,9 +143,13 @@ type BackendError struct {
 	Message    string
 	RetryAfter int // seconds, optional
 	Cause      error
+	Plain      bool // Message is a full explanation, shown without the prefix
 }
 
 func (e *BackendError) Error() string {
+	if e.Plain {
+		return e.Message
+	}
 	if e.StatusCode > 0 {
 		return fmt.Sprintf("backend error (%s, HTTP %d): %s", e.Kind, e.StatusCode, e.Message)
 	}

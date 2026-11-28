@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bberka/agentpassage/internal/backend/httpbackend"
 	"github.com/bberka/agentpassage/internal/config"
 	"github.com/bberka/agentpassage/internal/logbuf"
 )
@@ -149,6 +150,9 @@ func (s *Server) proxyMediaRaw(w http.ResponseWriter, r *http.Request, upstreamS
 		lease.Release()
 		if err != nil {
 			lastErr = err
+			if down := httpbackend.Unreachable(acct, err); down != nil {
+				lastErr = down
+			}
 			continue
 		}
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
